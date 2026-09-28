@@ -1,0 +1,31 @@
+# Solana
+# NOTE: anchorpy is intentionally NOT a dependency. anchorpy 0.21.0's Idl parser
+# (anchorpy-core, Rust) cannot parse Anchor 0.29+ IDL files (the vanna_lending
+# IDL uses the newer per-instruction/per-account "discriminator" array format —
+# anchorpy raises `SerdeJSONError: data did not match any variant of untagged
+# enum IdlAccountItem`). Verified against idl/vanna_lending.json on 2026-09-28.
+# Instructions/accounts are encoded/decoded manually instead (see
+# vanna_core/anchor_codec.py, vanna_core/layouts.py) using the same discriminator
+# derivation Anchor itself uses (sha256("global:<ix_name>")[:8] and
+# sha256("account:<StructName>")[:8] — cross-checked byte-for-byte against the
+# IDL's own "discriminator" fields).
+solana==0.36.6
+solders==0.26.0
+borsh-construct==0.1.0
+
+# MCP framework (current major; NOT the legacy FastMCP 1.x API — see
+# mcp_server/main.py, which uses mcp.server.mcpserver.MCPServer)
+mcp>=2.2.0
+
+# Data validation & settings
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# Async HTTP (Pyth Hermes client, sign-service calls)
+httpx>=0.27.0
+anyio>=4.4.0
+
+# Dev / test
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+python-dotenv>=1.0.0
