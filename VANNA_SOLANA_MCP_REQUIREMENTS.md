@@ -1,5 +1,10 @@
 # Vanna Solana MCP — Build Requirements
 
+> Historical: the original question list sent to the team. Every question here has since been answered
+> (PDF of 28 Sep 2026 and the team's 2026-09-29 decisions). The answers and what they changed are in
+> `DECISIONS.md`. Notably: no signing service (the wallet signs), no Hermes (the fork's price keeper),
+> and liquidation stays read-only.
+
 ## Part A — Asks for Senior (need answers before/while buildi
 
 **1. Canonical program ID + IDL for the target deployment**
