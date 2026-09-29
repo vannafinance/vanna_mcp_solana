@@ -120,7 +120,7 @@ that finishes the work, not after.
 | 0 | envelope.py | ✅ schema v1, single-transaction helper built |
 | 0 | client.py (v0 envelope) | ✅ real v0 transaction + placeholder-signature simulation, chain-clock read |
 | 0 | offline foundation tests | ✅ `tests/test_foundation.py`, 20 tests, all passing |
-| 1 | vanna_protocol_info | ✅ built + live-verified (config/assets/integrations, all 10 registry assets) |
+| 1 | vanna_protocol_info | ✅ built + live-verified (config/assets/integrations, all 13 registered assets) |
 | 1 | vanna_oracle | ✅ built + live-verified (price/prices); Kamino-receipt pricing correctly deferred to vanna_farm_overview |
 | 1 | vanna_earn_market / vanna_earn_position | ✅ built + live-verified (pool_stats, deposited_balance); `earned_interest` stubbed pending `vanna_history` |
 | 1 | vanna_account (read) | ✅ built + live-verified (resolve/get/health) against a real on-chain position with real collateral+debt |
@@ -137,13 +137,15 @@ that finishes the work, not after.
 | 3 | vanna_swap (write) | ✅ `margin_swap` (via `margin_execute` CPI forwarding) / `wallet_swap` (Jupiter's own tx rebuilt with a fresh blockhash) built + live-submitted; known external Surfpool-fork DEX-pool drift documented, tests retry-tolerant |
 | 4 | vanna_sign (write) | Removed by decision (D3) — the wallet signs; `vanna_sign` is `tx_status` only and the phase-4 actions return `invalid_input` |
 | 4 | pyth-pull adapter | Not in scope (D4) — the keeper prices the fork; `pyth-pull` = no refresh; Hermes settings removed |
-| 4 | cluster + IDL pin | ✅ target is the hosted fork (D1); IDL SHA-256 pinned, MCP refuses to start on mismatch; program version = layer `ecdb9b6` (D8). ⚠ the fork is currently empty and must be redeployed + bootstrapped |
+| 4 | cluster + IDL pin | ✅ target is the hosted fork (D1); IDL SHA-256 pinned, MCP refuses to start on mismatch; program version = layer `ecdb9b6` (D8). Live-confirmed 2026-09-29: the fork runs it (340-byte `AssetConfig`s, D8) |
 | 4 | lend/borrow asset policy | ✅ SOL/USDC/USDT only (D2); JitoSOL/JupSOL rejected with `asset_not_offered` on supply/borrow paths |
 | 4 | hosting layer | ✅ offline — `auth.py`, `identity.py`, `scopes.py`, `rate_limit.py`, `agent_firewall.py`, `main.py` (`ScopedMCPServer`, `/healthz`, discovery routes), Docker + Cloud Build; 27 tests in `tests/test_hosting.py`. Deploy waits on O2/O3 |
 | 4 | read cache | ✅ offline — `read_cache.py` (30 s TTL, per-key lock, error results never cached) on protocol config/assets/integrations, oracle prices, pool stats, farm markets; `tests/test_read_cache.py` |
-| 4 | keeper price refresh | ✅ offline — `PRICE_REFRESH_SOURCE=keeper` (default) calls the app's `POST /api/prices/refresh`, 60 s throttle, shared in-flight call; `tests/test_price_keeper.py`. Live check pending (see the D4 knock-on in D8) |
+| 4 | keeper price refresh | ✅ offline — `PRICE_REFRESH_SOURCE=keeper` (default) calls the app's `POST /api/prices/refresh`, 60 s throttle, shared in-flight call; `tests/test_price_keeper.py`. Live-verified 2026-09-29 (with the Pyth-only supplement, D4). (see the D4 knock-on in D8) |
 | — | vanna_fork (dev-only) | ✅ `faucet` built, gated behind `ENABLE_FORK_TOOLS` |
 | — | oracle-refresh (`cheatcode` source) | ✅ the MCP's own `surfnet_setAccount` writer (fabricates Pyth accounts, restamps Scope); now opt-in via `PRICE_REFRESH_SOURCE=cheatcode`, never alongside the keeper |
+| — | Token-2022 collateral (NVDAx/TSLAx) | ✅ live-verified 2026-09-29 (`tests/test_token2022_collateral.py`) |
+| — | Pyth-only supplement + registry cache | ✅ live-verified 2026-09-29 (D4; `AssetRegistry` cache and `getProgramAccounts` skip) |
 | — | port to layer `ecdb9b6` | ✅ offline — new `AssetConfig`/`OracleConfig` layout, `pricing.py` oracle facade, `remaining_accounts.py` health tail without price accounts, whole-account `liquidation_snapshot`, `max_borrow`/`max_withdraw`, regenerated IDL (sha `47cd9ced…`). Owner confirmed this is the version the fork runs (D8). ⚠ **not verified live** — the fork was down (HTTP 502) after the port and came back empty |
 
 **Second bug found and fixed (2026-09-28, live end-to-end testing):**
@@ -174,14 +176,15 @@ calling a contract wrapper done, not just against the IDL's summarized name
 list — a name list doesn't show which accounts silently share a token
 program.
 
-**All 14 dispatchers (+1 dev-only) are now built and live-tested end-to-end
-(2026-09-29).** Every action across every dispatcher has been built,
-simulated, and (for writes) actually signed and submitted on the fork at
-least once as part of test coverage. Full suite: 128 tests passing
-(`./.venv/Scripts/python.exe -m pytest tests/ -q`). That run was against the
-program *before* the `ecdb9b6` port; since the port only the offline tests
-have run (83 pass), and the live suite is the first step once the fork is up
-(`DECISIONS.md` "Gate for Copilot building").
+**All 14 dispatchers (+1 dev-only) are built and live-tested end-to-end on the ported program
+(2026-09-29, layer `ecdb9b6`).** Every action has been built, simulated and, for writes, signed and submitted
+on the fork. Full suite against the re-bootstrapped fork: **204 passed, 0 failed, 0 skipped**
+(`./.venv/Scripts/python.exe -m pytest tests/ -q`). Live findings fixed on the way: `max_borrow`'s pre-check
+passed an amount of `"0"` (rejected by the amount validator; now probes with one raw unit); Earn reads on
+collateral-only assets returned a raw `account_not_found` (now `asset_not_offered`, D2); the JupUSD Pyth feed
+went stale because the keeper doesn't write it (supplement, D4); `getProgramAccounts` is unsupported on the
+fork and cost ~8 s per registry load (cached, skipped after the first failure); `tests/_live_helpers.py`
+now sends through raw JSON-RPC because solana-py panics parsing the fork's preflight-failure body.
 
 **`deposit_and_borrow`/`close_position` composites — bugs found and fixed
 during live end-to-end testing (2026-09-29):**

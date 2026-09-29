@@ -27,11 +27,10 @@ live check; the entry says what depends on it).
   are the defaults (`vanna_core/config.py`, `.env.example`). The server refuses to start when
   `idl/vanna_lending.json` doesn't hash to `PINNED_IDL_SHA256` (`mcp_server/dependencies.py`).
 - The program version is layer HEAD `ecdb9b6` (**D8**).
-- **Live state, re-probed at the end of 2026-09-29** (`handoff/program_probe.py`): the fork RPC
-  answers again, but it was restarted with empty state. The program account, `ProtocolConfig` and
-  every `AssetConfig`/`Reserve` are missing, and the app's own `/api/pools` reports every pool
-  `initialised: false`. The decision stands, but the fork must be redeployed and bootstrapped
-  before anything can run on it (see the gate below).
+- **Live state (2026-09-29, re-bootstrapped):** the fork was restarted empty earlier that day and has since
+  been redeployed and bootstrapped. `handoff/program_probe.py` shows the program, `ProtocolConfig` (237 B),
+  and 13 `AssetConfig`s (340 B each); only SOL/USDC/USDT have a `Reserve`. `getProgramAccounts` returns
+  "Internal error" on this fork, so the registry falls back to the known-mint list (see D2).
 - The app host is `https://test.solana.vanna.finance` (`vanna-credit-backend` on Cloud Run).
   `devnet.solana.vanna.finance` serves the old stack. `PRICE_KEEPER_URL` now defaults to the
   former; it previously pointed at the old stack.
@@ -55,9 +54,15 @@ live check; the entry says what depends on it).
   - Reads expose `lend_borrow_offered` per asset (`vanna_protocol_info.assets`, `vanna_wallet`).
 - Asset parameters always come from the on-chain `AssetConfig`. The static table in `assets.py` is
   display data only.
-- `EXTRA_ASSET_SYMBOLS` (JupUSD, NVDAx, TSLAx, from the layer bootstrap) is kept until the live
-  registry read shows whether the fork registers them. An unregistered symbol is simply never
-  discovered.
+- **Live asset set (2026-09-29, `handoff/live_registry.py`):** 13 registered assets, `asset_index` sequential
+  in registration order (USDC 0, USDT 1, SOL 2, JitoSOL 3, JupSOL 4, JupUSD 5, NVDAx 6, TSLAx 7, kUSDC 8,
+  kSOL 9, kUSDT 10, kJitoSOL 11, kJupSOL 12).
+  - SOL/USDC/USDT: Reserve + borrow enabled. Every other asset: collateral only, `borrow_enabled = false`,
+    no Reserve. So Earn reads (`pool_stats`, `deposited_balance`) also return `asset_not_offered` for them.
+  - All five Kamino receipts are registered (not just USDC/SOL as the layer bootstrap suggests).
+  - **JupUSD, NVDAx and TSLAx** exist on-chain as collateral-only assets, but the app's own token list
+    does not have them yet: whether they are product scope is open (**O5**). The MCP handles them
+    generically; NVDAx/TSLAx are Token-2022 and verified live (`tests/test_token2022_collateral.py`).
 
 ### D3 — Signing and execution (Team 2026-09-29) — Settled
 
@@ -92,6 +97,14 @@ live check; the entry says what depends on it).
     program version the keeper doesn't cover, and must never run alongside the keeper.
   - `ORACLE_MODE=pyth-pull`: no refresh at all (for a cluster with external keepers). No Hermes
     adapter is built or planned.
+  - **Pyth-only supplement (found live 2026-09-29).** The app keeper writes only the SOL, USDC, USDT and
+    JupSOL-rate feeds. **JupUSD** is priced by Pyth alone (no Scope chain), its feed goes stale after
+    180 s, and the keeper doesn't touch it, so any borrow or in-debt withdrawal on an account holding
+    JupUSD would fail closed. After the keeper call the MCP therefore refreshes, by cheatcode, exactly the
+    Pyth accounts of Pyth-only assets that the keeper did not report writing (60 s throttle of its own).
+    It never writes an account the keeper wrote, so there is still one writer per account. Every other
+    asset has a Scope chain, and Scope on the fork is fresh by itself (Surfpool clones Kamino's live
+    account; ages of ~90 s observed), so no Scope restamp is needed with the keeper source.
   - A failed refresh is logged and the build continues. A still-stale price then fails closed in
     simulation (`stale_price`); fabricated prices are never returned.
   - The `PYTH_HERMES_URL` and `PYTH_API_KEY` settings were removed.
@@ -146,15 +159,10 @@ live check; the entry says what depends on it).
     rate.
   - The health tail carries no price accounts; liquidation is whole-account.
   - The pre-port code, which targeted the older program, was never committed. It isn't needed now.
-- **Still to confirm live**, once the fork is bootstrapped (gate step 0):
-  - `handoff/live_registry.py` decodes 340-byte `AssetConfig`s. If the accounts are 258 bytes, the
-    fork was bootstrapped with the older program, and this decision must be raised with the team
-    again.
-  - **Knock-on for D4:** the app's keeper writes the Pyth `PriceUpdateV2` accounts, while the
-    `ecdb9b6` oracle reads Scope first and needs FRESH, TWAP_OK and CONFIDENCE_OK for a borrow.
-    Check live that a keeper refresh lets `borrow` simulate (`tests/test_oracle_refresh.py`). If it
-    doesn't, set `PRICE_REFRESH_SOURCE=cheatcode`, which also restamps Scope, and record the change
-    here.
+- **Confirmed live (2026-09-29):** `handoff/live_registry.py` decodes 340-byte `AssetConfig`s with the
+  new layout, and the full live suite passes on the ported code (204 tests). The knock-on for D4 is
+  resolved: Scope is fresh on the fork, so the keeper's Pyth writes are enough for every asset except
+  the Pyth-only JupUSD, which the supplement covers (D4).
 
 ---
 
@@ -175,6 +183,15 @@ live check; the entry says what depends on it).
 - Still needed: the GCP project, region, service name and runtime service account (the app's own
   service is `vanna-credit-solana-test`).
 
+### O5 — Are JupUSD, NVDAx and TSLAx product scope? — Open, not blocking
+
+- They are registered on the fork as collateral-only assets (layer bootstrap), but the app's token list
+  (`vanna-credit-backend`) and the team's asset answer (D2) name only SOL/USDC/USDT/JitoSOL/JupSOL.
+- The MCP already supports them (deposit, valuation, withdraw; NVDAx/TSLAx are Token-2022). Swaps and
+  the Kamino farm for them are untested and not offered by the app.
+- Needed from the team: expose them to the Copilot, or filter them out (a one-line allowlist in
+  `vanna_core/assets.py`).
+
 ### O4 — Per-user rate limiting behind the Copilot — Open, not blocking
 
 - The rate-limit bucket is keyed by the token's `sub`, then its client id, then the client IP.
@@ -188,20 +205,16 @@ live check; the entry says what depends on it).
 
 The Copilot (in `vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B) can start once:
 
-0. **The fork has the program again.** The team redeploys `H37YVBG3…` on the hosted fork and runs the
-   bootstrap: protocol, assets, reserves, integrations. `handoff/program_probe.py` must show the
-   program, `ProtocolConfig` and the SOL/USDC/USDT `AssetConfig` and `Reserve` accounts.
-1. **The live checks pass on `ecdb9b6` (D8).**
-   - The live registry read decodes 340-byte `AssetConfig`s.
-   - The full live test suite passes, with the tests that still assert the pre-port asset set
-     updated first.
-
-   This is the only hard gate: every Copilot tool call depends on the MCP decoding real accounts.
+0. **The fork has the program.** ✅ Done 2026-09-29 (`handoff/program_probe.py`).
+1. **The live checks pass on `ecdb9b6` (D8).** ✅ Done 2026-09-29: the live registry decodes 340-byte
+   `AssetConfig`s and the full live suite passes (204 tests, no skips).
 2. **The live smoke checks pass:**
-   - `handoff/rpc_probe.py`;
-   - the keeper price refresh from the MCP (`PRICE_KEEPER_URL` set to the app);
-   - one build and simulation per write dispatcher, including `max_borrow`/`max_withdraw`;
-   - one wallet-signed round trip through the app (sign → broadcast → `vanna_sign.tx_status`).
+   - ✅ the keeper price refresh from the MCP (`handoff/price_check.py`: every asset fresh after it);
+   - ✅ one build and simulation per write dispatcher, including `max_borrow`/`max_withdraw` (live suite);
+   - ⬜ one wallet-signed round trip through the app (sign → broadcast → `vanna_sign.tx_status`). This is
+     app-side (the wallet flow lives in `vanna-credit-backend`), so it is the first Copilot task.
+
+**The MCP is ready for the Copilot.** The remaining gate item is app-side.
 
 Work that can start in parallel, before the gate:
 

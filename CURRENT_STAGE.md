@@ -7,25 +7,21 @@ for the phase-by-phase history and every bug found along the way, and
 
 ## Where things stand (2026-09-29)
 
-- All 14 dispatcher tools are built. Before the layer's 2026-09-29 program
-  update they were live-tested against the hosted fork: real accounts
-  created, real transactions signed and submitted with a disposable keypair,
-  128 tests.
-- The code has since been **ported to layer HEAD `ecdb9b6`** (new
-  `AssetConfig`/`OracleConfig`, Scope-first pricing, no price accounts on
-  borrow/withdraw/`margin_execute`, whole-account liquidation). The port is
-  **verified offline only**. The fork returned HTTP 502 for hours after the
-  port; when it came back it had been restarted **empty**, with no Vanna
-  program, `ProtocolConfig` or assets (`handoff/program_probe.py`). So no live
-  test has run on the port, and none can until the team redeploys and
-  bootstraps.
-- The owner confirmed the fork will run `ecdb9b6` (`DECISIONS.md` D8), so
-  the port stays; the backend's committed IDL lags and isn't a layout
-  reference.
-- The team's 2026-09-29 decisions are applied in code: wallet signing only,
-  keeper pricing, lend/borrow asset policy. The Stellar hosting layer is
-  ported (auth, write-scope gating, rate limit, read cache, Docker).
-- **Offline tests: 83 pass**, listed under "Testing" below.
+- All 14 dispatcher tools are built and **verified live on the ported program** (layer HEAD `ecdb9b6`,
+  `DECISIONS.md` D8): 204 live + offline tests pass, no skips. Real accounts are created and real
+  transactions signed and submitted with disposable keypairs on the hosted fork.
+- The fork was redeployed and bootstrapped: 13 registered assets (SOL/USDC/USDT lend + borrow; JitoSOL,
+  JupSOL, JupUSD, NVDAx, TSLAx collateral-only; 5 Kamino receipts). Token-2022 collateral (NVDAx/TSLAx)
+  works live. `getProgramAccounts` is unsupported on the fork, so the registry uses the known-mint fallback
+  (cached 60 s).
+- Pricing works live: Scope is fresh on the fork by itself; the app keeper refreshes the Pyth feeds it
+  knows, and a small supplement refreshes the Pyth-only JupUSD feed the keeper doesn't (D4).
+- The team's 2026-09-29 decisions are applied in code: wallet signing only, keeper pricing, lend/borrow
+  asset policy. The Stellar hosting layer is ported (auth, write-scope gating, rate limit, read cache, Docker).
+- **Open:** O5 (are JupUSD/NVDAx/TSLAx product scope?), O2/O3 (hosted-deploy login provider and project),
+  O4 (per-user rate limits). None blocks the Copilot.
+- **Next: the Copilot** (`vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B). Its first task is the
+  one remaining gate item: a wallet-signed round trip through the app.
 
 ## What's covered
 
@@ -74,6 +70,8 @@ building, so a stale price doesn't need a separate manual step.
   with concurrent callers sharing one call.
 - `PRICE_REFRESH_SOURCE=cheatcode`: the MCP's own `surfnet_setAccount` writer,
   opt-in and never alongside the keeper.
+- The app keeper does not write the JupUSD feed (Pyth-only asset), so after it the MCP refreshes just the
+  Pyth accounts of Pyth-only assets the keeper did not write (`_supplement_uncovered`, own 60 s throttle).
 - A failed refresh is logged and the build continues; a still-stale price
   fails closed in simulation.
 - `ORACLE_MODE=pyth-pull` means no refresh. There is no Hermes adapter.
@@ -141,13 +139,10 @@ Summary only; the register with sources and code consequences is `DECISIONS.md`.
 
 Two groups of tests:
 
-- **Offline (83, no network, seconds):** `test_foundation.py`,
-  `test_pricing.py`, `test_health_accounts.py`, `test_hosting.py`,
-  `test_price_keeper.py`, `test_read_cache.py`.
-- **Live:** every other file hits the hosted Surfpool fork over the network,
-  with no mocks. These haven't run since the `ecdb9b6` port because the fork
-  was down. Several still assert the pre-port asset set and must be updated
-  from the first live registry read (see `HANDOFF.md`).
+- **Offline (87, no network, seconds):** `test_foundation.py`, `test_pricing.py`,
+  `test_health_accounts.py`, `test_hosting.py`, `test_price_keeper.py`, `test_read_cache.py`.
+- **Live:** every other file hits the hosted Surfpool fork over the network, with no mocks.
+  Full suite on 2026-09-29: **204 passed, 0 failed, 0 skipped** (~7 min).
 
 In the live tests, read-dispatcher tests query real on-chain accounts; write-dispatcher
 tests build and simulate real v0 transactions; the deepest ones (composites,
@@ -182,7 +177,7 @@ On Linux/macOS, drop the `./.venv/Scripts/python.exe` prefix for
 | `test_read_cache.py` | Offline: read cache TTL, per-key lock, error results never cached |
 | `test_protocol_info_dispatcher.py` | `vanna_protocol_info` |
 | `test_oracle_dispatcher.py` | `vanna_oracle` (incl. Kamino-receipt pricing) |
-| `test_oracle_refresh.py` | Fork price refresh, incl. the borrow-auto-refresh proof |
+| `test_oracle_refresh.py` | Fork price refresh, incl. the borrow-auto-refresh proof and "every asset fresh after the default refresh" (JupUSD) |
 | `test_margin_max_actions.py` | `max_borrow` / `max_withdraw` accepted at the max, refused above |
 | `test_earn_dispatchers.py` | `vanna_earn_market`, `vanna_earn_position`, `vanna_earn_write` |
 | `test_account_dispatcher.py` | `vanna_account` (all 5 actions) |
@@ -190,6 +185,7 @@ On Linux/macOS, drop the `./.venv/Scripts/python.exe` prefix for
 | `test_margin_trade_dispatcher.py` | `vanna_margin_trade`'s single-step actions, input validation, fail-closed edge cases |
 | `test_margin_composites.py` | `deposit_and_borrow` and `close_position` — full atomic and multi-step live flows on a dedicated disposable position |
 | `test_wallet_dispatcher.py` | `vanna_wallet` |
+| `test_token2022_collateral.py` | Token-2022 xStocks (NVDAx, TSLAx): fund by cheatcode, deposit, Scope valuation, withdraw |
 | `test_history_dispatcher.py` | `vanna_history` |
 | `test_farm_dispatchers.py` | `vanna_farm_overview`, `vanna_farm_kamino` |
 | `test_swap_dispatcher.py` | `vanna_swap` (quote, can_swap, margin_swap, wallet_swap) |
