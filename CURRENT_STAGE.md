@@ -20,8 +20,10 @@ for the phase-by-phase history and every bug found along the way, and
   asset policy. The Stellar hosting layer is ported (auth, write-scope gating, rate limit, read cache, Docker).
 - **Open:** O5 (are JupUSD/NVDAx/TSLAx product scope?), O2/O3 (hosted-deploy login provider and project),
   O4 (per-user rate limits). None blocks the Copilot.
-- **Next: the Copilot** (`vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B). Its first task is the
-  one remaining gate item: a wallet-signed round trip through the app.
+- **Next: the Copilot** (`vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B). The kickoff plan is
+  `BUILD_PLAN.md` "Copilot workstream"; the questions for the team, with defaults, are `TEAM_QUESTIONS.md`.
+  The backend's `lib/solana` still targets the old program, so the Copilot reads through the MCP (O6).
+  The one remaining gate item is a wallet-signed round trip through the app.
 
 ## What's covered
 

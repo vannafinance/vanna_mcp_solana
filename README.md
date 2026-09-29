@@ -15,6 +15,8 @@ the app broadcasts; there is no Sign Service (`DECISIONS.md` D3).
 - `DECISIONS.md` — the team's decisions (cluster, assets, signing, pricing,
   liquidation, swap/farm), what each changed in the code, the open items, and
   the gate for starting the Copilot. **Read this first.**
+- `TEAM_QUESTIONS.md` — the open questions for the team (options, recommendation, default), and what the
+  Copilot needs from the repo owner.
 - `CURRENT_STAGE.md` — what's built, what's deliberately out of scope, and
   how to test it.
 - `HANDOFF.md` — the running session handoff and next steps.

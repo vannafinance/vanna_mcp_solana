@@ -32,7 +32,10 @@ cd /d/Projects/Vanna_MCP_Solana
 
 ## Next: the Copilot
 `COPILOT_ARCHITECTURE.md` Part B is the plan (port of the Stellar Copilot into `vanna-credit-backend`; the MCP is its
-backend). Work that needs nothing more from the MCP: the direct lane, router, firewall vocabulary and UI against the
+backend). **Start with `BUILD_PLAN.md` "Copilot workstream"** (steps 0-6, sizes, what to port from where) and send
+`TEAM_QUESTIONS.md` to the team (Q1-Q8 with options, recommendations and defaults). Two facts shape step 0: the backend's
+`lib/solana` still targets the old program, so the Copilot reads through the MCP (O6); and the owner must approve writing
+in `vanna-credit-backend` (ideally on a new branch). Work that needs nothing more from the MCP: the direct lane, router, firewall vocabulary and UI against the
 frozen tool surface (`TOOLS_CATALOGUE.md` §3), and the app-side execution adapter reusing the existing wallet flow
 (Part B.9). The Copilot can talk to a locally run MCP with `AUTH_ENABLED=false`.
 

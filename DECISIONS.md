@@ -201,6 +201,35 @@ live check; the entry says what depends on it).
 
 ---
 
+### O6 — The backend's `lib/solana` targets the old program — Open, decides the Copilot's read path
+
+- Found 2026-09-29: the app's IDL, `AssetConfig` decode, margin snapshot, borrow/withdraw and
+  `margin_execute` builders, and its five-asset token list all assume the pre-`ecdb9b6` program. So
+  `fetchMarginSnapshot`, which `COPILOT_ARCHITECTURE.md` B.1/B.5 uses for the Copilot's position answers,
+  cannot decode the current fork.
+- **Working default:** the Copilot reads through the MCP (verified live on the current program). Porting
+  `lib/solana` for the app's own pages is a separate item and needs an owner.
+- Full question, options and recommendation: `TEAM_QUESTIONS.md` Q1.
+
+### O7 — Copilot infrastructure: Vertex AI, Firestore, secrets — Open, blocks only a hosted Copilot
+
+- Needs a GCP project with Vertex AI access, the Gemini model choice, a Firestore database and the session
+  secrets. **Default:** local encrypted journal and developer credentials for development. `TEAM_QUESTIONS.md` Q2.
+
+### O8 — Price keeper authentication and JupUSD — Open
+
+- `/api/prices/refresh` and `/api/faucet` are unauthenticated, and the keeper does not write JupUSD's Pyth-only
+  feed (the MCP's supplement covers it today, D4). `TEAM_QUESTIONS.md` Q5.
+
+### O9 — Launch cluster and timeline — Open, not blocking
+
+- Undecided; on a real cluster the keeper, cheatcode writer and faucet go away and a real oracle plan is
+  needed (D4). `TEAM_QUESTIONS.md` Q8.
+
+The team-facing write-up of O2–O9, with options, recommendations and defaults, is `TEAM_QUESTIONS.md`.
+
+---
+
 ## Gate for Copilot building
 
 The Copilot (in `vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B) can start once:
@@ -214,7 +243,10 @@ The Copilot (in `vanna-credit-backend`, `COPILOT_ARCHITECTURE.md` Part B) can st
    - ⬜ one wallet-signed round trip through the app (sign → broadcast → `vanna_sign.tx_status`). This is
      app-side (the wallet flow lives in `vanna-credit-backend`), so it is the first Copilot task.
 
-**The MCP is ready for the Copilot.** The remaining gate item is app-side.
+**The MCP is ready for the Copilot.** The remaining gate item is app-side. Two facts shape the Copilot's
+first steps: it reads through the MCP, not `lib/solana` (O6), and it needs the owner's permission to write in
+`vanna-credit-backend` (`TEAM_QUESTIONS.md`, "Needed from the repo owner"). Kickoff plan: `BUILD_PLAN.md`
+"Copilot workstream".
 
 Work that can start in parallel, before the gate:
 

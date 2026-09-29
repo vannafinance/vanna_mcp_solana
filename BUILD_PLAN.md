@@ -229,3 +229,60 @@ message over Solana's 1232-byte packet limit before it reaches simulation —
 previously this surfaced as an opaque `internal_error`. A temporary-ALT
 fallback (the backend's own solution) is not built here; a caller retries
 with a smaller amount or a fresh quote instead.
+
+
+---
+
+## Copilot workstream (starts here)
+
+The MCP is finished; the Copilot is a port of the Stellar Copilot into `vanna-credit-backend`
+(`COPILOT_ARCHITECTURE.md` Part B). Nothing of it exists yet: the backend has no Copilot code, no
+Gemini SDK, no MCP client and no conversation store. Sizing the source (`mercury-stellar-backend`):
+`lib/copilot` is **135 files and about 49,000 lines**, with 16 API routes and a large UI. So this is a
+staged port that starts with a thin vertical slice, not a copy. Open questions and the defaults used until
+they are answered: `TEAM_QUESTIONS.md`. Sizes below: S = a day or less, M = a few days, L = about a week or more, XL = several weeks.
+
+### Step 0 - Preconditions (no code)
+
+- The repo owner approves writing in `vanna-credit-backend`, ideally on a new `copilot` branch
+  (`TEAM_QUESTIONS.md`, "Needed from the repo owner").
+- The Copilot reads through the MCP, not the backend's `lib/solana`, which still targets the old program (O6, Q1).
+- A locally run MCP for development: `MCP_TRANSPORT=streamable-http AUTH_ENABLED=false python -m mcp_server.main`.
+  The Copilot needs Vertex AI credentials in the developer's environment (O7, Q2); Firestore is not needed yet.
+
+### Milestone A - read-only Copilot (`COPILOT_ARCHITECTURE.md` B.14 phase 1)
+
+| Step | What | Source to port (lines) | Size |
+|---|---|---|---|
+| 1 | Scaffold in `vanna-credit-backend`: `@google/genai`, an ed25519 verify library, `lib/copilot/config.ts`, env docs, `GET /api/copilot` health route | `config.ts` (298) | S |
+| 2 | **MCP client**: Streamable HTTP (POST, SSE `message` frames, `mcp-session-id`), retry, error classes. Replace the Stellar tool map with our 14 dispatchers and their error codes (`asset_not_offered`, `price_unavailable`, `stale_price`, `transaction_too_large`, `insufficient_scope`, `tool_circuit_open`). Drop Stellar's smart-account and Privy assertion parts. Contract test: call every read action against the local MCP | `mcp-client.ts` (989), `mcp-payload.ts` (29) | M |
+| 3 | **Identity**: Sign-In-With-Solana route (signed challenge, sealed cookie), request-user | `wallet-session.ts` (146), `request-user.ts` (213), `user-auth.ts` (460, trimmed) | S |
+| 4 | **Direct lane, reads only**: entry lane, domain firewall with a vocabulary taken from `vanna_protocol_info.assets` (refuse liquidation execution, admin, unknown mints, arbitrary programs), Vertex function-calling loop restricted to the MCP read tools, answer schema, read handlers for position / pools / prices / earn / farm / history | `entry-lane.ts` (156), `domain-classifier.ts` (111), `domain-firewall.ts` (477), `vertex.ts` (1,787) and `vertex-tools.ts` (889) trimmed, `handle-read.ts` (2,797) trimmed, `answer-schema.ts` | L |
+| 5 | **Conversations and UI**: conversation store (local encrypted journal now, Firestore later) and the `/copilot` page (workspace, chat message, answer view) | `session-store.ts` (397), `components/copilot/*` | M |
+
+**Milestone A is done when** a connected wallet can ask the Copilot about its position, the pools, prices, Earn
+and farm data and get correct answers that match `vanna_account.health` and `vanna_earn_market.pool_stats`,
+and liquidation, admin and unknown-asset requests are refused. Tested with contract tests against the local
+MCP, and a scripted conversation set.
+
+### Milestone B - writes (`B.14` phase 2)
+
+| Step | What | Size |
+|---|---|---|
+| 6a | Plan IR, approval card and preview (the MCP envelope's `preview` before/after health factor). The plan is frozen with a hash; the approval expires after 5 minutes | M |
+| 6b | **Execution adapter** in the app, reusing the existing wallet flow: the wallet signs the MCP's unsigned v0 transaction (`TxSigner.signTransaction`), the app broadcasts on `getConnection()` and confirms with `confirmSignatureHttp`, then `vanna_sign.tx_status` reads the receipt. **This first round trip is the last Copilot gate item** (`DECISIONS.md`) | M |
+| 6c | Workflow journal and routes (propose, approve, advance, submit, confirm, recheck), setup vs action rounds, stale checks, `expired` handling | L |
+| 6d | First writes end to end on the fork: `supply`/`redeem`, `deposit`, `withdraw`, `borrow`, `repay`; then `deposit_and_borrow` and `close_position` | M |
+
+### Milestone C - strategies and hardening (`B.14` phase 3 and deploy)
+
+- Swaps and the Kamino farm through the investigation and strategy lane (`investigation/*`, about 50 files in the
+  source), the page assistant, telemetry, and the hosted deploy once O2, O3 and O7 are answered. Size: XL.
+- Not ported, per `B.10`: the LP farm and Aquarius liquidity, the smart-account registry, Privy and auto-sign.
+  Stellar features with no Solana plan yet (guardian, standing orders, auto-approve) stay out of v1 unless asked.
+
+### Where the Copilot's tests come from
+
+Contract tests call the real MCP tools (as `tests/` here does against the fork); execution tests use a
+keypair signer like the backend's `scripts/e2e-fork.ts` and `scripts/e2e-exec.ts`; every step updates the
+docs it changes (`COPILOT_ARCHITECTURE.md`, `DECISIONS.md`, this plan).
