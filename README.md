@@ -8,21 +8,12 @@ single-program, no-registry protocol.
 **The server never signs or broadcasts anything.** Every write dispatcher
 returns an unsigned schema-v1 transaction envelope (`vanna_core/envelope.py`)
 for the caller's own wallet to sign. The connected wallet signs, pays fees and
-the app broadcasts; there is no Sign Service (`DECISIONS.md` D3).
+the app broadcasts; there is no Sign Service.
 
 ## Docs
 
-- `DECISIONS.md` — the team's decisions (cluster, assets, signing, pricing,
-  liquidation, swap/farm), what each changed in the code, the open items, and
-  the gate for starting the Copilot. **Read this first.**
-- `TEAM_QUESTIONS.md` — the open questions for the team (options, recommendation, default), and what the
-  Copilot needs from the repo owner.
-- `CURRENT_STAGE.md` — what's built, what's deliberately out of scope, and
-  how to test it.
-- `HANDOFF.md` — the running session handoff and next steps.
 - `TOOLS_CATALOGUE.md` — the frozen v1 tool surface, envelope schema, health
   and interest rules.
-- `BUILD_PLAN.md` — the execution plan and status tracker.
 - `COPILOT_ARCHITECTURE.md` — how the Copilot inside `vanna-credit-backend`
   uses this server.
 
@@ -65,7 +56,7 @@ mcp_server/                    # MCP transport + dispatcher registration
 
 idl/vanna_lending.json         # instruction IDL regenerated from vanna-credit-layer ecdb9b6 (pinned SHA-256, see below)
 Dockerfile, cloudbuild.mcp.yaml # container + Cloud Build for the hosted MCP
-tests/                          # see CURRENT_STAGE.md for coverage and how to run
+tests/                          # see the Testing section below
 ```
 
 ## Why this isn't built on anchorpy
@@ -113,14 +104,16 @@ pytest tests/ -v    # full suite; most files hit the live fork
 pytest tests/test_foundation.py tests/test_pricing.py tests/test_health_accounts.py tests/test_hosting.py tests/test_price_keeper.py tests/test_read_cache.py -q   # offline only
 ```
 
-See `CURRENT_STAGE.md` for the full test-file map, fixture notes, and known
-flakiness.
+Live tests (one file per dispatcher, plus `test_margin_composites.py`, `test_token2022_collateral.py`
+and `test_oracle_refresh.py`) create real accounts on the fork with disposable keypairs; the MCP itself
+never signs, only `tests/_live_helpers.py` does. `tests/conftest.py`'s `live_margin_position` is a shared,
+session-scoped position: never drain it in a new test. Jupiter-route tests may skip when the fork's cloned
+DEX pools drift from mainnet.
 
 ## Keeping the IDL in sync
 
 `idl/vanna_lending.json` is regenerated from the `vanna-credit-layer` program
-source at `ecdb9b6` (`handoff/assemble_idl.py`), because the backend's copy
-still describes the older program. The server refuses to start unless the
+source at `ecdb9b6` (`cargo test -p vanna_lending --features idl-build`, merging the emitted
+program/event/type sections), because the backend's copy still describes the older program. The server refuses to start unless the
 file hashes to `PINNED_IDL_SHA256` (`vanna_core/config.py`). When the program
 changes: regenerate, verify against the deployed program, then update the pin.
-The owner confirmed the fork runs this version (`DECISIONS.md` D8).
