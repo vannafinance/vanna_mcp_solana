@@ -15,7 +15,7 @@ borsh-construct==0.1.0
 
 # MCP framework (current major; NOT the legacy FastMCP 1.x API — see
 # mcp_server/main.py, which uses mcp.server.mcpserver.MCPServer)
-mcp>=2.2.0
+mcp>=2.2.0,<3  # 2.x MCPServer API; exact tested versions pinned in constraints.txt
 
 # Data validation & settings
 pydantic>=2.7.0

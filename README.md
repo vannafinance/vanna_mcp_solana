@@ -97,12 +97,35 @@ server instead (`POST /mcp`, plus `/healthz`). For a hosted deployment set
 (and `FIRST_PARTY_CLIENT_IDS` for the Copilot); callers without write scope
 only see and use read actions. The `Dockerfile` runs exactly this.
 
+## Deploying
+
+- **Reproducible build:** the `Dockerfile` installs `requirements.txt` under `constraints.txt`, the exact
+  package set the image was built and tested with. To upgrade a dependency, change it there, rebuild, and
+  rerun the live suite plus the container test below.
+- **Cloud Run:** `cloudbuild.mcp.yaml` builds, pushes and deploys (project, repository and service names are
+  placeholders). MCP sessions (`mcp-session-id`) live in instance memory, so the deploy sets
+  `--session-affinity` and `--min-instances=1`; a request that still reaches another instance gets 404 and
+  the client re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
+  `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
+  refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set.
+- **Before a deploy, test the image itself:**
+
+  ```bash
+  docker build -t vanna-mcp-solana:local .
+  docker run -d --name vmcp -p 18080:8080 -e PORT=8080 -e AUTH_ENABLED=false vanna-mcp-solana:local
+  MCP_E2E_URL=http://127.0.0.1:18080 pytest tests/test_http_e2e.py -q
+  ```
+
 ## Testing
 
 ```bash
 pytest tests/ -v    # full suite; most files hit the live fork
 pytest tests/test_foundation.py tests/test_pricing.py tests/test_health_accounts.py tests/test_hosting.py tests/test_price_keeper.py tests/test_read_cache.py -q   # offline only
 ```
+
+`tests/test_http_e2e.py` starts the real server process and talks raw Streamable HTTP to it, as a Copilot
+client does (initialize, session id, `tools/list`, `tools/call`), cross-checking answers against direct
+on-chain reads; set `MCP_E2E_URL` to run it against a container or a deployed service instead.
 
 Live tests (one file per dispatcher, plus `test_margin_composites.py`, `test_token2022_collateral.py`
 and `test_oracle_refresh.py`) create real accounts on the fork with disposable keypairs; the MCP itself

@@ -5,8 +5,8 @@ Backs `vanna_swap` (TOOLS_CATALOGUE.md §3.11). Verified against
 `adapters/jupiter.rs` for the two allowed selectors and the zero-platform-fee
 requirement.
 
-Only the 5 plain (Pyth-priced) assets are swappable — Kamino receipts have no
-real market and aren't offered here.
+Any plain registered asset is swappable; Kamino receipts have no real market and
+aren't offered here.
 """
 
 from __future__ import annotations

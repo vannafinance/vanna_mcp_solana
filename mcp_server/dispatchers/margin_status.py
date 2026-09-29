@@ -38,9 +38,11 @@ async def vanna_margin_status(
             same check (closed-form headroom, then verified); use these for
             sizing so "max" in chat equals what the write will accept.
             "liquidation_snapshot"
-            — is this account liquidatable, and if so, the 50%-close-factor
-            max repayable per debt position (eligibility read only; no
-            execution path here).
+            — is this account liquidatable (debt > 0, health factor <= 1.10,
+            fresh prices)? Liquidation is whole-account: a liquidator repays
+            every debt in full and receives every collateral balance (no close
+            factor, no bonus); `estimated_reward_usd` is collateral minus debt.
+            Eligibility read only; no execution path here.
         authority: Base58 wallet address (the margin account's owner).
         asset: Required for "can_borrow"/"can_withdraw"/"max_borrow"/"max_withdraw".
         amount: Human-readable amount, required for "can_borrow"/"can_withdraw".

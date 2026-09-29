@@ -20,6 +20,7 @@ Uses mcp>=2.2.0's `MCPServer` (mcp.server.mcpserver), NOT the legacy 1.x
 from __future__ import annotations
 
 import json
+import re
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -85,6 +86,40 @@ def _result_error_code(result: Any) -> str | None:
     return None
 
 
+_PYDANTIC_NOISE = re.compile(r"\s*\[type=[^,\]]+(?:, input_value=(?P<value>.*?))?(?:, input_type=[^\]]+)?\]\s*$")
+
+
+def _condense_validation_error(tool: str, text: str) -> str:
+    """'1 validation error for XArguments / action / Input should be ... [type=..., input_value='y']'
+    -> "Invalid arguments for X: action: Input should be ... (got 'y')"."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and "errors.pydantic.dev" not in ln]
+    parts, field = [], None
+    for line in lines[1:]:
+        match = _PYDANTIC_NOISE.search(line)
+        if match is None:
+            field = line
+            continue
+        message = line[: match.start()]
+        got = match.group("value")
+        parts.append(f"{field}: {message}" + (f" (got {got})" if got else ""))
+    return f"Invalid arguments for {tool}: " + ("; ".join(parts) if parts else lines[0] if lines else text[:200])
+
+
+def _normalize_sdk_error(tool: str, result: Any) -> Any:
+    """Argument-validation and unknown-tool errors are raised by the SDK before a dispatcher runs, as a raw
+    `isError` text. Return them in the same `{"error": "invalid_input", ...}` shape the dispatchers use, so a
+    client (or model) sees one error contract whatever layer rejected the call."""
+    if not getattr(result, "is_error", False) or _result_error_code(result) is not None:
+        return result
+    text = next((getattr(b, "text", "") for b in getattr(result, "content", None) or [] if getattr(b, "text", "")), "")
+    if "validation error" in text:
+        # Kept short: the Copilot client parses only the first 300 characters of an isError result.
+        return _json_result({"error": "invalid_input", "message": _condense_validation_error(tool, text)[:220]})
+    if "Unknown tool" in text:
+        return _json_result({"error": "invalid_input", "message": f"Unknown tool {tool!r}."})
+    return result
+
+
 class ScopedMCPServer(MCPServer):
     """MCPServer that binds the per-request caller identity around every tool
     handler, hides/refuses write actions without write scope, and applies the
@@ -124,7 +159,7 @@ class ScopedMCPServer(MCPServer):
                     "message": f"{name} action={action!r} requires write scope (vanna:write).",
                 })
             try:
-                result = await super()._handle_call_tool(ctx, params)
+                result = _normalize_sdk_error(name, await super()._handle_call_tool(ctx, params))
             except Exception:
                 breaker.record_failure(name)
                 raise

@@ -46,4 +46,9 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}:${_TAG}
       - --region=${_REGION}
       - --platform=managed
+      # MCP sessions (mcp-session-id) live in instance memory. Affinity keeps a client on its instance;
+      # if it still lands elsewhere the server answers 404 and the Copilot client re-handshakes.
+      - --session-affinity
+      - --min-instances=1
+      - --timeout=300
       - --quiet

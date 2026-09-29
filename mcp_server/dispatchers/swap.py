@@ -1,6 +1,6 @@
 """`vanna_swap` — Jupiter swaps, margin-account and wallet (TOOLS_CATALOGUE.md
-§3.11). Only the 5 plain (Pyth-priced) assets are swappable — Kamino
-receipts have no real market. Every write action returns the schema-v1
+§3.11). Plain registered assets are swappable; Kamino receipts are not
+(they have no market - redeem them through `vanna_farm_kamino` instead). Every write action returns the schema-v1
 envelope; this dispatcher never signs or broadcasts anything.
 """
 
