@@ -69,12 +69,59 @@ async def build_with_retry(
 
 async def sign_and_submit(rpc_url: str, envelope: dict, keypair: Keypair, extra_signers: list[Keypair] | None = None) -> str:
     """Sign and submit a schema-v1 write envelope's single transaction with a
-    disposable local keypair, purely to create fixture state for read tests."""
+    disposable local keypair, purely to create fixture state for read tests.
+
+    Sends through raw JSON-RPC (not solana-py's `send_raw_transaction`, which panics while parsing the
+    fork's preflight-failure body), so a real send error surfaces with its logs instead of a parser crash.
+    Transient send errors are retried; the wait-for-confirmation is a status poll."""
+    import httpx
+
     tx_b64 = envelope["transactions"][0]["unsignedTransaction"]
-    raw = base64.b64decode(tx_b64)
-    unsigned = VersionedTransaction.from_bytes(raw)
+    unsigned = VersionedTransaction.from_bytes(base64.b64decode(tx_b64))
     signed = VersionedTransaction(unsigned.message, [keypair, *(extra_signers or [])])
-    async with AsyncClient(rpc_url, commitment=Confirmed) as client:
-        signature = (await client.send_raw_transaction(bytes(signed))).value
-        await client.confirm_transaction(signature, commitment=Confirmed)
-    return str(signature)
+    payload = base64.b64encode(bytes(signed)).decode()
+
+    async def rpc(http: httpx.AsyncClient, method: str, params: list) -> dict:
+        resp = await http.post(rpc_url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        return resp.json()
+
+    async with httpx.AsyncClient(timeout=60.0) as http:
+        signature = None
+        for attempt in range(4):
+            body = await rpc(http, "sendTransaction", [payload, {"encoding": "base64", "preflightCommitment": "confirmed"}])
+            if "result" in body:
+                signature = body["result"]
+                break
+            message = str(body.get("error"))
+            transient = any(m in message.lower() for m in ("blockhash not found", "internal error", "timed out"))
+            if not transient or attempt == 3:
+                raise RuntimeError(f"sendTransaction failed: {message}")
+            await asyncio.sleep(1.5)
+        for _ in range(60):
+            body = await rpc(http, "getSignatureStatuses", [[signature], {"searchTransactionHistory": True}])
+            status = (body.get("result", {}).get("value") or [None])[0]
+            if status is not None:
+                if status.get("err") is not None:
+                    raise RuntimeError(f"transaction {signature} failed on-chain: {status['err']}")
+                if status.get("confirmationStatus") in ("confirmed", "finalized"):
+                    return signature
+            await asyncio.sleep(1.0)
+    raise RuntimeError(f"transaction {signature} was not confirmed within 60s")
+
+
+async def fund_token(rpc_url: str, owner: str, mint: str, amount_raw: int, token_program: str) -> None:
+    """Fork-only: set `owner`'s balance of `mint` via the `surfnet_setTokenAccount` cheatcode (works for
+    classic SPL and Token-2022). Test fixture setup only - the MCP itself never calls this."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.post(
+            rpc_url,
+            json={
+                "jsonrpc": "2.0", "id": 1, "method": "surfnet_setTokenAccount",
+                "params": [owner, mint, {"amount": amount_raw}, token_program],
+            },
+        )
+    body = resp.json()
+    if "error" in body:
+        raise RuntimeError(f"surfnet_setTokenAccount failed: {body['error']}")

@@ -164,6 +164,11 @@ KEEPER_MIN_INTERVAL_SECS = 60.0
 
 _keeper_lock = asyncio.Lock()
 _keeper_last_refresh = 0.0
+# Oracle accounts the app keeper reported writing in its last successful refresh (empty until one happens).
+_keeper_covered_accounts: set[str] = set()
+# The supplement (below) has its own throttle, independent of the keeper's.
+_supplement_lock = asyncio.Lock()
+_supplement_last_refresh = 0.0
 
 
 async def refresh_via_keeper(settings: VannaSettings) -> dict | None:
@@ -190,6 +195,10 @@ async def refresh_via_keeper(settings: VannaSettings) -> dict | None:
             detail = body.get("error") if isinstance(body, dict) else None
             raise ContractCallError(f"price keeper refresh failed (HTTP {resp.status_code}): {detail or resp.text[:200]}")
         _keeper_last_refresh = time.monotonic()
+        prices = body.get("prices")
+        if isinstance(prices, list):
+            _keeper_covered_accounts.clear()
+            _keeper_covered_accounts.update(row["account"] for row in prices if isinstance(row, dict) and row.get("account"))
         return body
 
 
@@ -204,11 +213,48 @@ async def maybe_refresh_prices(client: SolanaClient, settings: VannaSettings) ->
         return None
     try:
         if settings.price_refresh_source == PriceRefreshSource.KEEPER:
-            return await refresh_via_keeper(settings)
+            try:
+                return await refresh_via_keeper(settings)
+            finally:
+                await _supplement_uncovered(client, settings)
         return await DevForkOracleAdapter(client, settings).refresh_all_prices()
     except Exception as exc:  # noqa: BLE001
         logger.warning("dev-fork price refresh failed (continuing - checks will fail closed if stale): %s", exc)
         return None
+
+
+async def _supplement_uncovered(client: SolanaClient, settings: VannaSettings) -> list[dict]:
+    """Refresh the Pyth feeds that only a cheatcode write can keep fresh, next to the keeper.
+
+    The app keeper writes a fixed set of feeds (SOL, USDC, USDT, JupSOL rate). An asset priced
+    by Pyth ALONE (no Scope chain - JupUSD today) whose feed the keeper does not write goes
+    stale after its max age and would fail every borrow / in-debt withdrawal that touches it.
+    This writes exactly those feeds, and never one the keeper reported writing, so the two
+    writers cannot touch the same account. Throttled like the keeper; never raises.
+    """
+    global _supplement_last_refresh
+    if client is None:
+        return []
+    async with _supplement_lock:
+        if time.monotonic() - _supplement_last_refresh < KEEPER_MIN_INTERVAL_SECS:
+            return []
+        try:
+            registry = AssetRegistry(client)
+            await registry.load()
+            needed = {
+                asset.oracle.pyth_price
+                for asset in registry.all()
+                if asset.oracle.uses_pyth and not asset.oracle.uses_scope
+            } - _keeper_covered_accounts
+            if not needed:
+                _supplement_last_refresh = time.monotonic()
+                return []
+            results = await DevForkOracleAdapter(client, settings)._refresh_pyth(registry.all(), only=needed)
+            _supplement_last_refresh = time.monotonic()
+            return results
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pyth-only supplement refresh failed (continuing): %s", exc)
+            return []
 
 
 class DevForkOracleAdapter:
@@ -242,8 +288,10 @@ class DevForkOracleAdapter:
         results.extend(await self._refresh_scope(assets))
         return results
 
-    async def _refresh_pyth(self, assets: list[DiscoveredAsset]) -> list[dict]:
+    async def _refresh_pyth(self, assets: list[DiscoveredAsset], only: set[str] | None = None) -> list[dict]:
         pinned = {k for a in assets for k in (a.oracle.pyth_price, a.oracle.pyth_factor) if k}
+        if only is not None:
+            pinned &= only
         unknown = pinned - _FEED_BY_ACCOUNT.keys()
         if unknown:
             logger.warning("Pyth accounts pinned by assets but unknown to the dev-fork adapter: %s", sorted(unknown))

@@ -261,7 +261,9 @@ class MarginContract:
         snap = await self._snapshot(authority, registry=registry, extra_assets=[asset])
 
         zero = {"asset": asset.symbol, "max_amount": "0", "raw_max_amount": 0}
-        first = await self.preview_borrow(authority, asset.symbol, "0")
+        # Probe the non-amount gates (mode, status, caps, slots) with the smallest borrowable unit;
+        # a zero amount is rejected by the amount validator, not by a gate.
+        first = await self.preview_borrow(authority, asset.symbol, math_utils.ui_amount(1, asset.decimals))
         blocking = first["reason"]
         if blocking and "would breach" not in blocking and blocking != "insufficient pool liquidity":
             return {**zero, "reason": blocking}

@@ -216,3 +216,47 @@ def test_idl_hash_matches_pin():
 
     idl = pathlib.Path(__file__).resolve().parent.parent / "idl" / "vanna_lending.json"
     assert compute_idl_sha256(idl) == VannaSettings().pinned_idl_sha256  # type: ignore[call-arg]
+
+
+async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts():
+    from types import SimpleNamespace
+
+    import vanna_core.assets as assets_mod
+    from vanna_core.anchor_codec import account_discriminator
+    from vanna_core.layouts import ASSET_CONFIG_ACCOUNT_LEN
+
+    assets_mod.clear_registry_cache()
+    program_id = Pubkey.from_string("H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC")
+    valid = account_discriminator("AssetConfig") + bytes(ASSET_CONFIG_ACCOUNT_LEN - 8)
+    sol_pda = str(asset_config_pda(Pubkey.from_string(ASSETS[0].mint), program_id)[0])
+
+    class FakeClient:
+        def __init__(self):
+            self.program_id = program_id
+            self.settings = SimpleNamespace(solana_rpc_url="http://fake-rpc-for-cache-test")
+            self.gpa_calls = 0
+            self.batch_calls = 0
+
+        async def get_program_accounts(self, *_a, **_k):
+            self.gpa_calls += 1
+            raise RuntimeError("Internal error")
+
+        async def get_multiple_accounts_raw(self, addresses):
+            self.batch_calls += 1
+            out = {str(a): None for a in addresses}
+            out[sol_pda] = (str(program_id), valid)
+            return out
+
+    client = FakeClient()
+    first = AssetRegistry(client)
+    await first.load()
+    assert first.discovery_mode == "known_mints"
+    second = AssetRegistry(client)
+    await second.load()  # within the TTL: no RPC at all
+    assert (client.gpa_calls, client.batch_calls) == (1, 1)
+
+    assets_mod._registry_cache.clear()  # TTL expiry: re-read, but getProgramAccounts stays skipped
+    third = AssetRegistry(client)
+    await third.load()
+    assert (client.gpa_calls, client.batch_calls) == (1, 2)
+    assets_mod.clear_registry_cache()

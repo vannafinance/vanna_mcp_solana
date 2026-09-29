@@ -25,11 +25,18 @@ async def test_pool_stats_usdc(ctx):
     assert result["status"] in (0, 1, 2, 3)
 
 
-async def test_pool_stats_every_registry_asset(ctx):
-    for symbol in ("SOL", "USDC", "USDT", "JitoSOL", "JupSOL"):
+async def test_pool_stats_every_earn_pool(ctx):
+    for symbol in ("SOL", "USDC", "USDT"):
         result = await vanna_earn_market(action="pool_stats", asset=symbol)
         assert "error" not in result, f"{symbol}: {result}"
         assert result["asset_symbol"] == symbol
+
+
+async def test_pool_stats_collateral_only_assets_have_no_earn_pool(ctx):
+    # JitoSOL/JupSOL/JupUSD/xStocks are collateral-only (D2): no Reserve exists on-chain.
+    for symbol in ("JitoSOL", "JupSOL"):
+        result = await vanna_earn_market(action="pool_stats", asset=symbol)
+        assert result["error"] == "asset_not_offered", f"{symbol}: {result}"
 
 
 async def test_pool_stats_invalid_asset(ctx):

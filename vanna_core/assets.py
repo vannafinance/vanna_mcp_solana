@@ -14,6 +14,7 @@ unknown `asset_index` stops the calling tool with `unsupported_asset`.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from dataclasses import dataclass, field
 
@@ -247,6 +248,20 @@ class DiscoveredAsset:
         return "KaminoReceipt" if self.is_receipt else "Oracle"
 
 
+# Discovered AssetConfig accounts are effectively static (an admin registers an asset once), and every
+# tool call builds its own registry, so cache the raw accounts per (rpc, program) for a short TTL and
+# remember when the RPC rejects getProgramAccounts (the hosted fork does) so it is not retried per call.
+_REGISTRY_CACHE_TTL_SECS = 60.0
+_GPA_RETRY_AFTER_SECS = 600.0
+_registry_cache: dict[str, tuple[float, str, list]] = {}
+_gpa_blocked_until: dict[str, float] = {}
+
+
+def clear_registry_cache() -> None:
+    _registry_cache.clear()
+    _gpa_blocked_until.clear()
+
+
 class AssetRegistry:
     """Discovers every `AssetConfig` the Vanna program owns and resolves symbols/indexes
     against them. Never silently drops an unknown active index - callers that hit a miss
@@ -266,18 +281,28 @@ class AssetRegistry:
         from vanna_core.layouts import AssetConfig as AssetConfigLayout
 
         discriminator = account_discriminator("AssetConfig")
-        try:
-            found = await self._client.get_program_accounts(
-                self._client.program_id,
-                data_size=ASSET_CONFIG_ACCOUNT_LEN,
-                discriminator=discriminator,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("getProgramAccounts unavailable (%s); falling back to known mints", exc)
-            found = await self._load_known_mints(ASSET_CONFIG_ACCOUNT_LEN, discriminator)
-            self.discovery_mode = "known_mints"
+        key = f"{self._client.settings.solana_rpc_url}|{self._client.program_id}"
+        now = time.monotonic()
+        cached = _registry_cache.get(key)
+        if cached is not None and cached[0] > now:
+            _, self.discovery_mode, found = cached
         else:
-            self.discovery_mode = "program_accounts"
+            found = None
+            if _gpa_blocked_until.get(key, 0.0) <= now:
+                try:
+                    found = await self._client.get_program_accounts(
+                        self._client.program_id,
+                        data_size=ASSET_CONFIG_ACCOUNT_LEN,
+                        discriminator=discriminator,
+                    )
+                    self.discovery_mode = "program_accounts"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("getProgramAccounts unavailable (%s); falling back to known mints", exc)
+                    _gpa_blocked_until[key] = now + _GPA_RETRY_AFTER_SECS
+            if found is None:
+                found = await self._load_known_mints(ASSET_CONFIG_ACCOUNT_LEN, discriminator)
+                self.discovery_mode = "known_mints"
+            _registry_cache[key] = (now + _REGISTRY_CACHE_TTL_SECS, self.discovery_mode, found)
         discovered = [_decode_asset_config(address, AssetConfigLayout.parse(data[8:])) for address, data in found]
         # Stable, product-first ordering: catalogue assets, then receipts, then the rest by index.
         rank = {a.mint: i for i, a in enumerate(ASSETS)}

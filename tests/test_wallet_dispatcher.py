@@ -15,8 +15,14 @@ async def test_summary_fresh_wallet_all_zero(ctx):
     result = await vanna_wallet(action="summary", authority=fresh)
     assert result["sol_balance"] == "0"
     assert result["margin_account_exists"] is False
-    assert len(result["assets"]) == 5
+    # Every registered non-receipt asset: SOL, USDC, USDT, JitoSOL, JupSOL, JupUSD, NVDAx, TSLAx.
+    assert {a["symbol"] for a in result["assets"]} == {
+        "SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"
+    }
     assert all(a["wallet_balance"] == "0" for a in result["assets"])
+    by_symbol = {a["symbol"]: a for a in result["assets"]}
+    assert by_symbol["USDC"]["lender_share_balance"] == "0"  # Earn pool exists
+    assert by_symbol["JitoSOL"]["lender_share_balance"] is None  # collateral-only: no Earn pool
 
 
 async def test_summary_funded_wallet_has_positive_sol(ctx, funded_fork_pubkey):

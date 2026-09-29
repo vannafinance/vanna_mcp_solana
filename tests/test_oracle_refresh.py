@@ -78,3 +78,27 @@ async def test_borrow_auto_refreshes_without_manual_step(ctx, funded_fork_keypai
 
     envelope = await vanna_margin_trade(action="borrow", authority=authority, asset="USDC", amount="0.05")
     assert envelope["simulation_success"], envelope.get("reason")
+
+
+async def test_default_refresh_keeps_every_asset_fresh_including_pyth_only_jupusd(ctx, monkeypatch):
+    """Default source = the app keeper (SOL/USDC/USDT/JupSOL feeds) + the Pyth-only supplement (JupUSD, which
+    has no Scope chain and whose feed the keeper does not write). After it, every asset passes every check."""
+    from mcp_server.dispatchers.oracle import vanna_oracle
+    from vanna_core.contracts import oracle_refresh as refresh
+
+    monkeypatch.setattr(refresh, "_keeper_last_refresh", 0.0)
+    monkeypatch.setattr(refresh, "_supplement_last_refresh", 0.0)
+    monkeypatch.setattr(refresh, "_keeper_covered_accounts", set())
+
+    settings = get_settings()
+    client = SolanaClient(settings)
+    try:
+        await refresh.maybe_refresh_prices(client, settings)
+    finally:
+        await client.close()
+
+    plain = ["SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"]
+    result = await vanna_oracle(action="prices", assets=plain)
+    for symbol, price in result.items():
+        assert "error" not in price, f"{symbol}: {price}"
+        assert price["fresh"] and price["twap_ok"] and price["confidence_ok"], f"{symbol} fails a price check: {price}"

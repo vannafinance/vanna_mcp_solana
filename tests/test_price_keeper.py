@@ -29,6 +29,15 @@ def keeper(monkeypatch: pytest.MonkeyPatch):
         raise AssertionError("cheatcode adapter must not run when the keeper is the source")
 
     monkeypatch.setattr(refresh, "DevForkOracleAdapter", fail_adapter)
+    supplement_calls: list[object] = []
+
+    async def stub_supplement(client, settings):
+        supplement_calls.append(client)
+        return []
+
+    monkeypatch.setattr(refresh, "_supplement_uncovered", stub_supplement)
+    monkeypatch.setattr(refresh, "_keeper_covered_accounts", set())
+    keeper.supplement_calls = supplement_calls  # type: ignore[attr-defined]
     return calls, state
 
 
@@ -73,3 +82,74 @@ async def test_pyth_pull_mode_skips_refresh(keeper) -> None:
     calls, _ = keeper
     assert await refresh.maybe_refresh_prices(None, _settings(oracle_mode=OracleMode.PYTH_PULL)) is None  # type: ignore[arg-type]
     assert calls == []
+
+
+async def test_keeper_response_records_which_accounts_it_writes(keeper) -> None:
+    _, state = keeper
+    state["body"] = {"ok": True, "prices": [{"symbol": "SOL", "account": "AcctSOL"}, {"symbol": "USDC", "account": "AcctUSDC"}]}
+    await refresh.refresh_via_keeper(_settings())
+    assert refresh._keeper_covered_accounts == {"AcctSOL", "AcctUSDC"}
+
+
+# --- the Pyth-only supplement (JupUSD): offline, with a fake registry and adapter --------------------
+
+class _Oracle:
+    def __init__(self, pyth: str, scope: bool) -> None:
+        self.pyth_price, self.uses_scope, self.uses_pyth = pyth, scope, bool(pyth)
+
+
+def _fake_registry(monkeypatch, assets):
+    class FakeRegistry:
+        def __init__(self, _client) -> None:
+            pass
+
+        async def load(self) -> None:
+            pass
+
+        def all(self):
+            return assets
+
+    monkeypatch.setattr(refresh, "AssetRegistry", FakeRegistry)
+
+
+async def test_supplement_writes_only_pyth_only_feeds_the_keeper_does_not(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    assets = [
+        SimpleNamespace(oracle=_Oracle("AcctSOL", scope=True)),      # has Scope: not needed
+        SimpleNamespace(oracle=_Oracle("AcctJupUSD", scope=False)),  # Pyth-only, keeper does not write it
+        SimpleNamespace(oracle=_Oracle("AcctUSDCOnly", scope=False)),  # Pyth-only but the keeper writes it
+    ]
+    _fake_registry(monkeypatch, assets)
+    seen: list[set[str]] = []
+
+    class FakeAdapter:
+        def __init__(self, *_a) -> None:
+            pass
+
+        async def _refresh_pyth(self, _assets, only=None):
+            seen.append(set(only))
+            return [{"kind": "pyth", "account": a} for a in only]
+
+    monkeypatch.setattr(refresh, "DevForkOracleAdapter", FakeAdapter)
+    monkeypatch.setattr(refresh, "_keeper_covered_accounts", {"AcctSOL", "AcctUSDCOnly"})
+    monkeypatch.setattr(refresh, "_supplement_last_refresh", 0.0)
+
+    results = await refresh._supplement_uncovered(object(), _settings())  # type: ignore[arg-type]
+    assert seen == [{"AcctJupUSD"}]
+    assert results == [{"kind": "pyth", "account": "AcctJupUSD"}]
+
+    assert await refresh._supplement_uncovered(object(), _settings()) == []  # type: ignore[arg-type]  # throttled
+    assert len(seen) == 1
+
+
+async def test_supplement_never_raises_and_skips_without_a_client(monkeypatch) -> None:
+    assert await refresh._supplement_uncovered(None, _settings()) == []  # type: ignore[arg-type]
+
+    class Boom:
+        def __init__(self, _client) -> None:
+            raise RuntimeError("rpc down")
+
+    monkeypatch.setattr(refresh, "AssetRegistry", Boom)
+    monkeypatch.setattr(refresh, "_supplement_last_refresh", 0.0)
+    assert await refresh._supplement_uncovered(object(), _settings()) == []  # type: ignore[arg-type]

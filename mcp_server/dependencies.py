@@ -11,7 +11,7 @@ import logging
 
 from solders.pubkey import Pubkey
 
-from vanna_core.assets import ASSETS, find_asset
+from vanna_core.assets import ASSETS, find_asset, assert_lend_borrow_offered
 from vanna_core.client import SolanaClient
 from vanna_core.config import VannaSettings, get_settings
 from vanna_core.contracts.farm import FarmContract
@@ -93,6 +93,8 @@ class VannaContext:
                 f"{symbol!r} is not a supported asset. Supported: "
                 f"{sorted(a.symbol for a in ASSETS)}"
             )
+        # Only SOL/USDC/USDT have an Earn pool (D2): other assets are collateral-only and have no Reserve.
+        assert_lend_borrow_offered(asset.symbol, "earn")
         if asset.symbol not in self._reserves:
             self._reserves[asset.symbol] = ReserveContract(
                 self.client, asset.mint_pubkey, asset.symbol, asset.decimals
