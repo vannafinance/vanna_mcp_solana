@@ -3,14 +3,17 @@
 Uses pydantic-settings for type-safe env var parsing. A singleton is exposed via
 get_settings() with @lru_cache so the .env file is read exactly once per process.
 
-Unlike the Stellar/Soroban sibling MCP, there is NO registry contract on Solana —
-the deployed program's frontend (Backend-Solana repo, lib/solana/config.ts) hardcodes
-a single program ID and a static asset table directly, with no on-chain address
-resolution. This settings module mirrors that: VANNA_PROGRAM_ID and the asset table
-are hardcoded defaults (env-overridable), not resolved at runtime from anywhere.
-See VANNA_SOLANA_MCP_REQUIREMENTS.md (Backend-Solana repo) Part A/B for the open
-questions this still depends on (canonical program ID for the target deployment,
-final asset list, sign-service interface, etc).
+There is no registry contract on Solana — the deployed program's own frontend
+(`vanna-credit-backend/lib/solana/config.ts`) hardcodes a single program ID,
+with no on-chain address resolution. This settings module mirrors that:
+VANNA_PROGRAM_ID is a hardcoded default (env-overridable), not resolved at
+runtime from anywhere. The asset table itself lives in `vanna_core/assets.py`,
+not here — it's static registry data, not a handful of scalar env vars.
+
+Verified against `vanna-credit-backend` @ `f643dbf`, the
+`Vanna-Solana-Copilot-Answers.pdf` handoff (2026-09-28) and the owner's
+2026-09-29 decisions — DECISIONS.md is the register of what is settled
+(cluster, signing, pricing, asset scope, liquidation) and what is still open.
 """
 
 from __future__ import annotations
@@ -20,16 +23,10 @@ from enum import Enum
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
-
-
-class SolanaCluster(str, Enum):
-    DEVNET = "devnet"
-    TESTNET = "testnet"
-    MAINNET = "mainnet"
 
 
 class MCPTransport(str, Enum):
@@ -37,11 +34,29 @@ class MCPTransport(str, Enum):
     STREAMABLE_HTTP = "streamable-http"
 
 
-class S2SAuthMode(str, Enum):
-    """How the MCP server authenticates to the Sign Service (service-to-service)."""
+class OracleMode(str, Enum):
+    """Whether health-checked writes refresh fork prices first (DECISIONS.md D4).
 
-    SHARED_SECRET = "shared_secret"
-    OIDC = "oidc"
+    `dev-fork` (this release): refresh before every health-checked write.
+    `pyth-pull`: no refresh — for a real cluster where external keepers publish
+    prices. Public-mainnet oracle integration (Hermes) is not built; it is a
+    separate, later requirement.
+    """
+
+    DEV_FORK = "dev-fork"
+    PYTH_PULL = "pyth-pull"
+
+
+class PriceRefreshSource(str, Enum):
+    """Who writes fresh prices onto the fork in `dev-fork` mode (DECISIONS.md D4)."""
+
+    # The app's own price keeper, POST {price_keeper_url}/api/prices/refresh —
+    # the owner-designated writer; it also heals stale cloned Kamino reserves.
+    KEEPER = "keeper"
+    # This server's own surfnet_setAccount adapter (vanna_core/contracts/oracle_refresh.py):
+    # fabricates Pyth accounts and restamps Kamino Scope. Only for a fork running a
+    # program version the keeper does not cover; never run alongside the keeper.
+    CHEATCODE = "cheatcode"
 
 
 def _is_base58_pubkey(v: str) -> bool:
@@ -58,8 +73,7 @@ class VannaSettings(BaseSettings):
     """All runtime configuration for the Vanna Solana MCP server.
 
     Loaded from environment variables or a .env file. Every field has a safe
-    devnet default — matching Backend-Solana's own .env.example — so local dev
-    needs zero extra config beyond a Pyth API key for write paths.
+    hosted-fork default, so local dev needs zero extra config.
     """
 
     model_config = SettingsConfigDict(
@@ -69,30 +83,64 @@ class VannaSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Solana RPC
-    solana_rpc_url: str = "https://api.devnet.solana.com"
-    solana_cluster: SolanaCluster = SolanaCluster.DEVNET
+    # Solana RPC — the hosted Surfpool mainnet fork. The "devnet" in the
+    # hostname is a legacy naming artifact, not public Solana devnet — see
+    # TOOLS_CATALOGUE.md §0/§1: this fork carries real mainnet mint addresses
+    # and real Kamino/Jupiter deployments.
+    solana_rpc_url: str = "https://rpc-devnet.solana.vanna.finance"
+    solana_ws_url: str = "wss://rpc-devnet.solana.vanna.finance"
+    # Label surfaced in tool responses / explorer links; not parsed for
+    # behaviour except by `is_fork` below.
+    solana_cluster_label: str = "surfpool-fork"
 
-    # The ONLY hardcoded on-chain entry point — there is no registry to resolve
-    # this from. See VANNA_SOLANA_MCP_REQUIREMENTS.md Part A #1 (Backend-Solana repo).
-    vanna_program_id: str = "BZ812nUv4Qhr2p1JVgmoJGjYTGk1brAXckyhFSCNH3Zg"
+    # The ONLY hardcoded on-chain entry point — there is no registry to
+    # resolve this from. declare_id!, Anchor.toml and the backend agree; the
+    # owner verified the live executable matches their pinned build
+    # (DECISIONS.md D1); that build is layer HEAD ecdb9b6 (DECISIONS.md D8).
+    vanna_program_id: str = "H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC"
 
-    # Static asset table (SOL, USDC only for v1 — matches lib/solana/config.ts
-    # ASSETS in Backend-Solana). See Part A #2 for whether this grows before ship.
-    usdc_mint: str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    wsol_mint: str = "So11111111111111111111111111111111111111112"
+    # Fork price preparation (DECISIONS.md D4).
+    oracle_mode: OracleMode = OracleMode.DEV_FORK
+    price_refresh_source: PriceRefreshSource = PriceRefreshSource.KEEPER
+    # The vanna-credit-backend app's HTTP host (NOT the RPC host): POST
+    # /api/prices/refresh (price keeper) and POST /api/faucet (vanna_fork).
+    # devnet.solana.vanna.finance serves the old stack's API, not this app.
+    # Unauthenticated on the app side today; the secret is sent as a Bearer
+    # token once the app hardens it.
+    price_keeper_url: str = "https://test.solana.vanna.finance"
+    price_keeper_secret: str = ""
+    # `cheatcode` refresh source only: Kamino's Scope `OraclePrices` account is copied
+    # from mainnet onto the fork - the public RPC is rate limited; set your own for reliability.
+    mainnet_rpc_url: str = "https://api.mainnet-beta.solana.com"
 
-    # Pyth Hermes (price refresh before any write path that needs a fresh
-    # price_update account: borrow, withdraw_collateral, deposit_and_borrow,
-    # liquidate). Requires authentication as of 2026-08-26.
-    pyth_hermes_url: str = "https://pyth.dourolabs.app/hermes"
-    pyth_api_key: str = ""
-    pyth_feed_id_sol: str = "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
-    pyth_feed_id_usdc: str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+    # Jupiter v6 (wallet_swap / margin_swap quotes and swap-instruction builds).
+    # Keyless requests to lite-api.jup.ag are capped at 0.5 req/s shared
+    # across every caller; setting jupiter_api_key switches to the keyed
+    # api.jup.ag endpoint with its own quota (verified against
+    # vanna-credit-backend/lib/solana/server/jupiter-api.ts). Endpoints are
+    # `/swap/v1/quote` and `/swap/v1/swap-instructions` under this base, not
+    # the legacy `quote-api.jup.ag/v6` host.
+    jupiter_api_key: str = ""
+    jupiter_fork_dexes: str = "Raydium,Raydium CLMM,Raydium CP,Orca V2,Meteora DLMM,Whirlpool"
 
-    # Health / liquidation threshold — single value for all assets today.
-    # See VANNA_SOLANA_MCP_REQUIREMENTS.md Part A #6 for whether this is final.
-    liquidation_threshold: float = 1.1
+    # Health-factor threshold — informational only. The actual on-chain rule
+    # is BALANCE_TO_BORROW_THRESHOLD_WAD, a hardcoded 1.10 program constant
+    # (TOOLS_CATALOGUE.md §2.4); this field must never be read as if it could
+    # relax that. `safe_health_factor` mirrors the app's own UI policy floor
+    # (lib/solana/config.ts SAFE_HEALTH_FACTOR) that pre-flight tools target.
+    liquidation_health_factor: float = 1.10
+    safe_health_factor: float = 1.15
+
+    # Feature gates — both default OFF; flipping them on is a deliberate,
+    # reviewed decision, never a side effect of another setting.
+    enable_fork_tools: bool = False
+    enable_liquidation_builder: bool = False
+
+    # SHA-256 (LF-normalised) of idl/vanna_lending.json, regenerated from the
+    # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
+    # after the oracle / whole-account-liquidation program update. The MCP refuses
+    # to start if the loaded IDL differs (COPILOT_ARCHITECTURE.md B.12 #8).
+    pinned_idl_sha256: str = "47cd9ced07539538e42e859b99ba535720a030371399a11ff732b6bc817ffe73"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.
     read_cache_ttl_seconds: int = 30
@@ -106,21 +154,31 @@ class VannaSettings(BaseSettings):
     log_level: str = "INFO"
 
     # ---------------------------------------------------------------------------
-    # Sign Service (zero-custody signing delegate)
-    #
-    # The MCP server holds NO private keys and signs NOTHING. Every write-path
-    # tool returns an unsigned transaction + simulation result; the
-    # vanna_sign_and_submit tool forwards it to the Sign Service, which owns
-    # the actual signer. These settings only describe how to REACH and
-    # AUTHENTICATE to that service. See Part A #3 for the exact request/response
-    # schema it expects — unconfigured here (sign_service_url="") until that's
-    # answered.
+    # OAuth 2.1 resource-server protection for streamable-HTTP (mcp_server/auth.py).
+    # Off by default so stdio, local dev, and the test suite need no IdP. Any
+    # public deployment must set AUTH_ENABLED=true plus the OAUTH_* values.
     # ---------------------------------------------------------------------------
-    sign_service_url: str = ""
-    sign_service_secret: str = ""
-    s2s_auth_mode: S2SAuthMode = S2SAuthMode.SHARED_SECRET
+    auth_enabled: bool = False
+    oauth_issuer: str = ""
+    oauth_jwks_uri: str = ""
+    oauth_audience: str = ""
+    # Extra accepted audiences (comma-separated), e.g. the app's M2M credential.
+    oauth_m2m_audience: str = ""
+    # Allowed browser Origin values (comma-separated). Empty = no Origin restriction.
+    oauth_allowed_origins: str = ""
+    # Externally visible base URL (behind TLS / a proxy), used in discovery
+    # metadata and WWW-Authenticate. Empty = derived from the incoming request.
+    external_base_url: str = ""
+    # Client IDs whose tokens carry no scope claim but are trusted first-party
+    # apps (comma-separated). They are granted vanna:read + vanna:write.
+    first_party_client_ids: str = ""
 
-    @field_validator("vanna_program_id", "usdc_mint", "wsol_mint")
+    # Per-caller token bucket on POST /mcp (mcp_server/rate_limit.py).
+    rate_limit_enabled: bool = True
+    rate_limit_refill_per_sec: float = 8.0
+    rate_limit_burst: float = 24.0
+
+    @field_validator("vanna_program_id")
     @classmethod
     def validate_pubkey(cls, v: str) -> str:
         if not _is_base58_pubkey(v):
@@ -136,16 +194,18 @@ class VannaSettings(BaseSettings):
             raise ValueError(f"log_level must be one of {valid}, got {v!r}")
         return upper
 
-    @model_validator(mode="after")
-    def _validate_pyth_feed_ids(self) -> "VannaSettings":
-        for name, feed_id in (
-            ("pyth_feed_id_sol", self.pyth_feed_id_sol),
-            ("pyth_feed_id_usdc", self.pyth_feed_id_usdc),
-        ):
-            hex_part = feed_id.removeprefix("0x")
-            if len(hex_part) != 64:
-                raise ValueError(f"{name} must be a 32-byte hex string, got: {feed_id!r}")
-        return self
+    @field_validator("rate_limit_refill_per_sec", "rate_limit_burst")
+    @classmethod
+    def validate_positive(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError(f"rate limit values must be positive, got {v!r}")
+        return v
+
+    @property
+    def is_fork(self) -> bool:
+        """Fork-only mechanisms (dev price keeper, faucet, stale-DEX healing)
+        are only ever wired up when this is true."""
+        return "fork" in self.solana_cluster_label.lower()
 
     def __repr__(self) -> str:
         try:
@@ -156,8 +216,9 @@ class VannaSettings(BaseSettings):
         return (
             f"VannaSettings("
             f"rpc_url={masked_url!r}, "
-            f"cluster={self.solana_cluster.value!r}, "
+            f"cluster={self.solana_cluster_label!r}, "
             f"program={self.vanna_program_id[:8]}..., "
+            f"oracle_mode={self.oracle_mode.value!r}, "
             f"transport={self.mcp_transport.value!r}"
             f")"
         )

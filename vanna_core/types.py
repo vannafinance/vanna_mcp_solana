@@ -57,35 +57,25 @@ class AccountNotFoundError(VannaCoreError):
     """The requested on-chain account does not exist."""
 
 
-class SimulationResult(BaseModel):
-    """Result of simulating a built transaction against the RPC node."""
-
-    success: bool
-    error: str | None = None
-    logs: list[str] = []
-    units_consumed: int | None = None
+class AssetNotOfferedError(VannaCoreError):
+    """The asset exists on-chain but the product doesn't offer this action for
+    it (e.g. lending/borrowing JitoSOL or JupSOL — collateral/swap/farm only)."""
 
 
-class UnsignedTransaction(BaseModel):
-    """A built-and-simulated, unsigned transaction ready for a signing service.
-
-    ``unsigned_tx_b64`` is the base64-encoded serialized message (legacy or
-    versioned, per builder). The MCP server never signs this — see
-    VANNA_SOLANA_MCP_REQUIREMENTS.md Part A #3 for the signing-service contract
-    this gets handed to.
-    """
-
-    unsigned_tx_b64: str
-    fee_payer: str
-    instruction_name: str
-    program_id: str
-    simulation_success: bool
-    simulation_error: str | None
-    units_consumed: int | None = None
+class UnpricablePositionError(VannaCoreError):
+    """A position's USD value can't yet be computed (e.g. a Kamino receipt,
+    whose price needs `vanna_farm_overview`'s exchange-rate read). Health
+    reads must fail closed on this, never silently drop the position."""
 
 
 class PoolStats(BaseModel):
-    """Enriched view of one lending reserve — mirrors lib/pool-stats.ts."""
+    """Enriched view of one lending reserve — mirrors `vanna_core.math_utils`
+    (which itself mirrors `math/interest.rs`, verified against source).
+
+    NOTE: superseded the old base/slope1/slope2/optimal-utilization display —
+    the on-chain reserve uses a `RateCurve` polynomial instead
+    (TOOLS_CATALOGUE.md §2.8, §6.1 item "Interest").
+    """
 
     asset_symbol: str
     reserve_address: str
@@ -93,24 +83,32 @@ class PoolStats(BaseModel):
     total_borrowed: str
     available_liquidity: str
     utilization_rate_pct: str
-    supply_apy_pct: str
-    borrow_apy_pct: str
+    supply_apr_pct: str
+    borrow_apr_pct: str
     exchange_rate: str
     reserve_factor_bps: int
-    base_rate_bps: int
-    slope1_bps: int
-    slope2_bps: int
-    optimal_utilization_bps: int
+    supply_cap: str
+    borrow_cap: str
+    status: int
+    linear_coeff_wad: str
+    jump_coeff_wad: str
+    rate_multiplier_wad: str
 
 
 class MarginHealth(BaseModel):
-    """Derived health/solvency figures — mirrors lib/margin-health.ts."""
+    """Account health — mirrors `math/health.rs::HealthSnapshot`, verified
+    against source. One account-wide threshold, no per-asset LTV weighting.
 
-    health_factor: float
-    collateral_left_before_liquidation_usd: float
-    net_available_collateral_usd: float
-    debt_limit_usd: float
-    total_value_usd: float
+    ``health_factor`` is ``None`` when there is no debt (the on-chain
+    sentinel is `u128::MAX`; this is "no debt", never a floating-point
+    infinity — see TOOLS_CATALOGUE.md §2.4 / §6.1 item "HF threshold").
+    """
+
+    total_collateral_usd: str
+    total_debt_usd: str
+    health_factor: str | None
+    is_healthy: bool
+    is_liquidatable: bool
 
 
 def as_error_dict(exc: BaseException, code: str) -> dict[str, Any]:

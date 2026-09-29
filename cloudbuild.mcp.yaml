@@ -1,0 +1,49 @@
+# Build -> push -> deploy the Vanna Solana MCP server to Cloud Run.
+#
+#   gcloud builds submit . --project=<PROJECT> --region=us-central1 \
+#     --config=cloudbuild.mcp.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD)
+#
+# Runtime configuration (AUTH_ENABLED, OAUTH_*, EXTERNAL_BASE_URL, SOLANA_RPC_URL,
+# JUPITER_API_KEY, ...) lives on the Cloud Run service, not here: `gcloud run
+# deploy --image` keeps the service's existing env vars and secret mounts. Set
+# them with `gcloud run services update --update-env-vars=...`. The first deploy
+# of a public service must set AUTH_ENABLED=true and the OAUTH_* vars.
+#
+# Project, service and repository names are placeholders until the owner picks
+# where the MCP is hosted.
+
+substitutions:
+  _REGION: us-central1
+  _REPO: vanna-credit
+  _IMAGE_NAME: mcp-solana
+  _SERVICE: vanna-mcp-solana
+  _TAG: latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}:${_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}"]
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}:${_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --quiet

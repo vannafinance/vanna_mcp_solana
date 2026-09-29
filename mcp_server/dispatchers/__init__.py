@@ -1,0 +1,54 @@
+"""Vanna Solana MCP dispatcher tools.
+
+Exports ALL_DISPATCHERS — the flat list of dispatcher tool functions
+registered with the MCP server in main.py. Each dispatcher takes an `action`
+parameter selecting one of its actions (TOOLS_CATALOGUE.md §3) — this is the
+14-dispatcher-tool shape, not one flat tool per instruction/read (see
+TOOLS_CATALOGUE.md §3's "Shape decision").
+
+Build status: see BUILD_PLAN.md. Only the Earn dispatchers
+(`vanna_earn_market`, `vanna_earn_position`, `vanna_earn_write`) are
+implemented so far — the rest follow the same pattern once their
+`vanna_core` contract wrappers exist.
+"""
+
+from __future__ import annotations
+
+from mcp_server.dispatchers.account import vanna_account
+from mcp_server.dispatchers.earn_market import vanna_earn_market
+from mcp_server.dispatchers.earn_position import vanna_earn_position
+from mcp_server.dispatchers.earn_write import vanna_earn_write
+from mcp_server.dispatchers.farm_kamino import vanna_farm_kamino
+from mcp_server.dispatchers.farm_overview import vanna_farm_overview
+from mcp_server.dispatchers.history import vanna_history
+from mcp_server.dispatchers.margin_status import vanna_margin_status
+from mcp_server.dispatchers.margin_trade import vanna_margin_trade
+from mcp_server.dispatchers.fork import vanna_fork
+from mcp_server.dispatchers.oracle import vanna_oracle
+from mcp_server.dispatchers.protocol_info import vanna_protocol_info
+from mcp_server.dispatchers.sign import vanna_sign
+from mcp_server.dispatchers.swap import vanna_swap
+from mcp_server.dispatchers.wallet import vanna_wallet
+
+ALL_DISPATCHERS = [
+    vanna_protocol_info,
+    vanna_oracle,
+    vanna_account,
+    vanna_margin_status,
+    vanna_margin_trade,
+    vanna_earn_market,
+    vanna_earn_position,
+    vanna_earn_write,
+    vanna_wallet,
+    vanna_history,
+    vanna_farm_overview,
+    vanna_farm_kamino,
+    vanna_swap,
+    vanna_sign,
+]
+
+# Dev-only — registered by main.py only when ENABLE_FORK_TOOLS=true. Never
+# part of the Copilot's allowlist even then (TOOLS_CATALOGUE.md §3.15).
+FORK_DISPATCHERS = [
+    vanna_fork,
+]

@@ -11,13 +11,18 @@ import functools
 import logging
 from typing import Any
 
+from solana.rpc.core import RPCException
+
+from vanna_core.pricing import PriceUnavailableError
 from vanna_core.types import (
+    AssetNotOfferedError,
     AccountNotFoundError,
     ContractCallError,
     InvalidAddressError,
     SimulationFailedError,
     StalePriceError,
     UnhealthyAccountError,
+    UnpricablePositionError,
     VannaCoreError,
 )
 
@@ -29,6 +34,9 @@ _ERROR_MAP: list[tuple[type[VannaCoreError], str]] = [
     (SimulationFailedError, "simulation_failed"),
     (InvalidAddressError, "invalid_address"),
     (AccountNotFoundError, "account_not_found"),
+    (PriceUnavailableError, "price_unavailable"),
+    (UnpricablePositionError, "unpricable_position"),
+    (AssetNotOfferedError, "asset_not_offered"),
     (ContractCallError, "contract_error"),
     (VannaCoreError, "vanna_error"),
 ]
@@ -53,9 +61,10 @@ def tool_safe(fn: Any) -> Any:
 
         {"error": "<code>", "message": "<human-readable description>"}
 
-    Error codes: stale_price, health_check_failed, simulation_failed,
+    Error codes: stale_price, price_unavailable, health_check_failed, simulation_failed,
     invalid_address, account_not_found, contract_error, vanna_error,
-    invalid_input (ValueError), server_not_ready, internal_error.
+    invalid_input (ValueError), server_not_ready, transaction_too_large,
+    internal_error.
     """
 
     @functools.wraps(fn)
@@ -69,6 +78,23 @@ def tool_safe(fn: Any) -> Any:
         except ValueError as exc:
             logger.warning("Tool %r raised ValueError: %s", fn.__name__, exc)
             return {"error": "invalid_input", "message": str(exc)}
+        except RPCException as exc:
+            # A Jupiter route with enough hops/accounts can compile to a v0
+            # message over Solana's 1232-byte packet limit before it even
+            # reaches simulation (`vanna-credit-backend/lib/solana/tx.ts`'s
+            # own `isTooLarge`/temporary-ALT fallback exists for exactly
+            # this — not built here yet). Surface it distinctly so a caller
+            # knows to retry with a smaller amount or a fresh quote, rather
+            # than masking it as a generic internal_error.
+            message = str(exc)
+            if "too large" in message.lower():
+                logger.warning("Tool %r hit an oversized transaction: %s", fn.__name__, message)
+                return {
+                    "error": "transaction_too_large",
+                    "message": "The built transaction exceeds Solana's size limit. Retry with a smaller amount or fewer route hops.",
+                }
+            logger.error("Tool %r raised unexpected RPCException", fn.__name__, exc_info=True)
+            return {"error": "internal_error", "message": "An unexpected error occurred."}
         except RuntimeError as exc:
             if _is_context_not_ready_error(exc):
                 logger.error("Tool %r called before VannaContext ready: %s", fn.__name__, exc)
