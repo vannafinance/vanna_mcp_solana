@@ -5,7 +5,17 @@ A chat assistant inside the Vanna Solana app. A user types things like *"what's 
 prepares the transactions for the user's own wallet to sign.
 
 Status (2026-09-30): the **MCP server (this repo) is built and verified live** on the Solana fork. The
-Copilot itself, which lives in the `vanna-credit-backend` app, is **not started**.
+Copilot is **built** in `vanna-credit-backend` (branch `copilot`, local commit `f9aee1a`, not pushed): 301 unit
+tests pass, `next build` passes, and real on-chain round trips (open account, deposit, borrow, earn supply/redeem,
+swap, Kamino farm, repay, lever 2x) were confirmed on the fork against a local MCP. **Not yet exercised:** real
+WorkOS token, real Firestore, real Vertex credentials, and the UI with a real wallet.
+
+**What it supports:** reads (health, positions, collateral, debt, wallet, prices, pool APYs, earned interest,
+Kamino markets/positions, borrow/withdraw capacity, liquidation risk, history, swap quotes, protocol info) and
+writes as one-step or multi-step plans (earn supply/redeem, margin open/close/deposit/withdraw/borrow/repay,
+wallet and margin swaps, Kamino deposit/redeem, "lever my X 2x", chains of up to 8 steps). A single action is a
+one-step plan, so it uses the same approval, exactly-once and confirmation path. **Not built:** unwinding
+positions, conditional or standing orders, buy-exact-output swaps.
 
 ---
 
