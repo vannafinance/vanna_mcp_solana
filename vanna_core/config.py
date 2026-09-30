@@ -139,7 +139,7 @@ class VannaSettings(BaseSettings):
     # SHA-256 (LF-normalised) of idl/vanna_lending.json, regenerated from the
     # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
     # after the oracle / whole-account-liquidation program update. The MCP refuses
-    # to start if the loaded IDL differs (COPILOT_ARCHITECTURE.md B.12 #8).
+    # to start if the loaded IDL differs (a pinned-contract safety rule).
     pinned_idl_sha256: str = "47cd9ced07539538e42e859b99ba535720a030371399a11ff732b6bc817ffe73"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.

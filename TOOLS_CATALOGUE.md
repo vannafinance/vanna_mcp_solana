@@ -315,9 +315,8 @@ All in integer fixed point, mirroring the contract's rounding:
 **Shape decision (2026-09-28):** the MCP's exposed tool surface is **14 dispatcher
 tools**, each taking an `action` string parameter and action-specific args —
 not one flat tool per instruction/read. This mirrors how the Stellar MCP
-actually runs in production (`COPILOT_ARCHITECTURE.md` Part A.8: 14
-dispatchers via `LEGACY_TOOL_MAP`) and matches Part B.8's dispatcher table for
-this Solana MCP, which was written against this exact action set. Every
+actually runs in production (14 dispatchers) and matches the tool list in
+`COPILOT_ARCHITECTURE.md` §7, which was written against this exact action set. Every
 action below is unchanged in mechanics from the flat-tool draft this replaces
 — only the grouping and calling convention changed. **Mirrors** names the
 `lib/solana` function whose *instruction construction* the action must match
@@ -452,7 +451,7 @@ Scans use the **owner wallet**.
 
 ### 3.14 `vanna_sign` — read
 
-Signing is the user's connected wallet, through the app's execution adapter (`COPILOT_ARCHITECTURE.md` B.9): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign, so the MCP only builds and reports status.
+Signing is the user's connected wallet, through the app's execution adapter (`COPILOT_ARCHITECTURE.md` §4-§5): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign, so the MCP only builds and reports status.
 
 | Action | Phase | Mirrors | Purpose |
 |---|---|---|---|
