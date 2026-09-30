@@ -68,7 +68,7 @@ So everything to do with auto-sign, signer binding and the Sign Service is simpl
 |---|---|---|
 | **Copilot UI** | `vanna-credit-backend/components/copilot`, `/copilot` page | Chat, plan card, approval, step-by-step progress, asks the wallet to sign |
 | **Copilot brain** | `vanna-credit-backend/lib/copilot` (server code) | Classifies the request, refuses off-topic or unsafe things, sizes amounts, keeps plans, calls the MCP |
-| **Gemini** | Google Vertex AI, same setup as the Stellar Copilot (`gemini-3.7-flash`, or `3.8` when available) | Language understanding and answer wording only |
+| **Gemini** | Google Vertex AI in GCP project `solana-mcp`, model `gemini-3.8-flash` (location `global`) | Language understanding and answer wording only |
 | **Plan and conversation store** | Firestore (a local encrypted file in development) | Keeps each plan and its state, so a step can never run twice |
 | **Vanna MCP** | this repo, a separate service | 14 tools: reads (positions, prices, pools, history) and transaction builders (supply, borrow, swap, farm, ...). Never signs or sends |
 | **App's Solana code** | `vanna-credit-backend/lib/solana` (already exists) | The same reads the app's pages use, plus the wallet send-and-confirm pipeline |
@@ -179,6 +179,14 @@ Rules the plan lane always follows:
 - **Auth (hosted):** a **WorkOS** machine-to-machine token for the Copilot app; listing its client id in
   `FIRST_PARTY_CLIENT_IDS` gives it write access. The MCP is deployed with **internal** ingress (not public).
   Locally the MCP can run without auth.
+- **Why WorkOS (same as Stellar):** the MCP builds transactions for any wallet, so it must know *which application* is
+  calling before it serves it. It verifies a WorkOS-signed token on every request
+  (issuer, signature via the WorkOS key set, audience) and gives write access only to client ids listed in
+  `FIRST_PARTY_CLIENT_IDS`. A caller without a valid token gets 401; other clients get write access only if their token carries the write scope.
+  The Copilot is a server, so it uses WorkOS **machine-to-machine** (no user login): it posts `client_credentials`
+  (client id + secret) to the WorkOS token URL, caches the returned token, refreshes it a minute before expiry, and
+  sends it as `Authorization: Bearer` on every MCP call. End users never hold a WorkOS token: they prove who they are
+  to the Copilot by signing a login message with their wallet.
 - **Limits:** the Copilot enforces per-user request limits itself (all Copilot traffic reaches the MCP as one
   client), so no user can drive unlimited calls.
 
@@ -207,7 +215,7 @@ Checked on 2026-09-30 against the real code of both repos and the live fork.
 | Very large transactions (long swap routes) | The MCP returns `transaction_too_large`; the Copilot retries with a smaller amount. Lookup-table setup rounds are not built (not needed so far) |
 | The fork's clock drifts and prices can go stale | The MCP refreshes (keeper + its own guarded supplement); a still-stale price makes the build fail safely |
 
-**Decided (2026-09-30):** Gemini as on the Stellar Copilot; WorkOS for the Copilot-to-MCP token; MCP internal-only;
+**Decided (2026-09-30):** Gemini `gemini-3.8-flash` on Vertex in `solana-mcp`; WorkOS for the Copilot-to-MCP token; MCP internal-only;
 limits in the Copilot; product = the five tokens. **Still needed before a hosted launch:** the concrete values
 (Firestore database, WorkOS client id/issuer/audience, the MCP's project/region and how the app reaches an internal
 service) - see the open questions.
@@ -234,7 +242,7 @@ service) - see the open questions.
 | Liquidation, admin, faucet | Not offered by the Copilot |
 | Swaps and Kamino | Supported (Jupiter swaps; Kamino single-asset supply from the margin balance) |
 | Product assets | SOL, USDC, USDT, JitoSOL, JupSOL (+ Kamino receipts). JupUSD / xStocks skipped for now |
-| AI | Vertex Gemini, as the Stellar Copilot (`gemini-3.7-flash`; `3.8` when available) |
-| Copilot -> MCP auth | WorkOS machine-to-machine token; MCP on internal ingress |
+| AI | Vertex Gemini `gemini-3.8-flash` in project `solana-mcp`; service account `vanna-copilot` (`roles/aiplatform.user`); no service-account keys (org policy), so hosted uses the attached account and local uses a developer's own login |
+| Copilot -> MCP auth | WorkOS machine-to-machine token (see section 7). MCP ingress: internal was decided; the MCP is planned in project `solana-mcp` while the app runs in `vanna-credit-solana-test`, so cross-project reachability is open (see the access request) |
 | Limits | Per-user limits in the Copilot; no unlimited use |
 | Mainnet | Not in scope now; everything targets the fork |
