@@ -206,7 +206,7 @@ class MarginContract:
     async def preview_withdraw(self, authority: Pubkey, asset_symbol: str, amount_ui: "Decimal | str") -> dict:
         registry = AssetRegistry(self._client)
         await registry.load()
-        asset = registry.by_symbol(asset_symbol)
+        asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         snap = await self._snapshot(authority, registry=registry, extra_assets=[asset])
         current = snap.health
 
@@ -303,7 +303,7 @@ class MarginContract:
         threshold (verified through `preview_withdraw`)."""
         registry = AssetRegistry(self._client)
         await registry.load()
-        asset = registry.by_symbol(asset_symbol)
+        asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         snap = await self._snapshot(authority, registry=registry, extra_assets=[asset])
         row = next((r for r in snap.collateral_rows if r["symbol"] == asset.symbol), None)
         zero = {"asset": asset.symbol, "max_amount": "0", "raw_max_amount": 0}

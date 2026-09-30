@@ -17,22 +17,21 @@ async def test_config(ctx):
     assert result["next_asset_index"] >= 10  # at least the 5+5 registry assets
 
 
-async def test_assets_lists_every_registered_asset(ctx):
+async def test_assets_lists_the_product_assets(ctx):
     result = await vanna_protocol_info(action="assets")
     assert "error" not in result
     symbols = {a["symbol"] for a in result["assets"]}
-    # Live fork (layer ecdb9b6 bootstrap): 8 plain assets + the 5 Kamino receipts.
+    # The product's 5 tokens + their 5 Kamino receipts. JupUSD/NVDAx/TSLAx are registered on-chain but are
+    # not in the product (team, 2026-09-30), so they are not listed.
     assert symbols == {
-        "SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx",
+        "SOL", "USDC", "USDT", "JitoSOL", "JupSOL",
         "kSOL", "kUSDC", "kUSDT", "kJitoSOL", "kJupSOL",
     }
     by_symbol = {a["symbol"]: a for a in result["assets"]}
     # Only SOL/USDC/USDT are lent/borrowed; the rest are collateral-only with no Reserve.
     assert {s for s, a in by_symbol.items() if a["lend_borrow_offered"]} == {"SOL", "USDC", "USDT"}
-    for symbol in ("JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"):
+    for symbol in ("JitoSOL", "JupSOL"):
         assert by_symbol[symbol]["borrow_enabled"] is False and by_symbol[symbol]["reserve"] is None
-    # Token-2022 xStocks.
-    assert by_symbol["NVDAx"]["token_program"] != by_symbol["USDC"]["token_program"]
     # Plain assets: OracleConfig-priced (Scope chain, Pyth fallback), borrow-enabled, real Reserve.
     assert by_symbol["USDC"]["price_source"] == "Oracle"
     assert by_symbol["USDC"]["borrow_enabled"] is True

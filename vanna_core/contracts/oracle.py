@@ -16,6 +16,7 @@ from vanna_core.assets import AssetRegistry, DiscoveredAsset
 from vanna_core.client import SolanaClient
 from vanna_core.oracle_reader import OracleReader, OracleView, describe_price
 from vanna_core.pricing import PriceUnavailableError
+from vanna_core.types import AssetNotOfferedError
 
 
 def _underlying_symbol(registry: AssetRegistry, liquidity_mint: str) -> str | None:
@@ -85,13 +86,13 @@ class OracleContract:
         for symbol in symbols:
             try:
                 assets[symbol] = registry.by_symbol(symbol)
-            except ValueError:
+            except (ValueError, AssetNotOfferedError):
                 assets[symbol] = None
         view = await self._reader.view([a for a in assets.values() if a is not None])
         results: dict[str, dict] = {}
         for symbol, asset in assets.items():
             if asset is None:
-                results[symbol] = {"error": "invalid_input", "message": f"{symbol!r} is not a registered asset"}
+                results[symbol] = {"error": "invalid_input", "message": f"{symbol!r} is not a supported asset"}
                 continue
             try:
                 results[symbol] = self._describe(asset, view, registry)

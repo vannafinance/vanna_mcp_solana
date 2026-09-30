@@ -58,7 +58,7 @@ So everything to do with auto-sign, signer binding and the Sign Service is simpl
 |---|---|---|
 | **Copilot UI** | `vanna-credit-backend/components/copilot`, `/copilot` page | Chat, plan card, approval, step-by-step progress, asks the wallet to sign |
 | **Copilot brain** | `vanna-credit-backend/lib/copilot` (server code) | Classifies the request, refuses off-topic or unsafe things, sizes amounts, keeps plans, calls the MCP |
-| **Gemini** | Google Vertex AI | Language understanding and answer wording only |
+| **Gemini** | Google Vertex AI, same setup as the Stellar Copilot (`gemini-3.7-flash`, or `3.8` when available) | Language understanding and answer wording only |
 | **Plan and conversation store** | Firestore (a local encrypted file in development) | Keeps each plan and its state, so a step can never run twice |
 | **Vanna MCP** | this repo, a separate service | 14 tools: reads (positions, prices, pools, history) and transaction builders (supply, borrow, swap, farm, ...). Never signs or sends |
 | **App's Solana code** | `vanna-credit-backend/lib/solana` (already exists) | The same reads the app's pages use, plus the wallet send-and-confirm pipeline |
@@ -142,8 +142,10 @@ Rules the plan lane always follows:
 
 ## 6. What the Copilot may and may not do
 
-- **Assets:** SOL, USDC, USDT can be lent and borrowed. JitoSOL and JupSOL are collateral, swap and Kamino farm
-  only. The MCP refuses anything else with `asset_not_offered`.
+- **Assets:** exactly five tokens. SOL, USDC, USDT can be lent and borrowed; JitoSOL and JupSOL are collateral,
+  swap and Kamino farm only; plus the Kamino receipts farming produces. Other assets the program registers
+  on-chain (JupUSD, NVDAx, TSLAx) are not in the product: the MCP hides them and refuses them with
+  `asset_not_offered`, while still counting any existing position in health and allowing its withdrawal.
 - **Refused always:** liquidating someone, admin actions, unknown tokens, arbitrary programs, Kamino multi-asset
   liquidity, the test faucet.
 - **Liquidation:** read-only — the Copilot can say whether an account is at risk, never execute a liquidation.
@@ -164,8 +166,11 @@ Rules the plan lane always follows:
   action today.** Amounts are decimal strings.
 - **Errors:** always `{"error": "<code>", "message": "..."}` — e.g. `invalid_input`, `asset_not_offered`,
   `price_unavailable`, `insufficient_scope`, `rate_limited` (HTTP 429 with `Retry-After`).
-- **Auth (hosted):** a machine token for the Copilot app; listing its client id in `FIRST_PARTY_CLIENT_IDS` gives
-  it write access. Locally the MCP can run without auth.
+- **Auth (hosted):** a **WorkOS** machine-to-machine token for the Copilot app; listing its client id in
+  `FIRST_PARTY_CLIENT_IDS` gives it write access. The MCP is deployed with **internal** ingress (not public).
+  Locally the MCP can run without auth.
+- **Limits:** the Copilot enforces per-user request limits itself (all Copilot traffic reaches the MCP as one
+  client), so no user can drive unlimited calls.
 
 ## 8. Verification — will this work?
 
@@ -187,13 +192,15 @@ Checked on 2026-09-30 against the real code of both repos and the live fork.
 | Gap | Handling |
 |---|---|
 | The MCP's `preview` (before/after health factor) is not filled | The approval card gets the numbers from `vanna_margin_status` `can_borrow` / `can_withdraw` (or the MCP fills `preview` later) |
-| The app's token list has only 5 assets; the chain also has JupUSD, NVDAx, TSLAx | The app's `fetchMarginSnapshot` silently skips a position in one of those (health shown without it; writes still fail safely). So the Copilot takes positions from the MCP. The app's Margin page has the same blind spot; scope decision pending |
-| All Copilot users share one MCP rate-limit bucket | The Copilot limits per user and backs off on 429; raising or per-user limits pending |
+| The chain also registers JupUSD, NVDAx, TSLAx, which are not in the product | Out of scope by decision; the MCP hides and refuses them. A position in one can only exist if created outside the app; the app's `fetchMarginSnapshot` would silently skip it, so the Copilot takes position answers from the MCP, which counts it |
+| All Copilot users share one MCP rate-limit bucket | Decided: the Copilot limits each user itself and backs off on 429 |
 | Very large transactions (long swap routes) | The MCP returns `transaction_too_large`; the Copilot retries with a smaller amount. Lookup-table setup rounds are not built (not needed so far) |
 | The fork's clock drifts and prices can go stale | The MCP refreshes (keeper + its own guarded supplement); a still-stale price makes the build fail safely |
 
-**Needs a decision before a hosted launch** (open questions): Google Cloud project, Gemini model and Firestore
-for the Copilot; which service issues the Copilot's token for the MCP; where the MCP is hosted.
+**Decided (2026-09-30):** Gemini as on the Stellar Copilot; WorkOS for the Copilot-to-MCP token; MCP internal-only;
+limits in the Copilot; product = the five tokens. **Still needed before a hosted launch:** the concrete values
+(Firestore database, WorkOS client id/issuer/audience, the MCP's project/region and how the app reaches an internal
+service) - see the open questions.
 
 **Verdict:** the architecture works with what exists. The only new code is the Copilot itself in the app.
 
@@ -216,3 +223,8 @@ for the Copilot; which service issues the Copilot's token for the MCP; where the
 | Lend/borrow | SOL, USDC, USDT only |
 | Liquidation, admin, faucet | Not offered by the Copilot |
 | Swaps and Kamino | Supported (Jupiter swaps; Kamino single-asset supply from the margin balance) |
+| Product assets | SOL, USDC, USDT, JitoSOL, JupSOL (+ Kamino receipts). JupUSD / xStocks skipped for now |
+| AI | Vertex Gemini, as the Stellar Copilot (`gemini-3.7-flash`; `3.8` when available) |
+| Copilot -> MCP auth | WorkOS machine-to-machine token; MCP on internal ingress |
+| Limits | Per-user limits in the Copilot; no unlimited use |
+| Mainnet | Not in scope now; everything targets the fork |

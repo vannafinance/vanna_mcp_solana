@@ -33,7 +33,7 @@ async def test_pool_stats_every_earn_pool(ctx):
 
 
 async def test_pool_stats_collateral_only_assets_have_no_earn_pool(ctx):
-    # JitoSOL/JupSOL/JupUSD/xStocks are collateral-only: no Reserve exists on-chain.
+    # JitoSOL/JupSOL are collateral-only: no Reserve exists on-chain.
     for symbol in ("JitoSOL", "JupSOL"):
         result = await vanna_earn_market(action="pool_stats", asset=symbol)
         assert result["error"] == "asset_not_offered", f"{symbol}: {result}"

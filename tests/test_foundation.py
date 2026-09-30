@@ -260,3 +260,17 @@ async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts
     await third.load()
     assert (client.gpa_calls, client.batch_calls) == (1, 2)
     assets_mod.clear_registry_cache()
+
+
+def test_product_scope_is_the_five_tokens_and_their_receipts():
+    from types import SimpleNamespace
+
+    from vanna_core.assets import KAMINO_RECEIPTS, PRODUCT_SYMBOLS, is_offered
+
+    assert PRODUCT_SYMBOLS == {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL"}
+    for asset in ASSETS:
+        assert is_offered(SimpleNamespace(symbol=asset.symbol, mint=asset.mint))
+    for receipt in KAMINO_RECEIPTS:
+        assert is_offered(SimpleNamespace(symbol=receipt.symbol, mint=receipt.collateral_mint))
+    for mint, symbol in EXTRA_ASSET_SYMBOLS.items():  # JupUSD, NVDAx, TSLAx
+        assert not is_offered(SimpleNamespace(symbol=symbol, mint=mint))

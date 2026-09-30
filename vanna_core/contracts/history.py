@@ -72,8 +72,9 @@ class HistoryContract:
         margin_address = margin_pda(authority, self._client.program_id)[0]
         registry = AssetRegistry(self._client)
         await registry.load()
-        mint_to_symbol = {a.mint: a.symbol for a in registry.all()}
-        reserve_to_asset = {a.reserve: a for a in registry.all() if a.has_reserve}
+        every = registry.all(include_unoffered=True)  # decode every past event, offered or not
+        mint_to_symbol = {a.mint: a.symbol for a in every}
+        reserve_to_asset = {a.reserve: a for a in every if a.has_reserve}
 
         raw_events = await self._decode_events(margin_address, limit)
         rows = []
@@ -88,7 +89,7 @@ class HistoryContract:
                 symbol = mint_to_symbol.get(mint, mint)
                 row["asset"] = symbol
                 if hasattr(f, "amount"):
-                    decimals = next((a.decimals for a in registry.all() if a.mint == mint), 0)
+                    decimals = next((a.decimals for a in registry.all(include_unoffered=True) if a.mint == mint), 0)
                     row["amount"] = math_utils.ui_amount(f.amount, decimals)
             elif e["event"] in ("Borrowed", "DebtRepaid", "DebtPositionOpened", "DebtPositionClosed"):
                 reserve = pubkey_bytes_to_base58(f.reserve)
@@ -100,7 +101,7 @@ class HistoryContract:
                 mint = pubkey_bytes_to_base58(f.mint)
                 row["asset"] = mint_to_symbol.get(mint, mint)
                 row["liquidator"] = pubkey_bytes_to_base58(f.liquidator)
-                decimals = next((a.decimals for a in registry.all() if a.mint == mint), 0)
+                decimals = next((a.decimals for a in registry.all(include_unoffered=True) if a.mint == mint), 0)
                 row["amount"] = math_utils.ui_amount(f.amount, decimals)
             elif e["event"] == "Liquidated":
                 # Whole-account liquidation: every debt repaid, every collateral seized.

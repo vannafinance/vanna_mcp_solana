@@ -151,7 +151,7 @@ class MarginTradeContract:
         await maybe_refresh_prices(self._client, self._client.settings)
         registry = AssetRegistry(self._client)
         await registry.load()
-        asset = registry.by_symbol(asset_symbol)
+        asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         margin = self.margin_address(authority)
         mint = Pubkey.from_string(asset.mint)
         token_program = Pubkey.from_string(asset.token_program)
@@ -199,7 +199,7 @@ class MarginTradeContract:
     async def close_collateral_position(self, authority: Pubkey, asset_symbol: str) -> WriteEnvelope:
         registry = AssetRegistry(self._client)
         await registry.load()
-        asset = registry.by_symbol(asset_symbol)
+        asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         margin = self.margin_address(authority)
         mint = Pubkey.from_string(asset.mint)
         token_program = Pubkey.from_string(asset.token_program)
@@ -440,7 +440,7 @@ class MarginTradeContract:
             shortfalls = []
             payable_rows = []
             for row in outstanding_debt:
-                asset = registry.by_symbol(row["symbol"])
+                asset = registry.by_symbol(row["symbol"], allow_unoffered=True)
                 margin_vault = find_associated_token_address(
                     address, Pubkey.from_string(asset.mint), Pubkey.from_string(asset.token_program)
                 )
@@ -478,7 +478,7 @@ class MarginTradeContract:
 
             instructions = []
             for row in payable_rows:
-                asset = registry.by_symbol(row["symbol"])
+                asset = registry.by_symbol(row["symbol"], allow_unoffered=True)
                 reserve = Pubkey.from_string(asset.reserve)
                 debt_position, _ = debt_position_pda(address, reserve, self._client.program_id)
                 margin_vault = find_associated_token_address(address, Pubkey.from_string(asset.mint), Pubkey.from_string(asset.token_program))
@@ -509,7 +509,7 @@ class MarginTradeContract:
 
         if collateral_rows:
             row = collateral_rows[0]
-            balance_ui = math_utils.ui_amount(row["raw_balance"], registry.by_symbol(row["symbol"]).decimals)
+            balance_ui = math_utils.ui_amount(row["raw_balance"], registry.by_symbol(row["symbol"], allow_unoffered=True).decimals)
             envelope = await self.withdraw_collateral(authority, row["symbol"], balance_ui)
             envelope.summary["next_step"] = "withdraw_collateral"
             return envelope

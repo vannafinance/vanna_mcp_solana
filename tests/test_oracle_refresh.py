@@ -80,9 +80,9 @@ async def test_borrow_auto_refreshes_without_manual_step(ctx, funded_fork_keypai
     assert envelope["simulation_success"], envelope.get("reason")
 
 
-async def test_default_refresh_keeps_every_asset_fresh_including_pyth_only_jupusd(ctx, monkeypatch):
-    """Default source = the app keeper (SOL/USDC/USDT/JupSOL feeds) + the Pyth-only supplement (JupUSD, which
-    has no Scope chain and whose feed the keeper does not write). After it, every asset passes every check."""
+async def test_default_refresh_keeps_every_product_asset_fresh(ctx, monkeypatch):
+    """Default source = the app keeper + the MCP's guarded supplement. After it, every product asset passes
+    every price check the program applies to a borrow."""
     from mcp_server.dispatchers.oracle import vanna_oracle
     from vanna_core.contracts import oracle_refresh as refresh
 
@@ -97,7 +97,7 @@ async def test_default_refresh_keeps_every_asset_fresh_including_pyth_only_jupus
     finally:
         await client.close()
 
-    plain = ["SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"]
+    plain = ["SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "kSOL", "kUSDC"]
     result = await vanna_oracle(action="prices", assets=plain)
     for symbol, price in result.items():
         assert "error" not in price, f"{symbol}: {price}"

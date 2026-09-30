@@ -340,14 +340,25 @@ class AssetRegistry:
         if not self._loaded:
             raise RuntimeError("AssetRegistry.load() must run before use")
 
-    def by_symbol(self, symbol: str) -> DiscoveredAsset:
+    def by_symbol(self, symbol: str, *, allow_unoffered: bool = False) -> DiscoveredAsset:
+        """Resolve a symbol from user input. Assets registered on-chain but not in the product
+        (PRODUCT_SYMBOLS) raise `asset_not_offered`; `allow_unoffered=True` is only for exit paths
+        (withdraw / close) so a position in one can always be removed."""
         self._require_loaded()
         upper = symbol.strip().upper()
         if upper == "WSOL":
             upper = "SOL"
         if upper not in self._by_symbol:
             raise ValueError(f"{symbol!r} has no registered AssetConfig on this deployment")
-        return self._by_symbol[upper]
+        asset = self._by_symbol[upper]
+        if not allow_unoffered and not is_offered(asset):
+            from vanna_core.types import AssetNotOfferedError
+
+            raise AssetNotOfferedError(
+                f"{asset.symbol} is registered on-chain but not offered in the product. "
+                f"Supported: {', '.join(sorted(PRODUCT_SYMBOLS))} and their Kamino receipts."
+            )
+        return asset
 
     def by_mint(self, mint: str) -> DiscoveredAsset:
         self._require_loaded()
@@ -355,9 +366,12 @@ class AssetRegistry:
             raise ValueError(f"mint {mint} has no registered AssetConfig on this deployment")
         return self._by_mint[mint]
 
-    def all(self) -> list[DiscoveredAsset]:
+    def all(self, *, include_unoffered: bool = False) -> list[DiscoveredAsset]:
+        """Product assets (PRODUCT_SYMBOLS and their receipts). `include_unoffered=True` also returns
+        assets registered on-chain outside the product - for decoding (history), never for offers."""
         self._require_loaded()
-        return list(self._by_symbol.values())
+        assets = list(self._by_symbol.values())
+        return assets if include_unoffered else [a for a in assets if is_offered(a)]
 
     async def by_index(self, asset_index: int) -> DiscoveredAsset:
         """Resolve an asset_index found in a MarginAccount slot."""
@@ -411,6 +425,21 @@ def _decode_asset_config(config_address: Pubkey, decoded: object) -> DiscoveredA
         max_collateral_per_margin=decoded.max_collateral_per_margin,
         liquidation_bonus_bps=decoded.liquidation_bonus_bps,
     )
+
+
+# Product scope (team, 2026-09-30): exactly these five tokens, plus the Kamino receipts farming
+# produces from them. Other assets the program registers on-chain (JupUSD and the Token-2022
+# xStocks NVDAx/TSLAx today) are not in the app, so they are not offered: they're hidden from
+# listings and refused for actions (`asset_not_offered`). Positions in them still count in health
+# reads (resolved by index), and withdraw/close stay allowed so nobody is stuck.
+PRODUCT_SYMBOLS = frozenset({"SOL", "USDC", "USDT", "JitoSOL", "JupSOL"})
+
+
+def is_offered(asset: "DiscoveredAsset") -> bool:
+    if asset.symbol in PRODUCT_SYMBOLS:
+        return True
+    receipt = _RECEIPT_BY_MINT.get(asset.mint)
+    return receipt is not None and receipt.underlying_symbol in PRODUCT_SYMBOLS
 
 
 # Product policy (confirmed by the team): only these assets are lendable
