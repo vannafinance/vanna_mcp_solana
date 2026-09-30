@@ -2,7 +2,7 @@
 `POST /api/faucet` (Surfpool cheatcode, not a real transaction). Backs
 `vanna_fork.faucet` (TOOLS_CATALOGUE.md §3.15). Never registered unless
 `ENABLE_FORK_TOOLS=true`, and never part of the Copilot's allowlist even
-then — see BUILD_PLAN.md / TOOLS_CATALOGUE.md §6.2 item 6.
+then (TOOLS_CATALOGUE.md §6.2 item 6).
 
 The backend's faucet endpoint is unauthenticated today; once hardened with a
 shared secret, `PRICE_KEEPER_SECRET` should be sent here too (same host as

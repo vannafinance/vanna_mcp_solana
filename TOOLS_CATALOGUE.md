@@ -1,16 +1,16 @@
 # Vanna Solana MCP — Full Tools Catalogue (v1, frozen for implementation)
 
 > **Status (2026-09-29).** The team's decisions of 2026-09-29 are applied below and recorded, with
-> their code consequences, in `DECISIONS.md` — read that first. In short: the target is the hosted
+> their code consequences. In short: the target is the hosted
 > Surfpool fork; the connected wallet signs (no Sign Service, `vanna_sign` is `tx_status` only);
 > prices come from the app's keeper (no Hermes/`pyth-pull` this release); only SOL/USDC/USDT are
 > lent/borrowed; liquidation stays read-only. This catalogue's on-chain detail (§1–§2) describes the
 > program version in `vanna-credit-backend/idl` (`PriceSource`/`PriceUpdateV2` oracle model), which
 > was the deployed program when this catalogue was frozen. The owner has since confirmed the fork runs
-> layer HEAD `ecdb9b6` (`DECISIONS.md` D8), and the MCP code is ported to it (`OracleConfig`,
+> layer HEAD `ecdb9b6`, and the MCP code is ported to it (`OracleConfig`,
 > Scope-first pricing, no price accounts on borrow/withdraw/`margin_execute`, whole-account
 > liquidation). Where §1–§2 describe `PriceSource`/`PriceUpdateV2` mechanics, the code and
-> `DECISIONS.md` win. The tool surface (§3) is unchanged.
+> the ported code win. The tool surface (§3) is unchanged.
 
 This is the Solana counterpart of the Stellar/Soroban `vanna-mcp` tools reference
 (`Vanna_MCP/vanna-mcp/README.md` → "Tools reference"). The technique is the same:
@@ -45,13 +45,13 @@ The on-chain mechanics are Solana-native:
 
 | Area | Now | Impact on the MCP |
 |---|---|---|
-| Network | **Surfpool mainnet fork** (real mainnet mints, Kamino and Jupiter accounts). The backend defaults to the hosted fork `https://rpc-devnet.solana.vanna.finance`; the layer scripts default to a local Surfpool `http://127.0.0.1:8899` / `ws://127.0.0.1:8900`. The target cluster is the hosted fork (`DECISIONS.md` D1). | RPC/WS and cluster label are config, never constants. Blockhashes, reads and broadcasts use the same configured RPC. |
+| Network | **Surfpool mainnet fork** (real mainnet mints, Kamino and Jupiter accounts). The backend defaults to the hosted fork `https://rpc-devnet.solana.vanna.finance`; the layer scripts default to a local Surfpool `http://127.0.0.1:8899` / `ws://127.0.0.1:8900`. The target cluster is the hosted fork. | RPC/WS and cluster label are config, never constants. Blockhashes, reads and broadcasts use the same configured RPC. |
 | Program ID | **`H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC`** in `declare_id!`, `Anchor.toml`, the script PDA helpers and the backend default (**Verified**). The layer README's `BZ812…` is stale. | Config value, default `H37YVBG3…`. Before writes are enabled, verify the deployed executable matches the pinned IDL (§7). |
-| Assets | **Live fork (2026-09-29): 8 plain - SOL (wSOL), USDC, USDT, JitoSOL, JupSOL, JupUSD, NVDAx, TSLAx (the last two Token-2022) - + 5 Kamino receipts, all collateral-only except the pools.** The app's own list is still the first five (`DECISIONS.md` D2, O5). Lend/borrow: SOL, USDC, USDT only; JitoSOL/JupSOL are collateral, swap and farm only (`DECISIONS.md` D2) | §1 table is a display catalogue; authoritative parameters come from on-chain `AssetConfig` (§1.3). The MCP refuses supply/borrow of JitoSOL/JupSOL with `asset_not_offered` |
+| Assets | **Live fork (2026-09-29): 8 plain - SOL (wSOL), USDC, USDT, JitoSOL, JupSOL, JupUSD, NVDAx, TSLAx (the last two Token-2022) - + 5 Kamino receipts, all collateral-only except the pools.** The app's own list is still the first five. Lend/borrow: SOL, USDC, USDT only; JitoSOL/JupSOL are collateral, swap and farm only | §1 table is a display catalogue; authoritative parameters come from on-chain `AssetConfig` (§1.3). The MCP refuses supply/borrow of JitoSOL/JupSOL with `asset_not_offered` |
 | Token programs | Classic SPL for all ten. The program still supports Token-2022 (per-asset `token_program`). | Always pass the token program explicitly; derive outcomes from measured received amounts |
-| Prices | The fork has **no live Pyth pusher**; the app's price keeper rewrites the oracle accounts with Jupiter USD prices via cheatcodes. That is the mechanism for this release (`DECISIONS.md` D4), not production oracle publication. | The MCP calls the keeper before every health-checked build (§2.3). No Hermes/`pyth-pull` this release |
+| Prices | The fork has **no live Pyth pusher**; the app's price keeper rewrites the oracle accounts with Jupiter USD prices via cheatcodes. That is the mechanism for this release, not production oracle publication. | The MCP calls the keeper before every health-checked build (§2.3). No Hermes/`pyth-pull` this release |
 | Transaction format | **Always v0.** 600k CU for batches, 1.4M for `margin_execute`. Over 1232 bytes, lookup-table **setup transactions** are required first. | Envelope schema v1 with explicit dependencies (§2.1) |
-| Farm | Kamino single-asset supply/withdraw from the **margin balance** via `margin_execute`; the Farm UI has no wallet funding or leverage (`DECISIONS.md` D6). Kamino Liquidity impossible (`CPINotAllowed`). | `vanna_farm_kamino.deposit` / `redeem` |
+| Farm | Kamino single-asset supply/withdraw from the **margin balance** via `margin_execute`; the Farm UI has no wallet funding or leverage. Kamino Liquidity impossible (`CPINotAllowed`). | `vanna_farm_kamino.deposit` / `redeem` |
 | Swaps | Margin swaps (`margin_execute` + Jupiter) and wallet swaps | `vanna_swap.margin_swap`, `vanna_swap.wallet_swap` |
 | History | Decoded from Anchor events (no indexer) | `vanna_history` |
 
@@ -181,7 +181,7 @@ Rules:
 - **Dependencies.** When the action needs setup that must be **confirmed** before the action can be simulated (a temporary lookup table; a production oracle post that can't fit), the tool returns the setup transactions (`dependsOn: []`, simulated) and the action with `status: "not_run_dependency"` and **no `unsignedTransaction`**. After the caller confirms the setup, it calls the same tool again with `prepared: { addressLookupTables: [...] }`; the tool rebuilds and re-simulates the action. An expired blockhash also means rebuild and re-simulate.
 - **Lookup-table setup** (over 1232 bytes): legacy create + extend transactions (20 addresses per extend), wallet as authority and payer. The table is usable from the slot after its last extension.
 - **`requiredSigners`** lists public keys only. **The envelope never contains private keys.** If a production oracle post needs ephemeral signers, those are created and held by the execution layer, not the MCP (§2.3).
-- **`signing_status`, `code`, `reason`, `simulation_success`** keep the Stellar meanings the Copilot executor branches on (`code` / `reason` / `simulation_success = false` = rejected before broadcast). `signing_status` is `needs_wallet_sign` (every built action — the connected wallet signs, `DECISIONS.md` D3) or `not_signable` (setup dependency outstanding). Stellar's `auto_signed` value was removed from the Solana schema (`vanna_core/envelope.py`): there is no auto-sign.
+- **`signing_status`, `code`, `reason`, `simulation_success`** keep the Stellar meanings the Copilot executor branches on (`code` / `reason` / `simulation_success = false` = rejected before broadcast). `signing_status` is `needs_wallet_sign` (every built action — the connected wallet signs) or `not_signable` (setup dependency outstanding). Stellar's `auto_signed` value was removed from the Solana schema (`vanna_core/envelope.py`): there is no auto-sign.
 - **Execution adapter response** (the app, not the MCP): `{ requestId, status: "awaiting_approval" | "submitted" | "confirmed" | "failed", signatures, error }`.
 
 ### 2.2 Transaction assembly (instruction construction only)
@@ -197,7 +197,7 @@ The backend's service functions mix instruction construction with signing and se
 5. **Simulation.** Against the same blockhash, `sigVerify: false`, `replaceRecentBlockhash: false`. On a fork, a failed simulation may trigger the stale-DEX heal (§2.7) and one retry. Errors are decoded from the IDL (56 program errors) plus the Jupiter/stale-pool classifiers, and summarised in one line.
 6. **Token-2022 readiness.** Never assume received = sent; the preview uses the post-transfer-fee amount where a mint has a fee extension. Repay-all grosses up for transfer fees.
 
-### 2.3 Oracle preparation (`DECISIONS.md` D4)
+### 2.3 Oracle preparation
 
 Builders for `user_borrow`, `user_withdraw_collateral`, composed deposit + borrow, `public_liquidate` and `margin_execute` prepare fresh prices for **every price the instruction reads** (the named assets and every position in the §2.5 scan), not only the requested asset. Price freshness is judged against each asset's live `max_price_age_secs` on the **chain clock** (the Clock sysvar), not wall time.
 
@@ -206,6 +206,17 @@ Builders for `user_borrow`, `user_withdraw_collateral`, composed deposit + borro
 | `dev-fork`, `PRICE_REFRESH_SOURCE=keeper` | Default; this release | Calls the app's price keeper (`POST {PRICE_KEEPER_URL}/api/prices/refresh`: Jupiter USD price → `surfnet_setAccount`, stamped with the fork clock, with a previous/reference-price fallback; also heals cloned Kamino reserves). At most once per 60 s per process, concurrent callers share one call — the app's own `ensureFreshPrices` rule. No price instructions in the transaction. A failed refresh is logged and the build continues, so a still-stale price fails closed in simulation (`stale_price`). Development-only mechanism; JupSOL is priced from Jupiter here. | Built (`oracle_refresh.py`) |
 | `dev-fork`, `PRICE_REFRESH_SOURCE=cheatcode` | Only for a program version the keeper does not cover | The MCP's own `surfnet_setAccount` writer: fabricates the Pyth accounts each asset pins and copies/restamps Kamino Scope from mainnet. Never run alongside the keeper — both write the same accounts. | Built, off by default |
 | `pyth-pull` | Real cluster with external keepers | No refresh at all. A Hermes-backed production adapter is **not built and not planned for this release**; public-mainnet oracle requirements are separate. | Not in scope |
+
+**Keeper supplement (live findings, 2026-09-29/30).** After the keeper call the MCP adds two narrow cheatcode
+writes, each guarded so it never overlaps the keeper or fakes freshness:
+
+- **Pyth-only feeds the keeper does not write** (JupUSD today, which has no Scope chain): refreshed from Jupiter,
+  never an account the keeper reported writing.
+- **Scope entries stale only because of fork clock drift.** The keeper copies Kamino's Scope account from mainnet
+  and restamps its own assets' entries; others (the xStocks) keep mainnet timestamps, and the fork's clock has been
+  seen ~15 min ahead of real time, so current prices read as stale. An entry is restamped only if it is stale by
+  the fork clock **and** within its max age by real time; a feed that really stopped updating stays stale and the
+  program fails closed.
 
 Validation on every read (both modes): owner = receiver, discriminator/layout, verification level, feed ID = `AssetConfig.price_feed_id`, price > 0, age ≤ `max_price_age_secs`, confidence ≤ `max_confidence_bps`. Use the receiver SDK's decoder; the fork helper's fixed offsets aren't a general decoder. Receipts additionally need their validated Kamino source reserve.
 
@@ -404,7 +415,7 @@ write needs a freshly-accrued reserve.
 
 | Action | Phase | Mirrors | Purpose |
 |---|---|---|---|
-| `deposit` | 3 | `farmDeposit` | Price refresh; `margin_execute(KLend deposit_reserve_liquidity)` from the margin vault's balance at 1.4M CU. No wallet funding or borrow leg — the Farm UI supplies from the margin balance only (`DECISIONS.md` D6) |
+| `deposit` | 3 | `farmDeposit` | Price refresh; `margin_execute(KLend deposit_reserve_liquidity)` from the margin vault's balance at 1.4M CU. No wallet funding or borrow leg — the Farm UI supplies from the margin balance only |
 | `redeem` | 3 | `farmWithdraw` | `margin_execute(KLend redeem_reserve_collateral)`; underlying returns to the margin vault |
 
 Adapter rules: the first `cpi_account_count` remaining accounts are exactly the KLend call accounts (`adapters/kamino.rs` roles), the margin PDA is the owner, and the reserve must be the cToken's registered `price_source_account`. **Kamino Liquidity (multi-asset LP) is not supported and cannot be** — that program rejects the CPI (`CPINotAllowed`).
@@ -437,11 +448,11 @@ Scans use the **owner wallet**.
 | `balance` | 1 | — | Wallet or margin-vault balance for one asset (explicit token program) |
 | `token_metadata` | 1 | — | Decimals, supply, token program, transfer-fee extension if present |
 
-`connect_status` (an auto-sign capability check) was removed: there is no auto-sign on Solana (`DECISIONS.md` D3).
+`connect_status` (an auto-sign capability check) was removed: there is no auto-sign on Solana.
 
 ### 3.14 `vanna_sign` — read
 
-Signing is the user's connected wallet, through the app's execution adapter (`COPILOT_ARCHITECTURE.md` B.9): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign (`DECISIONS.md` D3), so the MCP only builds and reports status.
+Signing is the user's connected wallet, through the app's execution adapter (`COPILOT_ARCHITECTURE.md` B.9): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign, so the MCP only builds and reports status.
 
 | Action | Phase | Mirrors | Purpose |
 |---|---|---|---|
@@ -511,8 +522,8 @@ off-by-default `public_liquidate` keeper builder.
 
 ## 5. Code in this repo that has to change
 
-> Historical: this is the original change list, all of it now done (status in `BUILD_PLAN.md`).
-> Since then the Hermes settings and the `pyth_pull` adapter stub were dropped (`DECISIONS.md` D4),
+> Historical: this is the original change list, all of it now done.
+> Since then the Hermes settings and the `pyth_pull` adapter stub were dropped,
 > and the current settings are listed in `.env.example`.
 
 | File | Change |
@@ -555,7 +566,7 @@ off-by-default `public_liquidate` keeper builder.
 
 ### 6.2 Team decisions of 2026-09-29 (these were the pending items)
 
-All six are answered; the full register, with what changed in the code for each, is `DECISIONS.md`.
+All six are answered.
 
 1. **Cluster / IDL** — the hosted fork; the live executable matches the team's pinned build and the backend IDL equals the build IDL (D1). That build is layer HEAD `ecdb9b6` (D8).
 2. **Asset list** — SOL/USDC/USDT lend + borrow; JitoSOL/JupSOL collateral, swap, farm; JupSOL priced by the keeper from Jupiter on the fork (D2).
@@ -575,7 +586,7 @@ All six are answered; the full register, with what changed in the code for each,
 | 1 | IDL pin, discovery, PDAs, all read tools, exact health/interest math, `tx_status`, history | Nothing pending |
 | 2 | Core write builders (account, collateral, borrow, repay, Earn, `deposit_and_borrow`), envelope v1, lookup-table dependency path, keeper price refresh | Nothing pending |
 | 3 | `margin_execute` builders: Kamino farm, margin/wallet swap, close position | Nothing pending (swap/farm are live in the app) |
-| 4 | Hosting: OAuth resource server, write-scope gating, rate limit, read cache, Docker/Cloud Build | Deploy needs the login provider and hosting project (`DECISIONS.md` O2, O3) |
+| 4 | Hosting: OAuth resource server, write-scope gating, rate limit, read cache, Docker/Cloud Build | Deploy needs the login provider and hosting project (both still open) |
 
 ### 7.2 Hard rules for every write tool
 

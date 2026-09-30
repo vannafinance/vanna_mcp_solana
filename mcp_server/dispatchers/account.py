@@ -21,7 +21,9 @@ async def vanna_account(action: AccountAction, authority: str) -> dict[str, Any]
             what's its address. "get" — status and the symbols of every
             active collateral/debt slot. "health" — per-position USD values,
             totals, health factor (or "no debt"), and liquidation eligibility.
-            "create"/"close" — not yet implemented (BUILD_PLAN.md Phase 2).
+            "create" — unsigned transaction that opens the margin account (needed
+            before the first deposit). "close" — unsigned transaction that closes
+            an empty margin account (no collateral or debt left) and returns its rent.
         authority: Base58 wallet address (the margin account's one owner).
 
     On error: {"error": "contract_error" | "invalid_input" | "account_not_found"

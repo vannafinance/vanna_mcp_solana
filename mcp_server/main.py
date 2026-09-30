@@ -244,7 +244,10 @@ def build_streamable_http_app() -> ASGIApp:
 
     if settings.rate_limit_enabled:
         app = RateLimitMiddleware(
-            app, refill_per_sec=settings.rate_limit_refill_per_sec, burst=settings.rate_limit_burst
+            app,
+            refill_per_sec=settings.rate_limit_refill_per_sec,
+            burst=settings.rate_limit_burst,
+            trusted_proxy_hops=settings.trusted_proxy_hops,
         )
 
     if settings.auth_enabled:

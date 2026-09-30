@@ -3,8 +3,8 @@
 Part A is the Stellar Copilot as it actually runs, verified against the code.
 Part B is the architecture for integrating the Solana Copilot into the Solana
 app `vanna-credit-backend`, with this repo (`Vanna_MCP_Solana`) as its MCP
-backend. The MCP side of Part B is built (`BUILD_PLAN.md`); the Copilot side in
-`vanna-credit-backend` is not started. Settled and open decisions: `DECISIONS.md`.
+backend. The MCP side of Part B is built and verified live on the fork; the Copilot side in
+`vanna-credit-backend` is not started.
 
 **Sources for Part A**
 
@@ -22,7 +22,7 @@ backend. The MCP side of Part B is built (`BUILD_PLAN.md`); the Copilot side in
   the hosted Surfpool mainnet fork.
 - `vanna-credit-layer`: the `vanna_lending` program source, the authority for on-chain rules.
 - `Vanna-Solana-Copilot-Answers.pdf` (28 Sep 2026, in this repo): the team's answers to the
-  build questions, plus the team's 2026-09-29 follow-up decisions (`DECISIONS.md`). Both are
+  build questions, plus the team's 2026-09-29 follow-up decisions (summarised in B.15). Both are
   applied throughout Part B.
 - `TOOLS_CATALOGUE.md` in this repo (the frozen v1 MCP tool surface and envelope schema).
 - `Backend-Solana` is **not** used as a reference; it belongs to the old stack.
@@ -243,7 +243,7 @@ It is a module-for-module port, not a separate service. Only the chain-facing pa
 | Repo | Role |
 |---|---|
 | **`vanna-credit-backend`** | The Solana app **and** the Copilot host: pages, `lib/solana` service layer, the new `lib/copilot`, Copilot routes and UI |
-| `Vanna_MCP_Solana` (this repo) | MCP server (tools in `TOOLS_CATALOGUE.md`). No Sign Service: the user's connected wallet signs (`DECISIONS.md` D3) |
+| `Vanna_MCP_Solana` (this repo) | MCP server (tools in `TOOLS_CATALOGUE.md`). No Sign Service: the user's connected wallet signs |
 | `vanna-credit-layer` | Program source, and `bootstrap-fork.sh` for protocol setup on the fork |
 
 New folders in `vanna-credit-backend`. Everything else in the app stays as it is.
@@ -287,14 +287,14 @@ Most of what mercury had to build around Stellar already exists in `lib/solana`,
 | Fact | Consequence | Lands in |
 |---|---|---|
 | One margin account per wallet, `marginPda(owner)` | Scope is `{subject, trader = wallet, smartAccount = marginPda(wallet), network}` with no registry lookup | `investigation/scope.ts` |
-| The target cluster is the **hosted Surfpool mainnet fork** `https://rpc-devnet.solana.vanna.finance` (`DECISIONS.md` D1) | Blockhash, reads and broadcast all use the one configured RPC. A user's wallet may be set to another cluster, which is harmless because the app broadcasts. The research gate is `COPILOT_RESEARCH_NETWORK` = the configured cluster label (`surfpool-fork`) instead of `testnet`. Explorer links use custom-cluster mode. | `config.ts`, broadcast |
-| Prices expire after `max_price_age_secs` on the **chain clock**; the fork has no Pyth pusher | Before every health-checked build the MCP calls the app's price keeper (`POST /api/prices/refresh`, Jupiter USD prices written to the fork's oracle accounts; `DECISIONS.md` D4). No Hermes/`pyth-pull` in this release. A still-stale price makes the simulation fail closed (`stale_price`), which stops the leg (`step_not_ready`, retryable). | MCP builders, `execute.ts` |
+| The target cluster is the **hosted Surfpool mainnet fork** `https://rpc-devnet.solana.vanna.finance` | Blockhash, reads and broadcast all use the one configured RPC. A user's wallet may be set to another cluster, which is harmless because the app broadcasts. The research gate is `COPILOT_RESEARCH_NETWORK` = the configured cluster label (`surfpool-fork`) instead of `testnet`. Explorer links use custom-cluster mode. | `config.ts`, broadcast |
+| Prices expire after `max_price_age_secs` on the **chain clock**; the fork has no Pyth pusher | Before every health-checked build the MCP calls the app's price keeper (`POST /api/prices/refresh`, Jupiter USD prices written to the fork's oracle accounts). No Hermes/`pyth-pull` in this release. A still-stale price makes the simulation fail closed (`stale_price`), which stops the leg (`step_not_ready`, retryable). | MCP builders, `execute.ts` |
 | Every transaction is v0; big ones need **lookup-table setup** that must be confirmed before the action can be simulated | The MCP returns the setup transactions plus the action as `not_run_dependency`. The step runs in two signing rounds: setup, then the rebuilt and re-simulated action (B.7). A dependent action is never reported as simulated. | journal step, advance, submit |
 | A signature is known before broadcast | Record signatures first. Once past `lastValidBlockHeight` with no signature found, the step is `expired` and gets rebuilt, not left `uncertain` | journal, settle |
 | Cloned DEX pools drift | On a failed simulation at submit, `healStaleDexPools` and re-simulate the **same signed** transaction (healing changes chain state, not the transaction) | submit |
 | After a leg lands at slot N | The next leg's reads use `minContextSlot ≥ N` | `execute.ts` |
 | HF rule: liquidatable when debt > 0 and HF ≤ 1.10 (equality liquidatable); zero debt = "no debt"; the app's 1.15 is **UI policy** | The Copilot `MIN_HEALTH_FACTOR` policy floor is 1.15 (`SAFE_HEALTH_FACTOR`) instead of mercury's 1.3, so Copilot sizing matches the UI's max buttons. The protocol threshold comes from the pinned program version, never from this constant. | `config.ts`, `workflow/risk.ts`, sizing |
-| Assets (`DECISIONS.md` D2): SOL, USDC, USDT lend + borrow; JitoSOL, JupSOL collateral, swap and Kamino farm only; kTokens discovered from on-chain `AssetConfig`; no Perps page; Kamino single-asset only | Router and firewall vocabulary from the display catalogue. A lend or borrow of JitoSOL/JupSOL is refused (`asset_not_offered`). Refuse Kamino Liquidity, unknown mints and arbitrary program calls deterministically. A position in an unsupported asset stops the workflow (`unsupported_asset`) rather than being ignored. | `router.ts`, `domain-classifier.ts` |
+| Assets: SOL, USDC, USDT lend + borrow; JitoSOL, JupSOL collateral, swap and Kamino farm only; kTokens discovered from on-chain `AssetConfig`; no Perps page; Kamino single-asset only | Router and firewall vocabulary from the display catalogue. A lend or borrow of JitoSOL/JupSOL is refused (`asset_not_offered`). Refuse Kamino Liquidity, unknown mints and arbitrary program calls deterministically. A position in an unsupported asset stops the workflow (`unsupported_asset`) rather than being ignored. | `router.ts`, `domain-classifier.ts` |
 | Liquidation, admin, faucet | Not offered by the Copilot in v1: liquidation execution is keeper-only and off, admin has no wrappers, the faucet is a fork-only dev tool that the Copilot never calls. Liquidation **risk** reads (`check_liquidatable`) are offered. | router refusals |
 
 ## B.3 Topology
@@ -343,7 +343,7 @@ flowchart TB
 
 ## B.4 Identity
 
-The app has **wallet-adapter only, with no Privy**. Every write is signed by the connected wallet, which is also the fee payer (`DECISIONS.md` D3), so there is no auto-sign and no signer binding:
+The app has **wallet-adapter only, with no Privy**. Every write is signed by the connected wallet, which is also the fee payer, so there is no auto-sign and no signer binding:
 
 | Anchor | Proof | `sub` | What works |
 |---|---|---|---|
@@ -355,7 +355,7 @@ MCP credentials:
 - The app's M2M bearer is sent on every call. Its client ID is listed in the MCP's `FIRST_PARTY_CLIENT_IDS`, which grants write scope; without it the MCP hides the write-only tools and refuses write actions (`insufficient_scope`).
 - The SIWS cookie is never forwarded. Every write envelope comes back `needs_wallet_sign`.
 - `X-Vanna-User-Assertion` is optional; the MCP carries it only for per-user features and never treats it as authorization.
-- Which login provider issues the M2M token is still open (`DECISIONS.md` O2).
+- Which login provider issues the M2M token is still open.
 
 The page is same-origin with its API (one Next.js app), so there are no cross-origin cookie or CORS concerns. Mercury's single `publicOrigin` check applies as is.
 
@@ -381,9 +381,9 @@ These are the same as Stellar: the entry classifier, the settled-refusal rule, a
 | Answer position, pool and price questions | `lib/solana` in-process | Fast, and identical to what the pages show |
 | Research reads in the Flash loop | MCP read tools | Same tool surface as third-party agents, sanitised, rate-limited |
 | Build every write transaction | **MCP** (`vanna_core`): unsigned v0 builders from the pinned IDL, whose instruction construction is parity-tested against `lib/solana` | Decided (answers PDF): one builder for Copilot and external agents; the MCP never signs, sends or confirms |
-| Prepare oracle inputs | MCP calls the app's price keeper (`POST /api/prices/refresh`) before every health-checked build (`DECISIONS.md` D4) | Refreshes every asset's price, not just the requested one |
+| Prepare oracle inputs | MCP calls the app's price keeper (`POST /api/prices/refresh`) before every health-checked build | Refreshes every asset's price, not just the requested one |
 | Stale checks before spending an approval | `lib/solana` reads | See B.7 |
-| Sign | The user's connected wallet (`signTransaction` on the v0 transaction); it is also the fee payer (`DECISIONS.md` D3) | Keys never touch the app or the MCP; no private keys in any envelope |
+| Sign | The user's connected wallet (`signTransaction` on the v0 transaction); it is also the fee payer | Keys never touch the app or the MCP; no private keys in any envelope |
 | Verify, broadcast and confirm | **Execution adapter** `lib/copilot/execution/` on `getConnection()` + `confirmSignatureHttp` + `healStaleDexPools`. Returns `{requestId, status, signatures, error}` with status `awaiting_approval` / `submitted` / `confirmed` / `failed` | The adapter lives in the app, reusing the existing wallet send pipeline |
 | Receipt and settlement read-back | `fetchMarginHistory` event for the signature, plus a fresh snapshot at `minContextSlot` | Post-action HF straight from the program's event |
 
@@ -480,11 +480,11 @@ Stale checks mapped to the app's functions:
 | `vanna_earn_market` / `vanna_earn_position` | read | `pool_stats` / `deposited_balance`, `earned_interest` |
 | `vanna_earn_write` | write | `supply`, `redeem` |
 | `vanna_farm_overview` | read | `markets` (with Kamino live APYs), `positions` |
-| `vanna_farm_kamino` | write | `deposit` (from the margin balance, no leverage — `DECISIONS.md` D6), `redeem` |
+| `vanna_farm_kamino` | write | `deposit` (from the margin balance, no leverage), `redeem` |
 | `vanna_swap` | read + write | `quote`, `can_swap`, `margin_swap`, `wallet_swap` |
 | `vanna_history` | read | `margin`, `earn` |
 | `vanna_wallet` | read | `summary`, `balance`, `token_metadata` |
-| `vanna_sign` | read | `tx_status` only — signing is the wallet's (`DECISIONS.md` D3) |
+| `vanna_sign` | read | `tx_status` only — signing is the wallet's |
 | `vanna_fork` | dev | `faucet`; registered only on a fork with `ENABLE_FORK_TOOLS=true`; never in the Copilot's allowlist |
 
 Not exposed: liquidation execution (keeper builder, off by default) and every admin instruction.
@@ -498,7 +498,7 @@ Not exposed: liquidation execution (keeper builder, off by default) and every ad
 
 ## B.9 Execution adapter (wallet signing; no Sign Service)
 
-**Execution adapter in the app** (`lib/copilot/execution/`). The app already has the whole flow — build → simulate → connected wallet signs (`signTransaction(Transaction | VersionedTransaction)`) → hosted-RPC broadcast → confirmation — and the wallet is the fee payer, including lookup-table setup (`DECISIONS.md` D3). The adapter reuses it: it receives the stored envelope, has the wallet sign, then verifies, broadcasts in dependency order and confirms (B.7), exposing `{requestId, status, signatures, error}`.
+**Execution adapter in the app** (`lib/copilot/execution/`). The app already has the whole flow — build → simulate → connected wallet signs (`signTransaction(Transaction | VersionedTransaction)`) → hosted-RPC broadcast → confirmation — and the wallet is the fee payer, including lookup-table setup. The adapter reuses it: it receives the stored envelope, has the wallet sign, then verifies, broadcasts in dependency order and confirms (B.7), exposing `{requestId, status, signatures, error}`.
 
 There is **no Solana Sign Service and no auto-sign** in this release. The Stellar Sign Service (Privy signing, sessions, caps, wallet-bind) has no counterpart; the MCP's `vanna_sign` is `tx_status` only. A remote HTTP signer would be a new adapter behind the same `{requestId, status, signatures, error}` interface, and only if a later phase explicitly asks for one.
 
@@ -513,7 +513,7 @@ The folder structure is identical, so paths mostly stay the same.
 | `mcp-client.ts` | adapt | Dispatcher map from B.8 |
 | `request-user.ts`, `user-auth.ts`, `user-context.ts`, `identity-header.ts` | copy | Without Privy |
 | `wallet-session.ts` | replace | SIWS (`signMessage` + ed25519) using the existing wallet-adapter context |
-| `wallet-bind.ts`, `handle-autosign.ts` | drop | No auto-sign or signer binding on Solana (`DECISIONS.md` D3) |
+| `wallet-bind.ts`, `handle-autosign.ts` | drop | No auto-sign or signer binding on Solana |
 | `entry-lane.ts`, `router.ts`, `domain-classifier.ts`, `vertex*.ts`, `token-budget.ts` | adapt | Vocabulary from `tokens.ts` + `KAMINO_RECEIPTS`; refuse Kamino Liquidity, Perps wording, non-base58 recipients |
 | `handle.ts`, plan IR | adapt | Asset keys = registry symbols |
 | `computeMarginSnapshot` | **replace with existing** `fetchMarginSnapshot` | No new code |
@@ -560,21 +560,21 @@ The folder structure is identical, so paths mostly stay the same.
 ## B.13 Storage, deployment, telemetry
 
 - **Firestore.** A workflow and conversation store as in mercury (`copilot-workflows-solana`, or `copilot-workflows` with a `solana_` prefix), with its own `COPILOT_RESEARCH_SECRET`.
-- **Deployment.** `vanna-credit-backend` now deploys to Cloud Run (`Dockerfile` + `cloudbuild.yaml` at `f643dbf`, service `vanna-credit-solana-test` → `test.solana.vanna.finance`). The Copilot routes ship inside that image: `maxDuration` 300 for the direct lane and 120 for investigate/workflow, and a runtime service account with Vertex and `roles/datastore.user`. The MCP deploys separately (`Vanna_MCP_Solana/Dockerfile` + `cloudbuild.mcp.yaml`; project/service names open, `DECISIONS.md` O3).
-- **Env additions (app).** `MCP_BASE_URL`, the M2M credential for the MCP (provider open, `DECISIONS.md` O2), Vertex, Firestore, `COPILOT_SESSION_SECRET`, `COPILOT_RESEARCH_*`, `PRICE_KEEPER_SECRET`. `FORK_RPC_URL` and `JUPITER_API_KEY` already exist.
+- **Deployment.** `vanna-credit-backend` now deploys to Cloud Run (`Dockerfile` + `cloudbuild.yaml` at `f643dbf`, service `vanna-credit-solana-test` → `test.solana.vanna.finance`). The Copilot routes ship inside that image: `maxDuration` 300 for the direct lane and 120 for investigate/workflow, and a runtime service account with Vertex and `roles/datastore.user`. The MCP deploys separately (`Vanna_MCP_Solana/Dockerfile` + `cloudbuild.mcp.yaml`; project/service names still open).
+- **Env additions (app).** `MCP_BASE_URL`, the M2M credential for the MCP (provider still open), Vertex, Firestore, `COPILOT_SESSION_SECRET`, `COPILOT_RESEARCH_*`, `PRICE_KEEPER_SECRET`. `FORK_RPC_URL` and `JUPITER_API_KEY` already exist.
 - **Env (MCP).** See `.env.example`: `SOLANA_RPC_URL`, `VANNA_PROGRAM_ID`, `ORACLE_MODE`, `PRICE_REFRESH_SOURCE`, `PRICE_KEEPER_URL`/`_SECRET`, `JUPITER_API_KEY`, `ENABLE_*` flags, `AUTH_ENABLED` + `OAUTH_*`, `FIRST_PARTY_CLIENT_IDS`, `EXTERNAL_BASE_URL`, `RATE_LIMIT_*`, `READ_CACHE_TTL_SECONDS`.
 - **Telemetry.** OTel GenAI spans with `slot` and `signature` attributes; raw transactions never included.
 
 ## B.14 Build order
 
-The phases match `TOOLS_CATALOGUE.md` §7.1. MCP status lives in `BUILD_PLAN.md`; when the Copilot can start is in `DECISIONS.md` ("Gate for Copilot building").
+The phases match `TOOLS_CATALOGUE.md` §7.1. The MCP side is complete and verified live; the Copilot can start now, and its first execution task is one wallet-signed round trip through the app.
 
 | Phase | MCP (`Vanna_MCP_Solana`) | Copilot (`vanna-credit-backend`) |
 |---|---|---|
 | **1. Reads** | IDL pin, asset discovery, PDAs, exact health/interest math, all read tools, `tx_status`, history | SIWS wallet-session, direct lane on `fetchMarginSnapshot`, investigate with MCP reads, conversations, `/copilot` page and page assistant |
 | **2. Core writes** | Unsigned builders for account, collateral, borrow, repay, Earn and `deposit_and_borrow`; envelope v1; lookup-table dependency path; keeper price refresh. Parity tests replay `e2e-fork.ts`. | Workflow journal and routes, execution adapter, setup/action rounds, `expired`, `minContextSlot`, stale checks |
 | **3. Integrations** | `margin_execute` builders: Kamino farm, margin/wallet swap, close position. Parity with `e2e-exec.ts`. | Kamino and Jupiter strategies in investigation and the plan card |
-| **4. Hosting** | Auth (OAuth resource server), write-scope gating, rate limit + circuit breaker, read cache, Docker/Cloud Build — built; deploy pending `DECISIONS.md` O2/O3 | Copilot calls the hosted MCP with its first-party M2M credential |
+| **4. Hosting** | Auth (OAuth resource server), write-scope gating, rate limit + circuit breaker, read cache, Docker/Cloud Build — built; deploy pending the login provider and hosting project | Copilot calls the hosted MCP with its first-party M2M credential |
 
 ## B.15 Decisions
 
@@ -591,7 +591,7 @@ The phases match `TOOLS_CATALOGUE.md` §7.1. MCP status lives in `BUILD_PLAN.md`
 | Faucet | Fork-only dev tool; never called by the Copilot |
 | Swap/farm | Phase 3; receipt-aware reads from phase 1 |
 
-**Resolved by the team (2026-09-29)** — full register with code consequences and open items: `DECISIONS.md`
+**Resolved by the team (2026-09-29)**
 
 | Decision | Resolution |
 |---|---|

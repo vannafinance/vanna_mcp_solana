@@ -3,8 +3,8 @@ Backs `vanna_account`'s write half and `vanna_margin_trade`
 (TOOLS_CATALOGUE.md §3.3/§3.5). Every account list and discriminator here was
 read directly from `vanna-credit-layer/programs/vanna_lending/src/
 instructions/account_manager/{account,collateral,borrow}.rs` and cross-checked
-against the real IDL — not assumed from a name list (see BUILD_PLAN.md's
-"bug found and fixed" note for why that matters).
+against the real IDL — not assumed from a name list (a name list hides which
+accounts share a token program; live simulation caught exactly that once).
 
 Every health-checked write here (`borrow`, `withdraw_collateral`, and the
 `deposit_and_borrow`/`close_position` composites that wrap them) calls the
@@ -41,7 +41,7 @@ from vanna_core.wsol import wallet_prep_instructions
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 
 # Instruction discriminators — verified byte-for-byte against the real IDL's
-# declared `discriminator` arrays (BUILD_PLAN.md Phase 2).
+# declared `discriminator` arrays.
 DISC_CREATE_MARGIN = bytes([105, 23, 202, 134, 147, 166, 130, 205])
 DISC_CLOSE_MARGIN = bytes([251, 12, 109, 24, 26, 96, 200, 131])
 DISC_DEPOSIT_COLLATERAL = bytes([238, 206, 161, 246, 218, 26, 100, 157])

@@ -6,10 +6,8 @@ parameter selecting one of its actions (TOOLS_CATALOGUE.md §3) — this is the
 14-dispatcher-tool shape, not one flat tool per instruction/read (see
 TOOLS_CATALOGUE.md §3's "Shape decision").
 
-Build status: see BUILD_PLAN.md. Only the Earn dispatchers
-(`vanna_earn_market`, `vanna_earn_position`, `vanna_earn_write`) are
-implemented so far — the rest follow the same pattern once their
-`vanna_core` contract wrappers exist.
+All 14 dispatchers are implemented; `vanna_fork` (FORK_DISPATCHERS) is dev-only and
+registered only with ENABLE_FORK_TOOLS=true.
 """
 
 from __future__ import annotations

@@ -277,9 +277,25 @@ def test_rpc_tool_call_parsing() -> None:
 
 def test_caller_key_prefers_verified_identity() -> None:
     scope: dict[str, Any] = {"headers": [(b"x-forwarded-for", b"1.2.3.4, 5.6.7.8")], "client": ("9.9.9.9", 1)}
-    assert caller_key(scope) == "ip:1.2.3.4"
+    assert caller_key(scope) == "ip:9.9.9.9"  # no trusted proxies: the header is ignored
     identity.bind_identity_to_scope(scope, {"sub": "alice"}, None)
     assert caller_key(scope) == "sub:alice"
+
+
+def test_caller_key_trusts_only_proxy_appended_forwarded_hops() -> None:
+    # A caller sends "spoofed"; Cloud Run's front end appends the real client IP (1 trusted hop).
+    scope: dict[str, Any] = {"headers": [(b"x-forwarded-for", b"spoofed, 203.0.113.7")], "client": ("10.0.0.1", 1)}
+    assert caller_key(scope, trusted_proxy_hops=1) == "ip:203.0.113.7"
+    # Behind an HTTPS load balancer too (2 hops): client IP, then the load balancer's own.
+    scope["headers"] = [(b"x-forwarded-for", b"spoofed, 203.0.113.7, 35.191.0.1")]
+    assert caller_key(scope, trusted_proxy_hops=2) == "ip:203.0.113.7"
+    # Fewer entries than trusted hops: the header can't be trusted, fall back to the peer.
+    scope["headers"] = [(b"x-forwarded-for", b"203.0.113.7")]
+    assert caller_key(scope, trusted_proxy_hops=2) == "ip:10.0.0.1"
+    # Spoofing the leftmost entry no longer changes the bucket.
+    a = {"headers": [(b"x-forwarded-for", b"aaa, 203.0.113.7")], "client": ("10.0.0.1", 1)}
+    b = {"headers": [(b"x-forwarded-for", b"bbb, 203.0.113.7")], "client": ("10.0.0.1", 1)}
+    assert caller_key(a, 1) == caller_key(b, 1)
 
 
 def test_rate_limit_rejects_after_burst_and_replays_body() -> None:

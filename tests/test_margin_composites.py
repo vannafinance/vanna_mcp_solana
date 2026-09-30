@@ -8,8 +8,6 @@ or closing it here would break every other test in the session.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
@@ -17,8 +15,7 @@ from solders.keypair import Keypair
 
 from mcp_server.dispatchers.account import vanna_account
 from mcp_server.dispatchers.margin_trade import vanna_margin_trade
-from mcp_server.dispatchers.swap import vanna_swap
-from tests._live_helpers import build_with_retry, is_stale_fork_pool_error, sign_and_submit
+from tests._live_helpers import build_with_retry, fund_token, sign_and_submit
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,19 +96,12 @@ async def test_close_position_full_unwind_live(ctx):
     # dust (borrow.rs's own rounding-up), which a vault holding only the
     # exact borrowed principal never quite does — get a little wallet USDC
     # ready for the `needs_wallet_topup` step close_position will report.
-    wallet_swap = None
-    for _ in range(6):
-        wallet_swap = await vanna_swap(
-            action="wallet_swap", authority=authority, from_asset="SOL", to_asset="USDC", amount="0.3"
-        )
-        if wallet_swap.get("simulation_success"):
-            break
-        if not is_stale_fork_pool_error(wallet_swap.get("reason")):
-            break
-        await asyncio.sleep(3)
-    if not wallet_swap.get("simulation_success"):
-        pytest.skip(f"Jupiter fork-pool wallet_swap unavailable this run: {wallet_swap.get('reason')}")
-    await sign_and_submit(settings.solana_rpc_url, wallet_swap, kp)
+    # Funded with the fork cheatcode, not a Jupiter swap: a drifted cloned DEX pool must not skip this whole
+    # close-position flow (swaps have their own tests).
+    await fund_token(
+        settings.solana_rpc_url, authority, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 5_000_000,
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    )
 
     seen_steps = []
     for _ in range(15):

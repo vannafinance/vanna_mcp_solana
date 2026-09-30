@@ -7,7 +7,8 @@
 # Runtime configuration (AUTH_ENABLED, OAUTH_*, EXTERNAL_BASE_URL, SOLANA_RPC_URL,
 # JUPITER_API_KEY, ...) lives on the Cloud Run service, not here: `gcloud run
 # deploy --image` keeps the service's existing env vars and secret mounts. Set
-# them with `gcloud run services update --update-env-vars=...`. The first deploy
+# them with `gcloud run services update --update-env-vars=...`; include TRUSTED_PROXY_HOPS=1
+# (Cloud Run's front end appends the client IP to X-Forwarded-For). The first deploy
 # of a public service must set AUTH_ENABLED=true and the OAUTH_* vars.
 #
 # Project, service and repository names are placeholders until the owner picks

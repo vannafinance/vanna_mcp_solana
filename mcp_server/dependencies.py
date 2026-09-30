@@ -93,7 +93,7 @@ class VannaContext:
                 f"{symbol!r} is not a supported asset. Supported: "
                 f"{sorted(a.symbol for a in ASSETS)}"
             )
-        # Only SOL/USDC/USDT have an Earn pool (D2): other assets are collateral-only and have no Reserve.
+        # Only SOL/USDC/USDT have an Earn pool: other assets are collateral-only and have no Reserve.
         assert_lend_borrow_offered(asset.symbol, "earn")
         if asset.symbol not in self._reserves:
             self._reserves[asset.symbol] = ReserveContract(

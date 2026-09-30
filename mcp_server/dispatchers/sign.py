@@ -1,7 +1,7 @@
 """`vanna_sign` — confirmation polling for a transaction the user's wallet
 already signed and broadcast (TOOLS_CATALOGUE.md §3.14).
 
-Signing is the connected wallet's job, not this server's (DECISIONS.md D3):
+Signing is the connected wallet's job, not this server's:
 the app/Copilot flow is build -> simulate -> wallet signs -> hosted RPC
 broadcast -> confirm. There is no remote Sign Service, so there are no
 server-side signing or auto-sign actions.

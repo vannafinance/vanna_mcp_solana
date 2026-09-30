@@ -15,7 +15,7 @@ RFC 9728 protected-resource metadata, MCP Streamable HTTP Origin validation.
 Ported from the Stellar MCP (Vanna_MCP/vanna-mcp/mcp_server/auth.py) minus its
 WorkOS-email -> Privy-DID resolution through the Stellar Sign Service: on
 Solana the user's connected wallet signs and there is no Sign Service
-(DECISIONS.md D3), so that hop has no counterpart.
+(the connected wallet signs; there is no Sign Service), so that hop has no counterpart.
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ class AuthMiddleware:
     X-Vanna-User-Assertion. Precedence is that header, then the bearer itself
     unless it is a machine token, which would make every user look like one
     subject. It is carried unverified for per-user features only; it never
-    authorizes a transaction — the user's wallet signature does (DECISIONS.md D3).
+    authorizes a transaction — the user's wallet signature does.
     """
 
     def __init__(

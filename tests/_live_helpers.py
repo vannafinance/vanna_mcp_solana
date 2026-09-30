@@ -26,7 +26,7 @@ from typing import Awaitable, Callable
 # live-mainnet router quotes against), not a defect in the instruction
 # construction. `vanna-credit-backend`'s own `isStaleForkPoolError` /
 # `healStaleDexPools` exists precisely for this; that heal loop isn't built
-# here yet (BUILD_PLAN.md), so tests retry with a fresh quote instead.
+# here, so tests retry with a fresh quote instead.
 _STALE_FORK_POOL_PATTERN = re.compile(
     r"0x1771|custom program error:\s*6001|SlippageToleranceExceeded|0x1788|0xbbd|custom program error:\s*3005",
     re.IGNORECASE,
@@ -38,7 +38,7 @@ def is_stale_fork_pool_error(reason: str | None) -> bool:
 
 
 # The on-chain program's own StalePrice error (6027). Writes refresh prices
-# first (DECISIONS.md D4), but a price can still go stale between the refresh
+# first (the app's price keeper), but a price can still go stale between the refresh
 # and the simulation. Fail-closed here is correct behavior, not a bug — tests
 # retry with a short wait instead of asserting success on the first attempt.
 _STALE_PRICE_PATTERN = re.compile(r"StalePrice|0x178b|custom program error:\s*6027", re.IGNORECASE)

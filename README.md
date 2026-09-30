@@ -107,7 +107,9 @@ only see and use read actions. The `Dockerfile` runs exactly this.
   `--session-affinity` and `--min-instances=1`; a request that still reaches another instance gets 404 and
   the client re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
   `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
-  refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set.
+  refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
+  `TRUSTED_PROXY_HOPS=1` on Cloud Run (2 behind an HTTPS load balancer) so unauthenticated rate limiting keys
+  on the real client IP; the default 0 ignores `X-Forwarded-For`, which callers can forge.
 - **Before a deploy, test the image itself:**
 
   ```bash

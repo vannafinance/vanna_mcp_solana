@@ -1,6 +1,6 @@
 """Offline foundation tests — no RPC. Layout byte-sizes, PDA derivation
 against known live addresses, and math formulas against hand-computed /
-live-observed examples (BUILD_PLAN.md Phase 0 "definition of done").
+live-observed examples.
 """
 
 from __future__ import annotations

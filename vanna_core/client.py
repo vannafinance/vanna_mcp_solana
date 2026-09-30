@@ -9,7 +9,7 @@ Every write path returns a `WriteEnvelope` (schema v1, vanna_core/envelope.py)
 built from an unsigned, simulated v0 transaction — this process holds no
 private keys and never signs or submits. See TOOLS_CATALOGUE.md §2.1/§5 for
 the envelope contract. The user's connected wallet signs it and the app
-broadcasts (DECISIONS.md D3).
+broadcasts; there is no Sign Service.
 """
 
 from __future__ import annotations

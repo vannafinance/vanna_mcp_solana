@@ -1,4 +1,4 @@
-"""Tests for `vanna_sign` (tx_status only — the user's wallet signs, DECISIONS.md D3)."""
+"""Tests for `vanna_sign` (tx_status only — the user's wallet signs)."""
 
 from __future__ import annotations
 

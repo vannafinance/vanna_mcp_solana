@@ -27,7 +27,7 @@ async def test_assets_lists_every_registered_asset(ctx):
         "kSOL", "kUSDC", "kUSDT", "kJitoSOL", "kJupSOL",
     }
     by_symbol = {a["symbol"]: a for a in result["assets"]}
-    # Only SOL/USDC/USDT are lent/borrowed (D2); the rest are collateral-only with no Reserve.
+    # Only SOL/USDC/USDT are lent/borrowed; the rest are collateral-only with no Reserve.
     assert {s for s, a in by_symbol.items() if a["lend_borrow_offered"]} == {"SOL", "USDC", "USDT"}
     for symbol in ("JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"):
         assert by_symbol[symbol]["borrow_enabled"] is False and by_symbol[symbol]["reserve"] is None

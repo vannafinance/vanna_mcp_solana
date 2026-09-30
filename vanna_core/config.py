@@ -12,8 +12,8 @@ not here — it's static registry data, not a handful of scalar env vars.
 
 Verified against `vanna-credit-backend` @ `f643dbf`, the
 `Vanna-Solana-Copilot-Answers.pdf` handoff (2026-09-28) and the owner's
-2026-09-29 decisions — DECISIONS.md is the register of what is settled
-(cluster, signing, pricing, asset scope, liquidation) and what is still open.
+2026-09-29 decisions: target the hosted fork, the connected wallet signs, the app's
+keeper prices the fork, only SOL/USDC/USDT are lent/borrowed, liquidation is read-only.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class MCPTransport(str, Enum):
 
 
 class OracleMode(str, Enum):
-    """Whether health-checked writes refresh fork prices first (DECISIONS.md D4).
+    """Whether health-checked writes refresh fork prices first.
 
     `dev-fork` (this release): refresh before every health-checked write.
     `pyth-pull`: no refresh — for a real cluster where external keepers publish
@@ -48,7 +48,7 @@ class OracleMode(str, Enum):
 
 
 class PriceRefreshSource(str, Enum):
-    """Who writes fresh prices onto the fork in `dev-fork` mode (DECISIONS.md D4)."""
+    """Who writes fresh prices onto the fork in `dev-fork` mode."""
 
     # The app's own price keeper, POST {price_keeper_url}/api/prices/refresh —
     # the owner-designated writer; it also heals stale cloned Kamino reserves.
@@ -96,10 +96,10 @@ class VannaSettings(BaseSettings):
     # The ONLY hardcoded on-chain entry point — there is no registry to
     # resolve this from. declare_id!, Anchor.toml and the backend agree; the
     # owner verified the live executable matches their pinned build
-    # (DECISIONS.md D1); that build is layer HEAD ecdb9b6 (DECISIONS.md D8).
+    # (2026-09-29); that build is vanna-credit-layer HEAD ecdb9b6.
     vanna_program_id: str = "H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC"
 
-    # Fork price preparation (DECISIONS.md D4).
+    # Fork price preparation (the app's price keeper; no Hermes this release).
     oracle_mode: OracleMode = OracleMode.DEV_FORK
     price_refresh_source: PriceRefreshSource = PriceRefreshSource.KEEPER
     # The vanna-credit-backend app's HTTP host (NOT the RPC host): POST
@@ -177,6 +177,11 @@ class VannaSettings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_refill_per_sec: float = 8.0
     rate_limit_burst: float = 24.0
+    # Proxies in front of the server that append to X-Forwarded-For, trusted for the client IP
+    # used as the rate-limit key when a call carries no verified token. 0 = ignore the header
+    # and use the peer address (safe default). Cloud Run direct: 1; behind an external HTTPS
+    # load balancer in front of Cloud Run: 2.
+    trusted_proxy_hops: int = Field(default=0, ge=0, le=5)
 
     @field_validator("vanna_program_id")
     @classmethod

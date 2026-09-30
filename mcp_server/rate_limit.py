@@ -6,7 +6,10 @@ process-local, so each instance enforces its own ceiling; a fleet-wide limit
 would need a shared store.
 
 The caller key is, in order: the verified `sub`, the verified client ID, the
-first X-Forwarded-For hop, the peer address. It sits inside AuthMiddleware, so
+client IP, the peer address. The client IP is read from X-Forwarded-For only as far
+as the configured trusted proxies go (TRUSTED_PROXY_HOPS, counted from the right):
+entries to the left of those were written by the caller and could be anything, so
+a caller can't pick its own bucket. It sits inside AuthMiddleware, so
 the verified identity is already stamped on the request scope.
 
 Ported from the Stellar MCP's rate_limit.py without its first-party per-user
@@ -129,7 +132,7 @@ def rpc_tool_call(body: bytes) -> tuple[str, str | None]:
     return (name if isinstance(name, str) else "", action if isinstance(action, str) else None)
 
 
-def caller_key(scope: Scope) -> str:
+def caller_key(scope: Scope, trusted_proxy_hops: int = 0) -> str:
     stamped = identity_from_scope(scope)
     claims = stamped[0] if stamped else None
     if claims:
@@ -140,9 +143,12 @@ def caller_key(scope: Scope) -> str:
         if isinstance(cid, str) and cid:
             return f"client:{cid[:64]}"
     headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-    forwarded = headers.get("x-forwarded-for", "")
-    if forwarded:
-        return f"ip:{forwarded.split(',')[0].strip()}"
+    if trusted_proxy_hops > 0:
+        hops = [h.strip() for h in headers.get("x-forwarded-for", "").split(",") if h.strip()]
+        # Each trusted proxy appends the address it saw; the client is the entry the outermost
+        # trusted proxy appended. Fewer entries than hops means the header can't be trusted.
+        if len(hops) >= trusted_proxy_hops:
+            return f"ip:{hops[-trusted_proxy_hops]}"
     client = scope.get("client")
     if client:
         return f"ip:{client[0]}"
@@ -152,12 +158,17 @@ def caller_key(scope: Scope) -> str:
 class RateLimitMiddleware:
     """ASGI token bucket on POST /mcp; every other route passes through."""
 
-    def __init__(self, app: ASGIApp, *, refill_per_sec: float = 8.0, burst: float = 24.0) -> None:
+    def __init__(
+        self, app: ASGIApp, *, refill_per_sec: float = 8.0, burst: float = 24.0, trusted_proxy_hops: int = 0
+    ) -> None:
         if not math.isfinite(refill_per_sec) or refill_per_sec <= 0:
             raise ValueError("refill_per_sec must be positive")
         if not math.isfinite(burst) or burst < WRITE_COST:
             raise ValueError(f"burst must admit the maximum tool cost ({WRITE_COST})")
+        if trusted_proxy_hops < 0:
+            raise ValueError("trusted_proxy_hops must be >= 0")
         self.app = app
+        self._trusted_proxy_hops = trusted_proxy_hops
         self._refill_per_sec = refill_per_sec
         self._burst = burst
         self._buckets: OrderedDict[str, TokenBucket] = OrderedDict()
@@ -197,7 +208,7 @@ class RateLimitMiddleware:
 
         tool, action = rpc_tool_call(body)
         cost = tool_cost(tool, action) if tool else DEFAULT_TOOL_COST
-        key = caller_key(scope)
+        key = caller_key(scope, self._trusted_proxy_hops)
         wait = self._bucket(key).take(cost)
         if wait > 0:
             logger.warning("Rate limited caller=%s tool=%s cost=%s", key, tool or "-", cost)

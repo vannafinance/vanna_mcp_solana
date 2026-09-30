@@ -1,5 +1,5 @@
 """`dev-fork` price preparation - makes prices fresh on the Surfpool fork before every
-health-checked write (DECISIONS.md D4).
+health-checked write.
 
 Two sources, chosen by `PRICE_REFRESH_SOURCE`; only one may run against a fork, since both
 write the same oracle accounts:
@@ -152,6 +152,38 @@ def restamp_scope_entries(data: bytes, entries: set[int], now_unix: int) -> byte
     return bytes(out)
 
 
+def scope_entries_to_restamp(
+    data: bytes, assets: list[DiscoveredAsset], fork_now: int, wall_now: int
+) -> set[int]:
+    """Scope entries that look stale only because the fork's clock runs ahead of real time.
+
+    An entry qualifies when it is older than the strictest `max_age_secs` of the assets that
+    read it *by the fork's clock* (so the program would refuse it) but within that age *by real
+    time* (so the value itself is current on mainnet). A genuinely old entry - a feed that
+    stopped updating - never qualifies: restamping it would fake freshness, so it stays stale
+    and the program fails closed.
+    """
+    max_age: dict[int, int] = {}
+    for asset in assets:
+        if not asset.oracle.uses_scope:
+            continue
+        for entry in (*asset.oracle.scope_chain, *asset.oracle.scope_twap_chain):
+            if entry != SCOPE_CHAIN_UNUSED:
+                age = asset.oracle.max_age_secs
+                max_age[entry] = min(max_age.get(entry, age), age)
+    if len(data) < ORACLE_PRICES_LEN or bytes(data[:8]) != ORACLE_PRICES_DISCRIMINATOR:
+        return set()
+    out = set()
+    for entry, limit in max_age.items():
+        at = _PRICES_OFFSET + _DATED_PRICE_LEN * entry
+        if int.from_bytes(data[at : at + 8], "little") == 0:
+            continue  # never written: not a clock problem
+        ts = int.from_bytes(data[at + 24 : at + 32], "little")
+        if fork_now - ts > limit and wall_now - ts <= limit:
+            out.add(entry)
+    return out
+
+
 def scope_entries_used(assets: list[DiscoveredAsset]) -> set[int]:
     entries: set[int] = set()
     for asset in assets:
@@ -230,7 +262,12 @@ async def _supplement_uncovered(client: SolanaClient, settings: VannaSettings) -
     by Pyth ALONE (no Scope chain - JupUSD today) whose feed the keeper does not write goes
     stale after its max age and would fail every borrow / in-debt withdrawal that touches it.
     This writes exactly those feeds, and never one the keeper reported writing, so the two
-    writers cannot touch the same account. Throttled like the keeper; never raises.
+    writers cannot touch the same account.
+
+    It also restamps Scope entries that look stale only because the fork's clock runs ahead of
+    real time (the keeper copies Kamino's Scope account from mainnet and restamps just its own
+    assets' entries, so e.g. the xStocks keep mainnet timestamps). See `scope_entries_to_restamp`
+    for the guard that keeps genuinely stale feeds stale. Throttled like the keeper; never raises.
     """
     global _supplement_last_refresh
     if client is None:
@@ -241,15 +278,14 @@ async def _supplement_uncovered(client: SolanaClient, settings: VannaSettings) -
         try:
             registry = AssetRegistry(client)
             await registry.load()
+            adapter = DevForkOracleAdapter(client, settings)
             needed = {
                 asset.oracle.pyth_price
                 for asset in registry.all()
                 if asset.oracle.uses_pyth and not asset.oracle.uses_scope
             } - _keeper_covered_accounts
-            if not needed:
-                _supplement_last_refresh = time.monotonic()
-                return []
-            results = await DevForkOracleAdapter(client, settings)._refresh_pyth(registry.all(), only=needed)
+            results = await adapter._refresh_pyth(registry.all(), only=needed) if needed else []
+            results.extend(await adapter._restamp_drifted_scope(registry.all()))
             _supplement_last_refresh = time.monotonic()
             return results
         except Exception as exc:  # noqa: BLE001
@@ -337,6 +373,19 @@ class DevForkOracleAdapter:
             await self._set_account(str(feed.account), lamports, data, str(PYTH_RECEIVER_PROGRAM_ID))
             results.append({"kind": "pyth", "feed": feed.name, "account": str(feed.account), "value": value, "source": source})
         return results
+
+    async def _restamp_drifted_scope(self, assets: list[DiscoveredAsset]) -> list[dict]:
+        """Restamp, on the fork's own Scope copy, only the entries `scope_entries_to_restamp` picks."""
+        account = await self._client.fetch_account_with_lamports_or_none(Pubkey.from_string(SCOPE_PRICES))
+        if account is None:
+            return []
+        lamports, data = account
+        fork_now = await self._client.get_chain_clock_unix_timestamp()
+        entries = scope_entries_to_restamp(data, assets, fork_now, int(time.time()))
+        if not entries:
+            return []
+        await self._set_account(SCOPE_PRICES, lamports, restamp_scope_entries(data, entries, fork_now), SCOPE_PROGRAM_ID)
+        return [{"kind": "scope_drift", "account": SCOPE_PRICES, "entries_restamped": sorted(entries)}]
 
     async def _refresh_scope(self, assets: list[DiscoveredAsset]) -> list[dict]:
         entries = scope_entries_used(assets)
