@@ -276,7 +276,7 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 | Run URL | `https://vanna-credit-solana-test-o3dmfat4aq-uc.a.run.app` |
 | Runtime SA | `vanna-credit-runtime@vanna-credit-solana-test.iam.gserviceaccount.com` |
 | Builder SA | `vanna-credit-builder@vanna-credit-solana-test.iam.gserviceaccount.com` |
-| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:0c6ff1d` (branch `copilot`), revision `vanna-credit-solana-test-00006-n69`. Previous revision `00005-dt6` (app `main`) is the rollback target |
+| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:544400a` (branch `copilot`), revision `vanna-credit-solana-test-00009-p47` (changes only the image; env, secrets, VPC and NAT are kept). Revision `00005-dt6` (app `main`, no Copilot) is the rollback target |
 | Secrets | Secret Manager: `workos-m2m-client-secret`, `copilot-session-secret`, `copilot-store-secret`, readable by the runtime SA, mounted as env |
 | NAT | `vanna-internal-nat` on router `vanna-internal-router` (subnet `vanna-internal-usc1`) |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.50.0.0/24` (Private Google Access on) |
@@ -342,8 +342,8 @@ WorkOS environment.
 
 - `test.solana.vanna.finance` is a custom-domain mapping to the **same** Cloud Run service as the built-in
   `…run.app` URL. Use the custom domain for users.
-- The live app is an **image built by hand from the `copilot` branch** (`0c6ff1d`, which is `main` plus 7
-  commits), deployed with `gcloud run deploy`. Nothing in GitHub triggers it, so pushing or merging does
+- The live app is an **image built by hand from the `copilot` branch** (`544400a`, which is `main` plus the
+  Copilot commits), deployed with `gcloud run deploy`. Nothing in GitHub triggers it, so pushing or merging does
   not change the site. Merging `copilot` into `main` matters only so a future deploy from `main` does
   not drop the Copilot. Rollback target: revision `vanna-credit-solana-test-00005-dt6` (app `main`).
 
@@ -353,6 +353,24 @@ WorkOS environment.
   until the NAT propagated.
 - **MCP image:** build with a build-only config; `cloudbuild.mcp.yaml`'s deploy step is for pipeline use and
   now states ingress and auth explicitly.
+- **Redeploying only the app:** build with a build-only config (`logging: CLOUD_LOGGING_ONLY`, builder SA),
+  then `gcloud run deploy vanna-credit-solana-test --image …:<tag>`; do not pass env, secret or network flags,
+  so the Copilot configuration is kept.
+- **Fork behaviours the Copilot now handles (all in `lib/copilot`; core Solana code is not edited):**
+  - *Stale DEX pools on swaps.* The fork's cloned concentrated-liquidity pool state drifts, so a swap that
+    quoted fine can fail simulation (Anchor 3005, Jupiter 6001). When the MCP cannot build a swap for that
+    reason, the Copilot re-clones the pools the failed envelope touched with the app's own
+    `healStaleDexPools` and asks the MCP to build again (up to 2 times), as the app's own swap does.
+  - *Stale-flagged oracle price.* The MCP's price read stays "stale" on the fork until one of its own write
+    builds restamps the feeds, so a pre-check that refused on the flag could never clear it. The Copilot now
+    refreshes once through the app's price keeper (throttled 15 s) and then lets the build decide; the MCP
+    refreshes, simulates and fails closed on a genuinely stale price. An *unavailable* price is still refused.
+  - *Slow fork-RPC reads* (about 22 s once in ten) were cut off by a 20 s timeout and the body-read timeout
+    escaped unretried. The timeout is now 30 s and a body-read timeout is wrapped and retried once.
+  - *First call on a new instance* can fail ("fetch failed") while VPC egress and NAT come up; the WorkOS
+    token request is retried up to 3 times.
+  - Raw runtime errors (`InstructionError … Custom(3005)`) are shown as plain sentences, and the Kamino
+    redeem card names kSOL receipt tokens (with their underlying worth) instead of printing them as SOL.
 - **MCP smoke test:** the MCP can't be called anonymously. Check `solana-mcp` request logs for the app's
   calls, or sign in at `/copilot` and ask for a price.
 
