@@ -276,7 +276,7 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 | Run URL | `https://vanna-credit-solana-test-o3dmfat4aq-uc.a.run.app` |
 | Runtime SA | `vanna-credit-runtime@vanna-credit-solana-test.iam.gserviceaccount.com` |
 | Builder SA | `vanna-credit-builder@vanna-credit-solana-test.iam.gserviceaccount.com` |
-| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:544400a` (branch `copilot`), revision `vanna-credit-solana-test-00009-p47` (changes only the image; env, secrets, VPC and NAT are kept). Revision `00005-dt6` (app `main`, no Copilot) is the rollback target |
+| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:1712730` (branch `copilot`), revision `vanna-credit-solana-test-00011-xnz` (changes only the image; env, secrets, VPC and NAT are kept). Revision `00005-dt6` (app `main`, no Copilot) is the rollback target |
 | Secrets | Secret Manager: `workos-m2m-client-secret`, `copilot-session-secret`, `copilot-store-secret`, readable by the runtime SA, mounted as env |
 | NAT | `vanna-internal-nat` on router `vanna-internal-router` (subnet `vanna-internal-usc1`) |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.50.0.0/24` (Private Google Access on) |
@@ -365,6 +365,17 @@ WorkOS environment.
     builds restamps the feeds, so a pre-check that refused on the flag could never clear it. The Copilot now
     refreshes once through the app's price keeper (throttled 15 s) and then lets the build decide; the MCP
     refreshes, simulates and fails closed on a genuinely stale price. An *unavailable* price is still refused.
+  - *Margin swaps into JupSOL / JitoSOL are too large.* Measured live: a `margin_swap` that buys either
+    liquid-staking token exceeds Solana's 1232-byte limit at any amount (even 20 USDC), while margin swaps
+    *from* them, wallet swaps *into* them, and a SOL lever all work. The MCP exposes no route-limiting
+    argument, and lookup-table setup rounds are not built, so this is a core limit. A lever on those assets
+    used to deposit and borrow and then fail on the swap, stranding the account half-way. The Copilot now
+    refuses it up front (`MARGIN_SWAP_BLOCKED_TARGETS` in `lib/copilot/plan.ts`), offers "Lever SOL Nx
+    instead", and tells a direct margin swap into them to swap in the wallet and then deposit. Remove the
+    constant when the core handles these routes.
+  - *"Deposit X and borrow Y with Nx leverage"* in one sentence is rewritten to the lever request it means
+    (`lever X ASSET Nx borrowing Y`); a message that mixes leverage with other real steps is still refused as
+    its own request.
   - *Slow fork-RPC reads* (about 22 s once in ten) were cut off by a 20 s timeout and the body-read timeout
     escaped unretried. The timeout is now 30 s and a body-read timeout is wrapped and retried once.
   - *First call on a new instance* can fail ("fetch failed") while VPC egress and NAT come up; the WorkOS

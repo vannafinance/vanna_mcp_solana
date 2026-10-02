@@ -161,7 +161,10 @@ each step claims once, re-checks the 1.15 floor, rebuilds fresh, then asks for y
 | L5 | lever my SOL 50x | Refused: above the 10x cap | 🤖 | |
 | L6 | lever my SOL 1x | Says 1x is not leverage | 🤖 | |
 | L7 | lever my SOL -3x | Refused | 🤖 | |
-| L8 | lever my JitoSOL 2x | Refused or explained: collateral-only asset | 🤖 | |
+| L8 | lever my JitoSOL 2x | "I can't lever JitoSOL yet…" with a "Lever SOL 2x instead" option (a margin swap into JitoSOL/JupSOL is too large for one Solana transaction). Verified live | 🤖 | ✅ |
+| L12 | can you deposit 1 jupSOL and borrow USDC again with 3x leverage? | Refused up front the same way (JupSOL), offering SOL. Verified live | 🤖 | ✅ |
+| L13 | deposit 1 SOL and borrow USDC with 2x leverage | One lever plan: open account, deposit 1 SOL, borrow USDC, margin swap, report. Verified live | 🤖 | ✅ |
+| L14 | swap 20 USDC to JupSOL inside my margin account | Refused up front: swap in your wallet, then deposit. `swap 20 USDC to JupSOL` (wallet) works | 🤖 | ✅ |
 | L9 | lever my SOL 2x and then supply 1 USDC | Lever cannot be chained: asks to split | 🤖 | |
 | L10 | lever SOL 5x keeping my health factor above 2 | Conflict with the user's floor: refuse or reduce | 🤖 | |
 | L11 | lever my SOL 2x (near-liquidation account) | Must not breach the floor | 🤖 | |
