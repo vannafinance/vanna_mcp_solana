@@ -104,6 +104,28 @@ async def test_margin_swap_live_builds_and_usually_simulates(ctx, funded_fork_ke
     pytest.skip(f"Every attempt hit a fork DEX-pool drift after {MAX_ATTEMPTS} tries: {last_reason}")
 
 
+@pytest.mark.parametrize("target", ["JupSOL", "JitoSOL"])
+async def test_margin_swap_into_lst_fits_one_transaction(ctx, funded_fork_keypair, live_margin_position, target):
+    """A margin swap that BUYS a liquid-staking token used to overflow 1232 bytes at any amount (Jupiter's
+    unconstrained route plus the margin instruction's accounts). The account-capped re-quote must make it fit."""
+    from tests._live_helpers import sign_and_submit
+    from vanna_core.config import get_settings as _get_settings
+
+    settings = _get_settings()
+    last_reason = None
+    for attempt in range(MAX_ATTEMPTS):
+        envelope = await vanna_swap(
+            action="margin_swap", authority=live_margin_position, from_asset="SOL", to_asset=target, amount="0.02"
+        )
+        assert envelope.get("error") != "transaction_too_large", envelope
+        assert "schemaVersion" in envelope, envelope
+        if envelope["simulation_success"]:
+            await sign_and_submit(settings.solana_rpc_url, envelope, funded_fork_keypair)
+            return
+        last_reason = envelope.get("reason")
+    pytest.skip(f"Built within the size limit every time, but each simulation hit fork DEX-pool drift: {last_reason}")
+
+
 async def test_wallet_swap_live_builds_and_usually_simulates(ctx, funded_fork_keypair):
     from tests._live_helpers import sign_and_submit
     from vanna_core.config import get_settings as _get_settings

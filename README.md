@@ -116,6 +116,13 @@ only see and use read actions. The `Dockerfile` runs exactly this.
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
   `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
   Concrete project values: `COPILOT_ARCHITECTURE.md` §11.
+- **Margin swaps and transaction size:** a margin swap is the Jupiter route plus the margin instruction's
+  own accounts, which can exceed Solana's 1232-byte limit (always for routes into JupSOL/JitoSOL before this
+  fix). `margin_swap` checks the compiled size and re-quotes with a tighter Jupiter `maxAccounts` until it
+  fits, and loads the protocol-wide accounts from a frozen lookup table named by `PROTOCOL_LOOKUP_TABLES`.
+  Create that table once per cluster with `python scripts/create_protocol_lookup_table.py` (a fork reset
+  deletes it; builds then skip it). Only margin swaps use it: accounts loaded from a lookup table are not
+  indexed by the fork's `getSignaturesForAddress`, which Earn history relies on.
 - **Before a deploy, test the image itself:**
 
   ```bash

@@ -277,6 +277,7 @@ class SolanaClient:
         required_signers: list[Pubkey] | None = None,
         address_lookup_tables: list[AddressLookupTableAccount] | None = None,
         preview: dict | None = None,
+        use_protocol_lookup_tables: bool = False,
     ) -> WriteEnvelope:
         """Build, compile as v0, simulate (sig_verify disabled — nothing is
         signed yet), and wrap the result in a schema-v1 WriteEnvelope. Never
@@ -295,7 +296,15 @@ class SolanaClient:
         blockhash = blockhash_resp.value.blockhash
         last_valid_block_height = blockhash_resp.value.last_valid_block_height
 
-        alt_accounts = address_lookup_tables or []
+        alt_accounts = list(address_lookup_tables or [])
+        # Opt-in per build, not global: an account loaded from a lookup table is not indexed by the fork's
+        # getSignaturesForAddress, and Earn history finds deposits by the reserve address. Only builds that
+        # need the room (margin swaps) load protocol keys; every other transaction is unchanged.
+        if use_protocol_lookup_tables and self._settings.protocol_lookup_tables:
+            from vanna_core.protocol_alt import load_protocol_tables
+
+            given = {a.key for a in alt_accounts}
+            alt_accounts += [t for t in await load_protocol_tables(self, self._settings.protocol_lookup_tables) if t.key not in given]
         message = MessageV0.try_compile(fee_payer, full_instructions, alt_accounts, blockhash)
         placeholder_sigs = [Signature.default() for _ in range(message.header.num_required_signatures)]
         tx = VersionedTransaction.populate(message, placeholder_sigs)

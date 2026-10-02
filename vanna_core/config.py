@@ -123,6 +123,11 @@ class VannaSettings(BaseSettings):
     jupiter_api_key: str = ""
     jupiter_fork_dexes: str = "Raydium,Raydium CLMM,Raydium CP,Orca V2,Meteora DLMM,Whirlpool"
 
+    # Address lookup table(s) holding the protocol-wide accounts every margin build names (comma-separated).
+    # Created and frozen once with scripts/create_protocol_lookup_table.py. Lets large margin swaps fit in
+    # one transaction; empty = build without it (a missing table is skipped, never fatal). See protocol_alt.py.
+    protocol_lookup_tables: str = ""
+
     # Health-factor threshold — informational only. The actual on-chain rule
     # is BALANCE_TO_BORROW_THRESHOLD_WAD, a hardcoded 1.10 program constant
     # (TOOLS_CATALOGUE.md §2.4); this field must never be read as if it could

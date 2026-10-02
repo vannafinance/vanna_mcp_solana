@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import base64
 
+from solders.compute_budget import set_compute_unit_limit
+from solders.hash import Hash
 from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.signature import Signature
@@ -28,6 +30,26 @@ from vanna_core.pdas import find_associated_token_address, margin_pda
 from vanna_core.types import ContractCallError
 
 DEFAULT_SLIPPAGE_BPS = 100  # 1%, matches the app's own default
+
+MAX_TX_BYTES = 1232  # Solana packet limit for one serialized transaction
+MARGIN_SWAP_COMPUTE_UNITS = 1_000_000
+# Jupiter route account caps for a margin swap, tried in order until the transaction fits. None = Jupiter's
+# default (unconstrained) route, which most pairs fit; the tighter caps cost a little price, not safety
+# (min_received still comes from the quote that was actually built).
+MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
+
+
+def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute_unit_limit: int | None) -> bool:
+    """True when these instructions compile into a v0 transaction within Solana's packet limit."""
+    full = list(instructions)
+    if compute_unit_limit is not None:
+        full = [set_compute_unit_limit(compute_unit_limit), *full]
+    try:
+        message = MessageV0.try_compile(fee_payer, full, lookup_tables, Hash.default())
+        tx = VersionedTransaction.populate(message, [Signature.default()] * message.header.num_required_signatures)
+        return len(bytes(tx)) <= MAX_TX_BYTES
+    except Exception:  # noqa: BLE001 - too many accounts to even compile is "does not fit"
+        return False
 
 
 class SwapContract:
@@ -143,31 +165,58 @@ class SwapContract:
 
         margin = margin_pda(authority, self._client.program_id)[0]
         raw_amount = math_utils.base_units(amount_ui, from_asset.decimals)
-        quote = await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount, slippage_bps)
-        swap_response = await self._jupiter.get_swap_instructions(
-            quote, str(margin), wrap_and_unwrap_sol=False, use_shared_accounts=True
-        )
-        swap_ix_dict = swap_response["swapInstruction"]
-        if swap_ix_dict["programId"] != str(JUPITER_V6_PROGRAM_ID):
-            raise ContractCallError(f"Unexpected swap program {swap_ix_dict['programId']}")
-        raw_data = decode_jupiter_instruction(swap_ix_dict).data
-        if raw_data[:8] not in ALLOWED_SELECTORS:
-            raise ContractCallError("Jupiter returned a route type the margin adapter doesn't allow")
 
-        cpi_instruction = decode_jupiter_instruction(swap_ix_dict)
-        min_received = int(quote.get("otherAmountThreshold", quote["outAmount"]))
+        # Jupiter's unconstrained route plus the margin instruction's own accounts (every collateral and debt
+        # asset's oracle and vault) can overflow Solana's packet limit - always for routes into liquid-staking
+        # tokens such as JupSOL/JitoSOL. Re-quote with a tighter account cap until the transaction fits.
+        from vanna_core.protocol_alt import load_protocol_tables
 
-        instruction = await build_margin_execute_instruction(
-            self._client, authority, margin,
-            target_program=JUPITER_V6_PROGRAM_ID, spent=from_asset, received=to_asset,
-            cpi_accounts=cpi_instruction.accounts, data=cpi_instruction.data,
-            min_received=min_received, registry=registry,
-        )
+        protocol_tables = await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables)
+        last_error: Exception | None = None
+        for cap in MARGIN_ROUTE_ACCOUNT_CAPS:
+            try:
+                quote = await self._jupiter.get_quote(
+                    from_asset.mint, to_asset.mint, raw_amount, slippage_bps,
+                    max_accounts=cap, restrict_intermediate_tokens=cap is not None,
+                )
+            except ContractCallError as exc:  # a tight cap can leave Jupiter with no route at all
+                last_error = exc
+                continue
+            swap_response = await self._jupiter.get_swap_instructions(
+                quote, str(margin), wrap_and_unwrap_sol=False, use_shared_accounts=True
+            )
+            swap_ix_dict = swap_response["swapInstruction"]
+            if swap_ix_dict["programId"] != str(JUPITER_V6_PROGRAM_ID):
+                raise ContractCallError(f"Unexpected swap program {swap_ix_dict['programId']}")
+            raw_data = decode_jupiter_instruction(swap_ix_dict).data
+            if raw_data[:8] not in ALLOWED_SELECTORS:
+                raise ContractCallError("Jupiter returned a route type the margin adapter doesn't allow")
 
-        lookup_tables = await fetch_lookup_tables(self._client, swap_response.get("addressLookupTableAddresses", []))
+            cpi_instruction = decode_jupiter_instruction(swap_ix_dict)
+            min_received = int(quote.get("otherAmountThreshold", quote["outAmount"]))
+
+            instruction = await build_margin_execute_instruction(
+                self._client, authority, margin,
+                target_program=JUPITER_V6_PROGRAM_ID, spent=from_asset, received=to_asset,
+                cpi_accounts=cpi_instruction.accounts, data=cpi_instruction.data,
+                min_received=min_received, registry=registry,
+            )
+
+            lookup_tables = await fetch_lookup_tables(self._client, swap_response.get("addressLookupTableAddresses", []))
+            route_keys = {t.key for t in lookup_tables}
+            all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
+            if fits_one_transaction([instruction], authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS):
+                break
+            last_error = ContractCallError(
+                f"Transaction too large: margin swap {from_asset.symbol}->{to_asset.symbol} route "
+                f"(account cap {cap or 'none'}) exceeds {MAX_TX_BYTES} bytes"
+            )
+        else:
+            raise last_error or ContractCallError("Transaction too large: no margin swap route fits in one transaction")
+
         return await self._client.build_write_envelope(
-            [instruction], authority, purpose="margin_execute:jupiter_swap", compute_unit_limit=1_000_000,
-            address_lookup_tables=lookup_tables,
+            [instruction], authority, purpose="margin_execute:jupiter_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
+            address_lookup_tables=lookup_tables, use_protocol_lookup_tables=True,
             summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui)},
         )
 

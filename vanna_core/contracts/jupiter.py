@@ -49,8 +49,18 @@ class JupiterClient:
         return {"x-api-key": self._settings.jupiter_api_key} if self._settings.jupiter_api_key else {}
 
     async def get_quote(
-        self, input_mint: str, output_mint: str, amount_raw: int, slippage_bps: int = 100
+        self,
+        input_mint: str,
+        output_mint: str,
+        amount_raw: int,
+        slippage_bps: int = 100,
+        *,
+        max_accounts: int | None = None,
+        restrict_intermediate_tokens: bool = False,
     ) -> dict:
+        """`max_accounts` caps the accounts Jupiter's route may use and `restrict_intermediate_tokens`
+        keeps multi-hop routes on liquid intermediate tokens; both shrink the route so it fits in one
+        transaction alongside a margin instruction's own accounts (Jupiter quote API options)."""
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -58,6 +68,10 @@ class JupiterClient:
             "slippageBps": str(slippage_bps),
             "dexes": self._settings.jupiter_fork_dexes,
         }
+        if max_accounts is not None:
+            params["maxAccounts"] = str(max_accounts)
+        if restrict_intermediate_tokens:
+            params["restrictIntermediateTokens"] = "true"
         async with httpx.AsyncClient(timeout=15.0) as http:
             resp = await http.get(f"{self._base_url}/swap/v1/quote", params=params, headers={**self._headers, "Accept": "application/json"})
         body = _safe_json(resp, "Jupiter quote failed")
