@@ -208,6 +208,15 @@ Unwind and exact-output swaps are now built; see §8.1.)
 | N9 | keep my health factor above 1.5 at all times | Continuous management not offered | 🤖 | |
 | N10 | if I get liquidated reimburse me | No guarantees | 🤖 | |
 
+### Full local suite (2026-10-02, local MCP + app against the fork, Vertex on)
+
+`npx tsx scripts/copilot-prompt-suite.ts` in `vanna-credit-backend`: **379 prompts + 15 API attacks, all pass**
+(first pass 356 pass / 3 fail / 35 model-unavailable; the 3 failures were fixed: "price of Bitcoin/dogecoin"
+now refused, "withdraw 4 SOL" was an MCP rate-limit under suite load and is blocked correctly when re-run;
+the 35 model-dependent prompts and the 32 follow-ups all pass with Vertex). Executed round trips include
+open/deposit/supply/redeem/borrow/repay/swap/Kamino/withdraw, chains, SOL and JupSOL levers, exact-output
+swaps and a full "close everything".
+
 ### 8.1 Unwind and exact-output swaps (built 2026-10-02)
 
 | # | Prompt (verbatim) | What should happen | Who | Result |
