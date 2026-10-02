@@ -19,8 +19,10 @@ wallet.
 Kamino markets/positions, borrow/withdraw capacity, liquidation risk, history, swap quotes, protocol info) and
 writes as one-step or multi-step plans (earn supply/redeem, margin open/close/deposit/withdraw/borrow/repay,
 wallet and margin swaps, Kamino deposit/redeem, "lever my X 2x", chains of up to 8 steps). A single action is a
-one-step plan, so it uses the same approval, exactly-once and confirmation path. **Not built:** unwinding
-positions, conditional or standing orders, buy-exact-output swaps.
+one-step plan, so it uses the same approval, exactly-once and confirmation path. Also: **unwind** ("close
+everything": Kamino, then repay, then withdraw, then Earn, in an order where health only improves) and
+**exact-output swaps** ("swap SOL to get 100 USDC": the input is sized from live quotes so the minimum received
+covers the target). **Not built:** conditional or standing orders (refused honestly).
 
 ---
 
@@ -353,6 +355,12 @@ WorkOS environment.
   until the NAT propagated.
 - **MCP image:** build with a build-only config; `cloudbuild.mcp.yaml`'s deploy step is for pipeline use and
   now states ingress and auth explicitly.
+- **Test locally before deploying (team rule, 2026-10-02):** batch fixes, run the stack locally, test, then
+  deploy once. Local stack: in this repo
+  `MCP_TRANSPORT=streamable-http PORT=8000 AUTH_ENABLED=false PROTOCOL_LOOKUP_TABLES=<table> .venv\Scripts\python -m mcp_server.main`;
+  in `vanna-credit-backend` `npm run dev` with `.env.local` pointing `MCP_BASE_URL` at `http://localhost:8000/mcp`,
+  `MCP_AUTH_MODE=none`, `COPILOT_DEBUG_FACTS=1`; Vertex needs `gcloud auth application-default login`.
+  Then `npx tsx scripts/copilot-prompt-suite.ts` (379 prompts + 15 API attacks; `--only <category>`).
 - **Redeploying only the app:** build with a build-only config (`logging: CLOUD_LOGGING_ONLY`, builder SA),
   then `gcloud run deploy vanna-credit-solana-test --image …:<tag>`; do not pass env, secret or network flags,
   so the Copilot configuration is kept.
@@ -365,14 +373,24 @@ WorkOS environment.
     builds restamps the feeds, so a pre-check that refused on the flag could never clear it. The Copilot now
     refreshes once through the app's price keeper (throttled 15 s) and then lets the build decide; the MCP
     refreshes, simulates and fails closed on a genuinely stale price. An *unavailable* price is still refused.
-  - *Margin swaps into JupSOL / JitoSOL are too large.* Measured live: a `margin_swap` that buys either
-    liquid-staking token exceeds Solana's 1232-byte limit at any amount (even 20 USDC), while margin swaps
-    *from* them, wallet swaps *into* them, and a SOL lever all work. The MCP exposes no route-limiting
-    argument, and lookup-table setup rounds are not built, so this is a core limit. A lever on those assets
-    used to deposit and borrow and then fail on the swap, stranding the account half-way. The Copilot now
-    refuses it up front (`MARGIN_SWAP_BLOCKED_TARGETS` in `lib/copilot/plan.ts`), offers "Lever SOL Nx
-    instead", and tells a direct margin swap into them to swap in the wallet and then deposit. Remove the
-    constant when the core handles these routes.
+  - *Margin swaps into JupSOL / JitoSOL were too large (fixed in the MCP).* A `margin_swap` that bought
+    either liquid-staking token exceeded Solana's 1232-byte limit at any amount: the Jupiter route plus ~26
+    margin accounts written out in full. The MCP now (a) checks the compiled size and re-quotes with a
+    tighter Jupiter `maxAccounts` until it fits and (b) loads the protocol-wide accounts from a frozen
+    **protocol lookup table** named by `PROTOCOL_LOOKUP_TABLES` (staging fork:
+    `3VEqRdeCsA1Xx5GDEwBQoAaBn4mPzEYuqmVUPfbJwsVG`, created with `scripts/create_protocol_lookup_table.py`).
+    JupSOL's 3-hop route went from 1,359 to 988 bytes. Only margin swaps use the table, because accounts
+    loaded from a table are not indexed by the fork's `getSignaturesForAddress`, which Earn history needs.
+    The Copilot's `MARGIN_SWAP_BLOCKED_TARGETS` (in `lib/copilot/plan.ts`) is now empty, kept as a safety
+    valve. **The MCP service must get `PROTOCOL_LOOKUP_TABLES` at the next deploy.** A fork reset deletes
+    the table; builds then skip it (no failure) until it is re-created.
+  - *Unwind.* "Close everything" / "unwind my positions" / "exit my kamino positions" plans, from live
+    reads, in an order where health only improves: redeem Kamino, repay each debt (from margin, else the
+    wallet, else swap other collateral into the debt asset first), withdraw collateral, redeem Earn, and
+    close the account only if the user names it. Amounts are "all", resolved when each step is built. The
+    8-step cap is respected without separating a swap from the repay it funds (`lib/copilot/workflow/unwind.ts`).
+  - *Exact-output swaps.* "Swap SOL to get 100 USDC" / "buy 100 USDC with SOL" size the input from live
+    quotes so the quoted minimum received covers the target (`sizeExactOut` in `workflow/steps.ts`).
   - *"Deposit X and borrow Y with Nx leverage"* in one sentence is rewritten to the lever request it means
     (`lever X ASSET Nx borrowing Y`); a message that mixes leverage with other real steps is still refused as
     its own request.
