@@ -4,11 +4,15 @@ A chat assistant inside the Vanna Solana app. A user types things like *"what's 
 *"supply 100 USDC"* or *"lever my SOL 2x"*; the Copilot answers from live on-chain data and, for actions,
 prepares the transactions for the user's own wallet to sign.
 
-Status (2026-09-30): the **MCP server (this repo) is built and verified live** on the Solana fork. The
-Copilot is **built** in `vanna-credit-backend` (branch `copilot`, local commit `f9aee1a`, not pushed): 301 unit
-tests pass, `next build` passes, and real on-chain round trips (open account, deposit, borrow, earn supply/redeem,
-swap, Kamino farm, repay, lever 2x) were confirmed on the fork against a local MCP. **Not yet exercised:** real
-WorkOS token, real Firestore, real Vertex credentials, and the UI with a real wallet.
+Editable board: [`docs/solana-copilot-architecture.excalidraw`](docs/solana-copilot-architecture.excalidraw)
+(open in the Excalidraw extension, or import at [excalidraw.com](https://excalidraw.com)).
+
+Status (2026-10-01): the **MCP server (this repo) is built and verified live** on the Solana fork. The
+Copilot is **built** in `vanna-credit-backend` (branch `copilot`, not pushed). Hosting inventory in
+`solana-mcp` and `vanna-credit-solana-test` is recorded in §11: Firestore exists, custom VPCs are
+peered, the app runtime SA can call Vertex and Firestore. **Still needed to deploy:** WorkOS M2M
+values (client id / secret / token URL / issuer / JWKS / audience were not pasted), MCP Cloud Run
+image, and Direct VPC + Cloud NAT on the app service (not attached yet so the live site is unchanged).
 
 **What it supports:** reads (health, positions, collateral, debt, wallet, prices, pool APYs, earned interest,
 Kamino markets/positions, borrow/withdraw capacity, liquidation risk, history, swap quotes, protocol info) and
@@ -215,10 +219,12 @@ Checked on 2026-09-30 against the real code of both repos and the live fork.
 | Very large transactions (long swap routes) | The MCP returns `transaction_too_large`; the Copilot retries with a smaller amount. Lookup-table setup rounds are not built (not needed so far) |
 | The fork's clock drifts and prices can go stale | The MCP refreshes (keeper + its own guarded supplement); a still-stale price makes the build fail safely |
 
-**Decided (2026-09-30):** Gemini `gemini-3.8-flash` on Vertex in `solana-mcp`; WorkOS for the Copilot-to-MCP token; MCP internal-only;
-limits in the Copilot; product = the five tokens. **Still needed before a hosted launch:** the concrete values
-(Firestore database, WorkOS client id/issuer/audience, the MCP's project/region and how the app reaches an internal
-service) - see the open questions.
+**Decided (2026-09-30, hosting filled in 2026-10-01):** Gemini `gemini-3.8-flash` on Vertex in `solana-mcp`;
+WorkOS for the Copilot-to-MCP token; MCP **internal** in `solana-mcp`; the app in
+`vanna-credit-solana-test` reaches it over peered custom VPCs (`vanna-internal`). Limits in the
+Copilot; product = the five tokens. **Still needed before a hosted launch:** the WorkOS M2M
+credential itself (see §11), then deploy the MCP with `--ingress=internal` and attach Direct VPC
+egress on the app (with Cloud NAT, so Jupiter and the fork RPC keep working).
 
 **Verdict:** the architecture works with what exists. The only new code is the Copilot itself in the app.
 
@@ -243,6 +249,88 @@ service) - see the open questions.
 | Swaps and Kamino | Supported (Jupiter swaps; Kamino single-asset supply from the margin balance) |
 | Product assets | SOL, USDC, USDT, JitoSOL, JupSOL (+ Kamino receipts). JupUSD / xStocks skipped for now |
 | AI | Vertex Gemini `gemini-3.8-flash` in project `solana-mcp`; service account `vanna-copilot` (`roles/aiplatform.user`); no service-account keys (org policy), so hosted uses the attached account and local uses a developer's own login |
-| Copilot -> MCP auth | WorkOS machine-to-machine token (see section 7). MCP ingress: internal was decided; the MCP is planned in project `solana-mcp` while the app runs in `vanna-credit-solana-test`, so cross-project reachability is open (see the access request) |
+| Copilot -> MCP auth | WorkOS machine-to-machine token (see section 7). MCP ingress: **internal** in project `solana-mcp`. The app Cloud Run in `vanna-credit-solana-test` reaches it through peered custom VPCs named `vanna-internal` (see §11). WorkOS values themselves are not in the repo yet. |
 | Limits | Per-user limits in the Copilot; no unlimited use |
 | Mainnet | Not in scope now; everything targets the fork |
+
+## 11. Hosting inventory (2026-10-01)
+
+Checked with `anubhav@vanna.finance` as Owner on both GCP projects. Default VPCs in the two
+projects both use `10.128.0.0/20` in `us-central1`, so they cannot be peered. Custom networks
+were created instead. Direct VPC egress is **not** attached to the live app yet: doing that
+with `all-traffic` without Cloud NAT would send Jupiter and fork-RPC through a subnet with no
+internet path.
+
+### App — `vanna-credit-solana-test`
+
+| Item | Value |
+|---|---|
+| Cloud Run service | `vanna-credit-solana-test` in `us-central1` |
+| Public origin | `https://test.solana.vanna.finance` (`NEXT_PUBLIC_SITE_URL`) |
+| Run URL | `https://vanna-credit-solana-test-o3dmfat4aq-uc.a.run.app` |
+| Runtime SA | `vanna-credit-runtime@vanna-credit-solana-test.iam.gserviceaccount.com` |
+| Builder SA | `vanna-credit-builder@vanna-credit-solana-test.iam.gserviceaccount.com` |
+| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:813fad3` (app `main`, no Copilot env yet) |
+| Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.50.0.0/24` (Private Google Access on) |
+| Peering | `app-to-solana-mcp` → `solana-mcp/vanna-internal` (**ACTIVE**) |
+
+### MCP + Copilot data — `solana-mcp`
+
+| Item | Value |
+|---|---|
+| Firestore | Native `(default)` in `us-central1` (created 2026-10-01; none existed before) |
+| Vertex | `gemini-3.8-flash`, location `global`; SA `vanna-copilot@solana-mcp.iam.gserviceaccount.com` |
+| Cloud Run | **Not deployed yet.** Target service name `vanna-mcp-solana`, `--ingress=internal` |
+| Artifact Registry | `us-central1-docker.pkg.dev/solana-mcp/vanna-credit` |
+| Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.40.0.0/24` (Private Google Access on) |
+| Peering | `solana-mcp-to-app` → `vanna-credit-solana-test/vanna-internal` (**ACTIVE**) |
+
+Cross-project IAM on `solana-mcp` for the app runtime SA: `roles/datastore.user`,
+`roles/aiplatform.user`, `roles/serviceusage.serviceUsageConsumer`. `roles/run.invoker` is
+granted when the MCP service exists.
+
+### Copilot env that hosting will set (no secrets in git)
+
+```
+MCP_BASE_URL=<internal Cloud Run URL>/mcp
+MCP_AUTH_MODE=workos
+GOOGLE_CLOUD_PROJECT=solana-mcp
+GOOGLE_CLOUD_LOCATION=global
+VERTEX_MODEL=gemini-3.8-flash
+COPILOT_FIRESTORE_PROJECT=solana-mcp
+COPILOT_FIRESTORE_DATABASE=(default)
+COPILOT_FIRESTORE_COLLECTION_PREFIX=solana_copilot_
+COPILOT_PUBLIC_ORIGIN=https://test.solana.vanna.finance
+COPILOT_AUTH_DOMAIN=test.solana.vanna.finance
+```
+
+### Still needed from a person (cannot be read from GCP)
+
+A **WorkOS machine-to-machine** credential for Copilot → MCP. A Dashboard **client id + API key**
+(`sk_…`) is not the same thing as M2M `client_id` + `client_secret`. Paste in chat:
+
+```
+WORKOS_M2M_CLIENT_ID=
+WORKOS_M2M_CLIENT_SECRET=
+WORKOS_M2M_TOKEN_URL=
+OAUTH_ISSUER=
+OAUTH_JWKS_URI=
+OAUTH_AUDIENCE=
+FIRST_PARTY_CLIENT_IDS=
+```
+
+If only an AuthKit client id and `sk_…` API key exist, paste those and say so: the API key can
+create an M2M application; it cannot be used as `WORKOS_M2M_CLIENT_SECRET`.
+
+`COPILOT_SESSION_SECRET` / `COPILOT_STORE_SECRET` can be generated at deploy. Jupiter key and
+price-keeper secret stay optional.
+
+### Deploy-time remaining (after WorkOS)
+
+1. Build and deploy this repo to `vanna-mcp-solana` in `solana-mcp` with `--ingress=internal`,
+   Direct VPC on `vanna-internal` / `vanna-internal-usc1`, `AUTH_ENABLED=true`.
+2. Grant the app runtime SA `roles/run.invoker` on that service.
+3. Cloud NAT on the **app** subnet `vanna-internal-usc1`, then attach Direct VPC egress
+   (`all-traffic`) to `vanna-credit-solana-test` so internal `*.run.app` is reachable without
+   cutting off Jupiter and the fork RPC.
+4. Set the Copilot env vars on the app service and deploy the `copilot` branch.

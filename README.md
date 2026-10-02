@@ -102,14 +102,17 @@ only see and use read actions. The `Dockerfile` runs exactly this.
 - **Reproducible build:** the `Dockerfile` installs `requirements.txt` under `constraints.txt`, the exact
   package set the image was built and tested with. To upgrade a dependency, change it there, rebuild, and
   rerun the live suite plus the container test below.
-- **Cloud Run:** `cloudbuild.mcp.yaml` builds, pushes and deploys (project, repository and service names are
-  placeholders). MCP sessions (`mcp-session-id`) live in instance memory, so the deploy sets
-  `--session-affinity` and `--min-instances=1`; a request that still reaches another instance gets 404 and
-  the client re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
+- **Cloud Run:** MCP hosts in GCP project `solana-mcp`, region `us-central1`, Artifact Registry
+  `vanna-credit`, service name `vanna-mcp-solana`. Ingress is **internal**; the app
+  (`vanna-credit-solana-test` in the same region) reaches it over peered custom VPCs named
+  `vanna-internal`. `cloudbuild.mcp.yaml` builds, pushes and deploys. MCP sessions
+  (`mcp-session-id`) live in instance memory, so the deploy sets `--session-affinity` and
+  `--min-instances=1`; a request that still reaches another instance gets 404 and the client
+  re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
   `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
-  `TRUSTED_PROXY_HOPS=1` on Cloud Run (2 behind an HTTPS load balancer) so unauthenticated rate limiting keys
-  on the real client IP; the default 0 ignores `X-Forwarded-For`, which callers can forge.
+  `TRUSTED_PROXY_HOPS=1` if the service is ever public (Cloud Run's front end appends the client
+  IP); internal-only traffic does not need it. Concrete project values: `COPILOT_ARCHITECTURE.md` §11.
 - **Before a deploy, test the image itself:**
 
   ```bash
