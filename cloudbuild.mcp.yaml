@@ -5,9 +5,13 @@
 #     --substitutions=_TAG=$(git rev-parse --short HEAD)
 #
 # Hosted in GCP project solana-mcp, region us-central1, Artifact Registry
-# vanna-credit, service vanna-mcp-solana. Ingress must be internal; the app in
-# vanna-credit-solana-test reaches it over peered VPC vanna-internal
-# (COPILOT_ARCHITECTURE.md §11). Do not deploy with ingress=all.
+# vanna-credit, service vanna-mcp-solana. Ingress is all, but Cloud Run IAM must stay
+# REQUIRED: only the app's runtime SA in vanna-credit-solana-test is run.invoker, and
+# the MCP checks the WorkOS token. Never add an allUsers invoker. (ingress=internal
+# does not work across projects: the caller gets a 404.) See COPILOT_ARCHITECTURE.md §11.
+# The Cloud Build service account needs storage.objectViewer, artifactregistry.writer,
+# logging.logWriter (and run.admin + iam.serviceAccountUser for the deploy step below);
+# the first hosted build used a build-only config with --service-account instead.
 #
 # Runtime configuration (AUTH_ENABLED, OAUTH_*, EXTERNAL_BASE_URL, SOLANA_RPC_URL,
 # JUPITER_API_KEY, ...) lives on the Cloud Run service, not here: `gcloud run
@@ -48,6 +52,8 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}:${_TAG}
       - --region=${_REGION}
       - --platform=managed
+      - --ingress=all
+      - --no-allow-unauthenticated
       # MCP sessions (mcp-session-id) live in instance memory. Affinity keeps a client on its instance;
       # if it still lands elsewhere the server answers 404 and the Copilot client re-handshakes.
       - --session-affinity

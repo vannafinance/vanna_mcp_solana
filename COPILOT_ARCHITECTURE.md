@@ -8,12 +8,12 @@ Editable board: [`docs/solana-copilot-architecture.excalidraw`](docs/solana-copi
 (open in the Excalidraw extension, or import at [excalidraw.com](https://excalidraw.com)).
 
 Status (2026-10-02): the **MCP server (this repo) is built and verified live** on the Solana fork and
-**deployed to Cloud Run** (`vanna-mcp-solana` in `solana-mcp`, internal ingress, WorkOS auth on). The
-Copilot is **built and pushed** in `vanna-credit-backend` (branch `copilot`) and **deployed** to the
-staging app (`test.solana.vanna.finance`, revision `00006`) with Direct VPC egress and Cloud NAT. Hosting
-details are in §11. **Still to verify:** one signed-in Copilot request from the live app reaching the MCP
-(the MCP is internal-ingress in another project, so cross-project reachability is only proven by a real
-call), then the first real signed round trip with a wallet.
+**deployed to Cloud Run** (`vanna-mcp-solana` in `solana-mcp`, ingress `all` but **IAM required**, WorkOS auth
+on). The Copilot is **built and pushed** in `vanna-credit-backend` (branch `copilot`, not yet merged to `main`)
+and **deployed** to the staging app (`test.solana.vanna.finance`, revision `00006`) with Direct VPC egress and
+Cloud NAT. The app reaches the MCP over its `run.app` URL (verified: the MCP's request log shows the app's
+calls returning 200). Hosting details are in §11. **Still to verify:** the first real signed round trip with a
+wallet.
 
 **What it supports:** reads (health, positions, collateral, debt, wallet, prices, pool APYs, earned interest,
 Kamino markets/positions, borrow/withdraw capacity, liquidation risk, history, swap quotes, protocol info) and
@@ -182,7 +182,9 @@ Rules the plan lane always follows:
 - **Errors:** always `{"error": "<code>", "message": "..."}` — e.g. `invalid_input`, `asset_not_offered`,
   `price_unavailable`, `insufficient_scope`, `rate_limited` (HTTP 429 with `Retry-After`).
 - **Auth (hosted):** a **WorkOS** machine-to-machine token for the Copilot app; listing its client id in
-  `FIRST_PARTY_CLIENT_IDS` gives it write access. The MCP is deployed with **internal** ingress (not public).
+  `FIRST_PARTY_CLIENT_IDS` gives it write access. The MCP's Cloud Run service also **requires IAM**: only the
+  app's runtime service account may invoke it, and the Copilot sends a Google ID token for that in
+  `X-Serverless-Authorization` (see §11). Anonymous callers get 403 from Cloud Run before reaching the MCP.
   Locally the MCP can run without auth.
 - **Why WorkOS (same as Stellar):** the MCP builds transactions for any wallet, so it must know *which application* is
   calling before it serves it. It verifies a WorkOS-signed token on every request
@@ -221,11 +223,13 @@ Checked on 2026-09-30 against the real code of both repos and the live fork.
 | The fork's clock drifts and prices can go stale | The MCP refreshes (keeper + its own guarded supplement); a still-stale price makes the build fail safely |
 
 **Decided (2026-09-30, hosting filled in 2026-10-01):** Gemini `gemini-3.8-flash` on Vertex in `solana-mcp`;
-WorkOS for the Copilot-to-MCP token; MCP **internal** in `solana-mcp`; the app in
-`vanna-credit-solana-test` reaches it over peered custom VPCs (`vanna-internal`). Limits in the
-Copilot; product = the five tokens. **Deployed 2026-10-02 (staging):** the MCP and
-the app are live as described in §11. What remains is proving one signed-in Copilot call reaches the MCP
-across projects, and the first signed round trip.
+WorkOS for the Copilot-to-MCP token; MCP in `solana-mcp`. Limits in the Copilot; product = the five tokens.
+**Changed 2026-10-02:** the MCP was first deployed with `--ingress=internal`, planning to reach it over
+peered VPCs. That does not work across projects: Cloud Run internal ingress accepts only same-project (or
+VPC Service Controls) callers, and a call from the app's project got a 404 from Cloud Run before reaching the
+MCP. The MCP now uses `--ingress=all` with Cloud Run IAM **required** (only the app's runtime SA is an
+invoker, anonymous calls get 403) plus WorkOS token verification in the MCP. **Deployed (staging):** the MCP
+and the app are live as described in §11; what remains is the first signed round trip with a wallet.
 
 **Verdict:** the architecture works with what exists. The only new code is the Copilot itself in the app.
 
@@ -250,7 +254,7 @@ across projects, and the first signed round trip.
 | Swaps and Kamino | Supported (Jupiter swaps; Kamino single-asset supply from the margin balance) |
 | Product assets | SOL, USDC, USDT, JitoSOL, JupSOL (+ Kamino receipts). JupUSD / xStocks skipped for now |
 | AI | Vertex Gemini `gemini-3.8-flash` in project `solana-mcp`; service account `vanna-copilot` (`roles/aiplatform.user`); no service-account keys (org policy), so hosted uses the attached account and local uses a developer's own login |
-| Copilot -> MCP auth | WorkOS machine-to-machine token (see section 7). MCP ingress: **internal** in project `solana-mcp`. The app Cloud Run in `vanna-credit-solana-test` reaches it through peered custom VPCs named `vanna-internal` (see §11). The M2M client secret lives only in Secret Manager. |
+| Copilot -> MCP auth | WorkOS machine-to-machine token (see section 7). MCP: Cloud Run in project `solana-mcp`, ingress `all` with IAM required (invoker = the app runtime SA) and the WorkOS token checked in the MCP. The app calls its `run.app` URL, sending the Google ID token in `X-Serverless-Authorization` and the WorkOS bearer in `Authorization` (see §11). The M2M client secret lives only in Secret Manager. |
 | Limits | Per-user limits in the Copilot; no unlimited use |
 | Mainnet | Not in scope now; everything targets the fork |
 
@@ -276,7 +280,7 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 | Secrets | Secret Manager: `workos-m2m-client-secret`, `copilot-session-secret`, `copilot-store-secret`, readable by the runtime SA, mounted as env |
 | NAT | `vanna-internal-nat` on router `vanna-internal-router` (subnet `vanna-internal-usc1`) |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.50.0.0/24` (Private Google Access on) |
-| Peering | `app-to-solana-mcp` → `solana-mcp/vanna-internal` (**ACTIVE**) |
+| Peering | `app-to-solana-mcp` → `solana-mcp/vanna-internal` (ACTIVE, but **not on the MCP call path**: calls go over the `run.app` URL) |
 
 ### MCP + Copilot data — `solana-mcp`
 
@@ -284,11 +288,11 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 |---|---|
 | Firestore | Native `(default)` in `us-central1` (created 2026-10-01; none existed before) |
 | Vertex | `gemini-3.8-flash`, location `global`; SA `vanna-copilot@solana-mcp.iam.gserviceaccount.com` |
-| Cloud Run | `vanna-mcp-solana`, image `mcp-solana:6e9e415`, `--ingress=internal`, IAM required (no public invoker), `AUTH_ENABLED=true`, Direct VPC `vanna-internal` with `private-ranges-only` egress (it needs the public internet for the fork RPC and Jupiter and has no NAT). URL `https://vanna-mcp-solana-398807408840.us-central1.run.app` |
+| Cloud Run | `vanna-mcp-solana`, image `mcp-solana:6e9e415`, revision `00003`, `--ingress=all` with IAM required (no `allUsers` invoker; anonymous calls get 403), `AUTH_ENABLED=true`, `TRUSTED_PROXY_HOPS=1` (public front end), Direct VPC `vanna-internal` with `private-ranges-only` egress (it needs the public internet for the fork RPC and Jupiter and has no NAT). URL `https://vanna-mcp-solana-398807408840.us-central1.run.app`. **Not `internal`:** internal ingress rejects a caller from another project with a 404 |
 | Builder SA | `vanna-mcp-builder@solana-mcp.iam.gserviceaccount.com`: `storage.objectViewer`, `artifactregistry.writer`, `logging.logWriter` only. Build with a build-only config (`logging: CLOUD_LOGGING_ONLY`); `cloudbuild.mcp.yaml`'s deploy step would use default ingress |
 | Artifact Registry | `us-central1-docker.pkg.dev/solana-mcp/vanna-credit` |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.40.0.0/24` (Private Google Access on) |
-| Peering | `solana-mcp-to-app` → `vanna-credit-solana-test/vanna-internal` (**ACTIVE**) |
+| Peering | `solana-mcp-to-app` → `vanna-credit-solana-test/vanna-internal` (ACTIVE, not on the MCP call path) |
 
 Cross-project IAM on `solana-mcp` for the app runtime SA: `roles/datastore.user`,
 `roles/aiplatform.user`, `roles/serviceusage.serviceUsageConsumer`. It also has
@@ -334,11 +338,29 @@ FIRST_PARTY_CLIENT_IDS=client_01M3XFWY6BCVAN1XPS0RZW6Y0F
 The client secret exists only in Secret Manager. A production launch repeats this in the production
 WorkOS environment.
 
+### Two URLs, two branches
+
+- `test.solana.vanna.finance` is a custom-domain mapping to the **same** Cloud Run service as the built-in
+  `…run.app` URL. Use the custom domain for users.
+- The live app is an **image built by hand from the `copilot` branch** (`0c6ff1d`, which is `main` plus 7
+  commits), deployed with `gcloud run deploy`. Nothing in GitHub triggers it, so pushing or merging does
+  not change the site. Merging `copilot` into `main` matters only so a future deploy from `main` does
+  not drop the Copilot. Rollback target: revision `vanna-credit-solana-test-00005-dt6` (app `main`).
+
+### Deploy notes (learned 2026-10-02)
+
+- **Order:** Cloud NAT first, then Direct VPC egress `all-traffic`; the reverse broke `/api/prices` with 502
+  until the NAT propagated.
+- **MCP image:** build with a build-only config; `cloudbuild.mcp.yaml`'s deploy step is for pipeline use and
+  now states ingress and auth explicitly.
+- **MCP smoke test:** the MCP can't be called anonymously. Check `solana-mcp` request logs for the app's
+  calls, or sign in at `/copilot` and ask for a price.
+
 ### Open
 
-1. **One signed-in Copilot request from the live app to the MCP.** Cloud Run `internal` ingress normally
-   accepts only same-project or VPC-SC traffic; the app is in another project, so cross-project
-   reachability is unproven until a real call succeeds. Fallbacks if it fails: VPC Service Controls, or
-   host both services in one project.
-2. The first real signed round trip with a wallet.
-3. Rotate the WorkOS `sk_test` API key and client secret if they were ever held in plain files.
+1. The first real signed round trip with a wallet.
+2. Merge the `copilot` branch into `main` (PR).
+3. Rotate the WorkOS `sk_test` API key (and the M2M secret if wanted); both were held in plain files
+   briefly during setup.
+4. Production: repeat WorkOS and hosting in the production environment; decide whether to tighten the
+   MCP (VPC Service Controls or hosting it in the app's project) instead of `ingress=all`.

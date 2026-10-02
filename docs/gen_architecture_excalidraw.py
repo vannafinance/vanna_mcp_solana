@@ -239,7 +239,7 @@ text(
 )
 
 # ── Frame B: hosting ─────────────────────────────────────────────────────────
-fb = frame(60, 1010, 2120, 520, "B. Hosting  —  option B  (internal MCP, peered VPC)")
+fb = frame(60, 1010, 2120, 520, "B. Hosting  —  staging, live 2026-10-02  (MCP over HTTPS: Cloud Run IAM + WorkOS)")
 BID = fb["id"]
 
 def H(x, y, w, h, fill, label, **kw):
@@ -250,19 +250,26 @@ app_p = box(100, 1080, 920, 400, "#e7f5ff", sw=1, frame=BID)
 text(120, 1096, 880, 36, "GCP  vanna-credit-solana-test    us-central1", fs=20, align="left", frame=BID)
 app_run = H(140, 1150, 400, 120, "#b2f2bb", "Cloud Run  vanna-credit-solana-test\nhttps://test.solana.vanna.finance", fs=15, frame=BID)
 app_sa = H(140, 1290, 400, 80, "#d3f9d8", "runtime SA\nvanna-credit-runtime@…", fs=14, frame=BID)
-app_vpc = H(580, 1150, 400, 220, "#c5f6fa", "VPC  vanna-internal\nsubnet  10.50.0.0/24\nDirect VPC + Cloud NAT\n(at Copilot deploy)", fs=15, frame=BID)
+app_vpc = H(580, 1150, 400, 220, "#c5f6fa", "VPC  vanna-internal\nsubnet  10.50.0.0/24\nDirect VPC egress (all-traffic)\n+ Cloud NAT  (router vanna-internal-router)", fs=15, frame=BID)
+app_sec = H(140, 1390, 400, 70, "#fff3bf", "Secret Manager\nworkos-m2m-client-secret · session · store", fs=13, frame=BID)
+app_net = H(580, 1390, 400, 70, "#e7f5ff", "Internet via NAT\nJupiter · fork RPC · WorkOS token URL", fs=13, frame=BID)
 
 mcp_p = box(1220, 1080, 900, 400, "#fff4e6", sw=1, frame=BID)
 text(1240, 1096, 860, 36, "GCP  solana-mcp    us-central1", fs=20, align="left", frame=BID)
-mcp_run = H(1260, 1150, 380, 100, "#ffd8a8", "Cloud Run  vanna-mcp-solana\ningress = internal  (not public)", fs=15, frame=BID)
+mcp_run = H(1260, 1150, 380, 100, "#ffd8a8", "Cloud Run  vanna-mcp-solana\ningress = all  ·  IAM required (invoker = app SA)\nAUTH_ENABLED=true  (WorkOS token checked)", fs=14, frame=BID)
 fsstore = H(1680, 1150, 400, 100, "#e9fac8", "Firestore  Native  (default)\nplans · limits · sessions", fs=15, frame=BID)
 vert = H(1260, 1280, 380, 80, "#d0bfff", "Vertex  gemini-3.8-flash", fs=15, frame=BID)
-mcp_vpc = H(1680, 1280, 400, 80, "#c5f6fa", "VPC  vanna-internal\n10.40.0.0/24  PGA on", fs=15, frame=BID)
+mcp_vpc = H(1680, 1280, 400, 80, "#c5f6fa", "VPC  vanna-internal  10.40.0.0/24\npeered with the app VPC — NOT on the MCP call path", fs=13, frame=BID)
+workos_h = H(1260, 1390, 380, 70, "#fff3bf", "WorkOS AuthKit  (staging)\nM2M app 'Vanna Solana Copilot'  ·  JWKS", fs=13, frame=BID)
 
-# peering arrow between the two VPC boxes
-arrow(app_vpc, mcp_vpc, "peering ACTIVE", color="#0c8599")
+# Internal ingress does not accept a caller from another project, so the MCP is reached over its
+# run.app URL. Two tokens: Google ID token (X-Serverless-Authorization) + WorkOS bearer (Authorization).
+arrow(app_vpc, mcp_run, "HTTPS run.app\nGoogle ID token + WorkOS bearer", color="#0c8599")
+arrow(app_vpc, mcp_vpc, "peered (unused for MCP)", dashed=True, color="#adb5bd")
 arrow(app_run, app_vpc, "egress", dashed=True)
-arrow(app_vpc, mcp_run, "private run.app", color="#0c8599")
+arrow(app_run, app_sec, "mounted env", dashed=True)
+arrow(app_vpc, app_net, "NAT", dashed=True)
+arrow(mcp_run, workos_h, "verify JWT", dashed=True, color="#e67700")
 arrow(mcp_run, fsstore, "", dashed=True)
 arrow(app_run, vert, "Gemini", dashed=True, color="#7048e8")
 

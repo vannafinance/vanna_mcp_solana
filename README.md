@@ -103,16 +103,19 @@ only see and use read actions. The `Dockerfile` runs exactly this.
   package set the image was built and tested with. To upgrade a dependency, change it there, rebuild, and
   rerun the live suite plus the container test below.
 - **Cloud Run:** MCP hosts in GCP project `solana-mcp`, region `us-central1`, Artifact Registry
-  `vanna-credit`, service name `vanna-mcp-solana`. Ingress is **internal**; the app
-  (`vanna-credit-solana-test` in the same region) reaches it over peered custom VPCs named
-  `vanna-internal`. `cloudbuild.mcp.yaml` builds, pushes and deploys. MCP sessions
+  `vanna-credit`, service name `vanna-mcp-solana`. Ingress is `all`, but **Cloud Run IAM is required**:
+  only the Copilot app's runtime service account (`vanna-credit-solana-test` project) holds
+  `roles/run.invoker`, and the MCP also verifies the WorkOS token. The app sends the Google ID token in
+  `X-Serverless-Authorization` and the WorkOS bearer in `Authorization`. (`--ingress=internal` was tried
+  first and does not work: a caller from another project gets a 404 from Cloud Run.) Do not add an
+  `allUsers` invoker. `cloudbuild.mcp.yaml` builds, pushes and deploys. MCP sessions
   (`mcp-session-id`) live in instance memory, so the deploy sets `--session-affinity` and
   `--min-instances=1`; a request that still reaches another instance gets 404 and the client
   re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
   `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
-  `TRUSTED_PROXY_HOPS=1` if the service is ever public (Cloud Run's front end appends the client
-  IP); internal-only traffic does not need it. Concrete project values: `COPILOT_ARCHITECTURE.md` §11.
+  `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
+  Concrete project values: `COPILOT_ARCHITECTURE.md` §11.
 - **Before a deploy, test the image itself:**
 
   ```bash
