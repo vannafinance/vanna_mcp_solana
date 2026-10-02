@@ -10,7 +10,7 @@ Editable board: [`docs/solana-copilot-architecture.excalidraw`](docs/solana-copi
 Status (2026-10-02): the **MCP server (this repo) is built and verified live** on the Solana fork and
 **deployed to Cloud Run** (`vanna-mcp-solana` in `solana-mcp`, ingress `all` but **IAM required**, WorkOS auth
 on). The Copilot is **built and pushed** in `vanna-credit-backend` (branch `copilot`, not yet merged to `main`)
-and **deployed** to the staging app (`test.solana.vanna.finance`, revision `00006`) with Direct VPC egress and
+and **deployed** to the staging app (`test.solana.vanna.finance`, revision `00012`) with Direct VPC egress and
 Cloud NAT. The app reaches the MCP over its `run.app` URL (verified: the MCP's request log shows the app's
 calls returning 200). Hosting details are in §11. **Still to verify:** the first real signed round trip with a
 wallet.
@@ -278,7 +278,7 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 | Run URL | `https://vanna-credit-solana-test-o3dmfat4aq-uc.a.run.app` |
 | Runtime SA | `vanna-credit-runtime@vanna-credit-solana-test.iam.gserviceaccount.com` |
 | Builder SA | `vanna-credit-builder@vanna-credit-solana-test.iam.gserviceaccount.com` |
-| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:1712730` (branch `copilot`), revision `vanna-credit-solana-test-00011-xnz` (changes only the image; env, secrets, VPC and NAT are kept). Revision `00005-dt6` (app `main`, no Copilot) is the rollback target |
+| Current image | `us-central1-docker.pkg.dev/vanna-credit-solana-test/vanna-credit/app:134d926` (branch `copilot`), revision `vanna-credit-solana-test-00012-d86`, deployed 2026-10-03 (changes only the image; env, secrets, VPC and NAT are kept). Revision `00005-dt6` (app `main`, no Copilot) is the rollback target |
 | Secrets | Secret Manager: `workos-m2m-client-secret`, `copilot-session-secret`, `copilot-store-secret`, readable by the runtime SA, mounted as env |
 | NAT | `vanna-internal-nat` on router `vanna-internal-router` (subnet `vanna-internal-usc1`) |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.50.0.0/24` (Private Google Access on) |
@@ -290,7 +290,7 @@ the egress was attached first and `/api/prices` returned 502 until the NAT exist
 |---|---|
 | Firestore | Native `(default)` in `us-central1` (created 2026-10-01; none existed before) |
 | Vertex | `gemini-3.8-flash`, location `global`; SA `vanna-copilot@solana-mcp.iam.gserviceaccount.com` |
-| Cloud Run | `vanna-mcp-solana`, image `mcp-solana:6e9e415`, revision `00003`, `--ingress=all` with IAM required (no `allUsers` invoker; anonymous calls get 403), `AUTH_ENABLED=true`, `TRUSTED_PROXY_HOPS=1` (public front end), Direct VPC `vanna-internal` with `private-ranges-only` egress (it needs the public internet for the fork RPC and Jupiter and has no NAT). URL `https://vanna-mcp-solana-398807408840.us-central1.run.app`. **Not `internal`:** internal ingress rejects a caller from another project with a 404 |
+| Cloud Run | `vanna-mcp-solana`, image `mcp-solana:ac4cca1`, revision `00004` (adds `PROTOCOL_LOOKUP_TABLES=3VEqRdeCsA1Xx5GDEwBQoAaBn4mPzEYuqmVUPfbJwsVG`), `--ingress=all` with IAM required (no `allUsers` invoker; anonymous calls get 403), `AUTH_ENABLED=true`, `TRUSTED_PROXY_HOPS=1` (public front end), Direct VPC `vanna-internal` with `private-ranges-only` egress (it needs the public internet for the fork RPC and Jupiter and has no NAT). URL `https://vanna-mcp-solana-398807408840.us-central1.run.app`. **Not `internal`:** internal ingress rejects a caller from another project with a 404 |
 | Builder SA | `vanna-mcp-builder@solana-mcp.iam.gserviceaccount.com`: `storage.objectViewer`, `artifactregistry.writer`, `logging.logWriter` only. Build with a build-only config (`logging: CLOUD_LOGGING_ONLY`); `cloudbuild.mcp.yaml`'s deploy step would use default ingress |
 | Artifact Registry | `us-central1-docker.pkg.dev/solana-mcp/vanna-credit` |
 | Custom VPC | `vanna-internal` / subnet `vanna-internal-usc1` `10.40.0.0/24` (Private Google Access on) |
