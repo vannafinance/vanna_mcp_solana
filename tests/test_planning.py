@@ -733,3 +733,24 @@ async def test_direct_writes_spend_the_build_budget_but_plan_steps_do_not_pay_tw
     # A raw plan step is guarded without consuming (the engine consumes once when it builds).
     raw = await guard_direct_write(WALLET, "vanna_margin_trade", {"action": "close_position", "authority": WALLET}, consume_rate=False)
     assert raw.ok
+
+
+async def test_a_plan_step_waits_for_the_build_budget_instead_of_failing(monkeypatch) -> None:
+    """A long plan builds step after step; the per-minute budget it shares with direct writes must make the page wait
+    and retry, not stop the plan with a refusal."""
+    monkeypatch.setenv("WRITE_RATE_PER_MINUTE", "1")
+    get_settings.cache_clear()
+    now = [1_000_000.0]
+    net = Net()
+    safety.set_safety(Safety(MemoryRecordStore(), clock=lambda: now[0]))
+    eng = PlanEngine(MemoryRecordStore(), safety.get_safety(), net.send, net.statuses, lambda: "http://127.0.0.1:8000", clock=lambda: now[0])
+    chain(monkeypatch, collateral={"SOL": 10}, wallet_tokens={}, sol_balance=5.0)
+    view = await eng.create(WALLET, await strategies.plan_lever(WALLET, "SOL", 2.0, "USDC", None), kind="lever")
+    await eng.approve(view["plan_id"], WALLET, approval_sig(view))
+    first = await eng.build_next(view["plan_id"])
+    await eng.submit(view["plan_id"], first["transactions"][0]["id"], sign_b64(first["transactions"][0]["unsignedTransaction"], KP))
+    held = await eng.build_next(view["plan_id"])
+    assert held.get("waiting") is True and held["code"] == "rate" and held["retry_after_seconds"] >= 1
+    assert (await eng.get(view["plan_id"]))["status"] != "paused"  # not a refusal: the plan is still running
+    now[0] += 61
+    assert (await eng.build_next(view["plan_id"])).get("transactions")  # the next minute's budget builds it

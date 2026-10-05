@@ -17,6 +17,9 @@ borsh-construct==0.1.0
 # mcp_server/main.py, which uses mcp.server.mcpserver.MCPServer)
 mcp>=2.2.0,<3  # 2.x MCPServer API; exact tested versions pinned in constraints.txt
 
+# Shared state store for the public connector (STATE_STORE=firestore)
+google-cloud-firestore>=2.20.0,<3
+
 # Data validation & settings
 pydantic>=2.7.0
 pydantic-settings>=2.3.0

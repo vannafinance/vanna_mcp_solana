@@ -72,6 +72,11 @@ class OAuthRateLimitMiddleware:
         self._store = store
         self._hops = trusted_proxy_hops
         self._clock = clock or time.time
+        # A per-instance gate in front of the shared store: a flood from one address is refused from memory and
+        # never reaches Firestore (every shared counter is a database write the flood would otherwise pay for).
+        from mcp_server.oauth.store import MemoryRecordStore
+
+        self._local = MemoryRecordStore(self._clock)
         # path -> (bucket name, limit, window seconds)
         self._rules: dict[str, tuple[str, int, int]] = {
             "/register": ("register", register_per_hour, 3600),
@@ -102,7 +107,10 @@ class OAuthRateLimitMiddleware:
         name, limit, window = rule
         now = self._clock()
         bucket = int(now // window)
-        count = await self._store.incr(f"rl:{name}:{caller_key(scope, self._hops)}:{bucket}", window)
+        key = f"rl:{name}:{caller_key(scope, self._hops)}:{bucket}"
+        count = await self._local.incr(key, window)
+        if count <= limit:
+            count = await self._store.incr(key, window)  # the service-wide count, shared by every instance
         if count > limit:
             retry_after = max(1, math.ceil((bucket + 1) * window - now))
             response = JSONResponse(

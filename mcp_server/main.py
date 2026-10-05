@@ -20,6 +20,7 @@ Uses mcp>=2.2.0's `MCPServer` (mcp.server.mcpserver), NOT the legacy 1.x
 from __future__ import annotations
 
 import json
+import os
 import re
 import logging
 from contextlib import asynccontextmanager
@@ -341,14 +342,14 @@ def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGI
       OAuthRateLimitMiddleware (per-IP, unauthenticated OAuth endpoints)
       -> AuthMiddleware (our own ES256 tokens, revocation check; OAuth endpoints exempt)
       -> RateLimitMiddleware (per-wallet, POST /mcp) -> MCP app + OAuth routes.
-    `store` defaults to the in-process store (single instance only until the shared store lands);
+    `store` defaults to the one `STATE_STORE` names (`memory`: single instance only; `firestore`: shared);
     `server` defaults to the real dispatcher server (tests pass a stub one).
     """
     from mcp_server.auth import AuthMiddleware
     from mcp_server.oauth.http import OAuthRateLimitMiddleware, build_oauth_routes, is_oauth_public_path
     from mcp_server.oauth.keys import KeySet
     from mcp_server.oauth.provider import OAuthConfig, VannaOAuthProvider
-    from mcp_server.oauth.store import MemoryRecordStore
+    from mcp_server.oauth.store import make_store
     from mcp_server.oauth.verifier import LocalTokenVerifier
     from mcp_server.rate_limit import RateLimitMiddleware
     from mcp_server.web.routes import is_web_public_path
@@ -360,11 +361,16 @@ def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGI
     if settings.enable_fork_tools:
         raise RuntimeError("PUBLIC_MODE must not enable the dev-only fork tools.")
 
+    # On Cloud Run (K_SERVICE is set) an instance can be replaced or duplicated at any moment, so in-process
+    # OAuth state would drop logins and let a refresh token be replayed on a second instance.
+    if os.environ.get("K_SERVICE") and settings.state_store.strip().lower() != "firestore":
+        raise RuntimeError("PUBLIC_MODE on Cloud Run requires STATE_STORE=firestore (shared state across instances).")
     config = OAuthConfig.from_settings(settings)
     keys = KeySet.from_settings(settings)
     if store is None:
-        logger.warning("PUBLIC_MODE is using the in-process OAuth state store: run a single instance only.")
-        store = MemoryRecordStore()
+        store = make_store(settings)
+        if settings.state_store.strip().lower() != "firestore":
+            logger.warning("PUBLIC_MODE is using the in-process state store: run a single instance only.")
     provider = VannaOAuthProvider(store, keys, config)
     # The public connector always runs the safety layer and the signing pages (same store as the OAuth state).
     from mcp_server.web.setup import attach_to_app, configure_signing

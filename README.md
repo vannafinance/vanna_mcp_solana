@@ -16,6 +16,7 @@ the app broadcasts; there is no Sign Service.
   and interest rules.
 - `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` — how the Copilot inside `vanna-credit-backend`
   uses this server.
+- `docs/DEPLOY_PUBLIC.md` — deploying the public connector (`vanna-mcp-solana-public`): setup, deploy command, smoke test.
 - `docs/CONNECTING_CLIENTS.md` — using this server from Claude, Cursor, Windsurf or any MCP client: the
   hosted connector (log in with your wallet) and local stdio, plus operator settings.
 - `MCP_CONNECTOR_PLAN.md` — the plan and security model for the public connector (wallet-as-login OAuth).

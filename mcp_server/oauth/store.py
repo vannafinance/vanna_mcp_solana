@@ -106,3 +106,120 @@ class MemoryRecordStore:
         now = self._clock()
         for key in [k for k, (exp, _) in self._data.items() if exp <= now]:
             del self._data[key]
+
+
+# ── shared store (Firestore) ──────────────────────────────────────────────────────────────────────────────
+
+class FirestoreRecordStore:
+    """The multi-instance store: every instance of the public service reads and writes the same documents.
+
+    One document per key in a single collection, `{json: <record as JSON text>, expires_at: <datetime>}`. The
+    expiry is enforced here on every read (never trusted to Firestore's TTL sweep, which can lag by a day),
+    and `expires_at` is also the field a Firestore TTL policy deletes by, so dead records are cleaned up.
+    Every read-modify-write (`consume`, `put_if_absent`, `incr`) runs in a Firestore transaction, so two
+    instances racing on one authorization code or refresh token still see exactly one winner.
+    """
+
+    def __init__(self, project: str | None = None, collection: str = "mcp_state", client: Any = None,
+                 clock: Callable[[], float] = time.time) -> None:
+        if client is None:
+            from google.cloud import firestore
+
+            client = firestore.AsyncClient(project=project or None)
+        self._db = client
+        self._collection = collection
+        self._clock = clock
+
+    def _ref(self, key: str):
+        # A document id cannot contain "/"; keys are otherwise our own tokens, hashes and base58 addresses.
+        return self._db.collection(self._collection).document(key.replace("/", "%2F"))
+
+    def _expiry(self, ttl_seconds: float):
+        import datetime as dt
+
+        return dt.datetime.fromtimestamp(self._clock() + ttl_seconds, tz=dt.timezone.utc)
+
+    def _live(self, snap) -> Record | None:
+        if snap is None or not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        expires_at = data.get("expires_at")
+        if expires_at is None or expires_at.timestamp() <= self._clock():
+            return None
+        import json
+
+        return json.loads(data["json"])
+
+    def _doc(self, value: Record, expires_at) -> dict[str, Any]:
+        import json
+
+        return {"json": json.dumps(value, separators=(",", ":")), "expires_at": expires_at}
+
+    async def get(self, key: str) -> Record | None:
+        return self._live(await self._ref(key).get())
+
+    async def put(self, key: str, value: Record, ttl_seconds: float) -> None:
+        await self._ref(key).set(self._doc(value, self._expiry(ttl_seconds)))
+
+    async def put_if_absent(self, key: str, value: Record, ttl_seconds: float) -> bool:
+        from google.cloud import firestore
+
+        ref = self._ref(key)
+        doc = self._doc(value, self._expiry(ttl_seconds))
+
+        @firestore.async_transactional
+        async def txn(transaction) -> bool:
+            if self._live(await ref.get(transaction=transaction)) is not None:
+                return False
+            transaction.set(ref, doc)
+            return True
+
+        return await txn(self._db.transaction())
+
+    async def consume(self, key: str) -> Record | None:
+        from google.cloud import firestore
+
+        ref = self._ref(key)
+
+        @firestore.async_transactional
+        async def txn(transaction) -> Record | None:
+            value = self._live(await ref.get(transaction=transaction))
+            if value is None:
+                return None
+            transaction.delete(ref)
+            return value
+
+        return await txn(self._db.transaction())
+
+    async def delete(self, key: str) -> None:
+        await self._ref(key).delete()
+
+    async def incr(self, key: str, ttl_seconds: float, by: int = 1) -> int:
+        from google.cloud import firestore
+
+        ref = self._ref(key)
+
+        @firestore.async_transactional
+        async def txn(transaction) -> int:
+            snap = await ref.get(transaction=transaction)
+            current = self._live(snap)
+            if current is not None:
+                count = int(current["n"]) + by
+                expires_at = snap.to_dict()["expires_at"]  # a counter keeps the expiry it was created with
+            else:
+                count = by
+                expires_at = self._expiry(ttl_seconds)
+            transaction.set(ref, self._doc({"n": count}, expires_at))
+            return count
+
+        return await txn(self._db.transaction())
+
+
+def make_store(settings: Any) -> RecordStore:
+    """The state store the configuration names: `memory` (one instance) or `firestore` (shared)."""
+    kind = (settings.state_store or "memory").strip().lower()
+    if kind == "firestore":
+        return FirestoreRecordStore(settings.firestore_project or None, settings.firestore_collection)
+    if kind != "memory":
+        raise RuntimeError(f"STATE_STORE must be 'memory' or 'firestore', not {kind!r}")
+    return MemoryRecordStore()

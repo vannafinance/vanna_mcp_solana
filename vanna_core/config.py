@@ -208,6 +208,11 @@ class VannaSettings(BaseSettings):
     # Dynamic client registration caps (per source IP per hour, and across the whole service per day).
     oauth_dcr_per_ip_per_hour: int = Field(default=10, ge=1)
     oauth_dcr_global_per_day: int = Field(default=2000, ge=1)
+    # Where the OAuth / plan / safety state lives: `memory` (this process only: local use, one instance) or
+    # `firestore` (shared by every instance; required for a scaled public service). See mcp_server/oauth/store.py.
+    state_store: str = "memory"
+    firestore_project: str = ""
+    firestore_collection: str = "mcp_state"
 
     # ---------------------------------------------------------------------------
     # Product safety layer: the website Copilot's guardrails, applied to every write an MCP client (Claude,

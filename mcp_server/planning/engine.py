@@ -311,7 +311,10 @@ class PlanEngine:
             prepared = pre.prepared
             rate = await self.safety.consume_write(wallet)
             if not rate.ok:
-                return {"ok": False, "step": idx, "code": "limit", "reason": rate.message, "plan": self.view(rec)}
+                # The per-minute build budget is shared with direct writes: wait for it, the page retries by itself.
+                # (A daily or per-action limit is a refusal in preflight above, not this.)
+                return {"waiting": True, "step": idx, "code": "rate", "reason": rate.message,
+                        "retry_after_seconds": rate.retry_after_s, "plan": self.view(rec)}
             envelope = await internal.call_raw(prepared.tool, **prepared.args)
             if not isinstance(envelope, dict) or not envelope.get("transactions"):
                 step["error"] = humanize(envelope.get("message") if isinstance(envelope, dict) else None)
