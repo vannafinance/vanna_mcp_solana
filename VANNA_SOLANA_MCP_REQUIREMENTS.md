@@ -1,7 +1,7 @@
 # Vanna Solana MCP — Build Requirements
 
 > Historical: the original question list sent to the team. Every question here has since been answered
-> (PDF of 28 Sep 2026 and the team's 2026-09-29 decisions; summarised in `COPILOT_ARCHITECTURE.md`
+> (PDF of 28 Sep 2026 and the team's 2026-09-29 decisions; summarised in `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md`
 > §10). Notably: no signing service (the wallet signs), no Hermes (the fork's price keeper),
 > and liquidation stays read-only.
 

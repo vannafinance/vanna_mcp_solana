@@ -1,10 +1,14 @@
 """Margin account lifecycle writes and collateral/borrow/repay writes.
 Backs `vanna_account`'s write half and `vanna_margin_trade`
 (TOOLS_CATALOGUE.md §3.3/§3.5). Every account list and discriminator here was
-read directly from `vanna-credit-layer/programs/vanna_lending/src/
-instructions/account_manager/{account,collateral,borrow}.rs` and cross-checked
+read directly from `vanna-credit-layer/programs/vanna_credit_layer/src/
+instructions/account_manager/{account,collateral,borrow}.rs` (origin/main `465f21a`) and cross-checked
 against the real IDL — not assumed from a name list (a name list hides which
 accounts share a token program; live simulation caught exactly that once).
+
+Since the core/agent split: a borrow opens its own debt position (no separate "open"), the only repay path is
+`user_repay_from_margin` (a "repay from wallet" deposits into the margin vault and repays in the same
+transaction), and the two close instructions are one `user_reclaim_rent`.
 
 Every health-checked write here (`borrow`, `withdraw_collateral`, and the
 `deposit_and_borrow`/`close_position` composites that wrap them) calls the
@@ -23,6 +27,7 @@ from solders.instruction import AccountMeta
 from solders.pubkey import Pubkey
 
 from vanna_core import math_utils
+from vanna_core.anchor_codec import instruction_discriminator
 from vanna_core.assets import AssetRegistry, DiscoveredAsset, assert_lend_borrow_offered
 from vanna_core.client import SolanaClient
 from vanna_core.envelope import WriteEnvelope
@@ -46,12 +51,13 @@ DISC_CREATE_MARGIN = bytes([105, 23, 202, 134, 147, 166, 130, 205])
 DISC_CLOSE_MARGIN = bytes([251, 12, 109, 24, 26, 96, 200, 131])
 DISC_DEPOSIT_COLLATERAL = bytes([238, 206, 161, 246, 218, 26, 100, 157])
 DISC_WITHDRAW_COLLATERAL = bytes([81, 34, 228, 68, 219, 88, 210, 28])
-DISC_CLOSE_COLLATERAL_POSITION = bytes([131, 134, 11, 62, 44, 231, 4, 79])
-DISC_OPEN_DEBT_POSITION = bytes([144, 183, 201, 223, 74, 100, 20, 205])
 DISC_BORROW = bytes([125, 34, 221, 55, 252, 190, 132, 154])
-DISC_CLOSE_DEBT_POSITION = bytes([127, 138, 97, 199, 18, 176, 126, 248])
 DISC_REPAY_FROM_MARGIN = bytes([108, 103, 220, 205, 63, 240, 73, 147])
-DISC_REPAY_FROM_WALLET = bytes([136, 29, 241, 215, 137, 62, 170, 22])
+DISC_RECLAIM_RENT = instruction_discriminator("user_reclaim_rent")
+
+# A "repay all" carries a small accrual buffer (interest accrues between build and landing); it stays in the margin
+# account as collateral. Matches the app's REPAY_ALL_BUFFER_BPS.
+REPAY_ALL_BUFFER_BPS = 20
 
 DEFAULT_SLIPPAGE_BPS = 50  # 0.5%, TOOLS_CATALOGUE.md §2.6
 
@@ -196,7 +202,11 @@ class MarginTradeContract:
             summary={"action": "withdraw_collateral", "asset": asset.symbol, "amount": str(amount_ui)},
         )
 
-    async def close_collateral_position(self, authority: Pubkey, asset_symbol: str) -> WriteEnvelope:
+    async def reclaim_rent(self, authority: Pubkey, asset_symbol: str, *, vault: bool = False, debt: bool = False) -> WriteEnvelope:
+        """`user_reclaim_rent`: closes an EMPTY, inactive margin vault and/or a zero-share, inactive debt position of one
+        asset, returning their rent to the owner. At least one must be asked for."""
+        if not (vault or debt):
+            raise ValueError("Say what to reclaim: the empty collateral vault, the closed debt position, or both")
         registry = AssetRegistry(self._client)
         await registry.load()
         asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
@@ -204,50 +214,35 @@ class MarginTradeContract:
         mint = Pubkey.from_string(asset.mint)
         token_program = Pubkey.from_string(asset.token_program)
         margin_vault = find_associated_token_address(margin, mint, token_program)
+        debt_position, _ = debt_position_pda(margin, Pubkey.from_string(asset.reserve), self._client.program_id)
+        ix = self._reclaim_rent_instruction(authority, margin, asset, mint, token_program, margin_vault, debt_position, vault, debt)
+        what = "+".join(w for w, on in (("collateral_vault", vault), ("debt_position", debt)) if on)
+        return await self._client.build_write_envelope(
+            [ix], authority, purpose="user_reclaim_rent", summary={"action": f"reclaim_rent:{what}", "asset": asset.symbol},
+        )
 
+    def _reclaim_rent_instruction(self, authority, margin, asset, mint, token_program, margin_vault, debt_position, vault, debt):
+        program = self._client.program_id
         accounts = [
             AccountMeta(authority, is_signer=True, is_writable=True),
             AccountMeta(margin, is_signer=False, is_writable=False),
             AccountMeta(Pubkey.from_string(asset.config_address), is_signer=False, is_writable=False),
             AccountMeta(mint, is_signer=False, is_writable=False),
-            AccountMeta(margin_vault, is_signer=False, is_writable=True),
+            # optional accounts: the program id stands for "not provided"
+            AccountMeta(margin_vault if vault else program, is_signer=False, is_writable=vault),
+            AccountMeta(debt_position if debt else program, is_signer=False, is_writable=debt),
             AccountMeta(token_program, is_signer=False, is_writable=False),
         ]
-        ix = self._client.build_instruction(DISC_CLOSE_COLLATERAL_POSITION, b"", accounts)
-        return await self._client.build_write_envelope(
-            [ix], authority, purpose="user_close_collateral_position",
-            summary={"action": "close_collateral_position", "asset": asset.symbol},
-        )
+        return self._client.build_instruction(DISC_RECLAIM_RENT, b"", accounts)
+
+    async def close_collateral_position(self, authority: Pubkey, asset_symbol: str) -> WriteEnvelope:
+        """Close an emptied collateral vault (the old `user_close_collateral_position`)."""
+        return await self.reclaim_rent(authority, asset_symbol, vault=True)
 
     # -- borrow / debt ----------------------------------------------------------
 
-    async def open_debt_position(self, authority: Pubkey, asset_symbol: str) -> WriteEnvelope:
-        assert_lend_borrow_offered(asset_symbol, "open_debt")
-        registry = AssetRegistry(self._client)
-        await registry.load()
-        asset = registry.by_symbol(asset_symbol)
-        margin = self.margin_address(authority)
-        reserve = Pubkey.from_string(asset.reserve)
-        debt_position, _ = debt_position_pda(margin, reserve, self._client.program_id)
-
-        accounts = [
-            AccountMeta(authority, is_signer=True, is_writable=False),
-            AccountMeta(authority, is_signer=True, is_writable=True),  # payer == authority
-            AccountMeta(margin, is_signer=False, is_writable=True),
-            AccountMeta(Pubkey.from_string(asset.config_address), is_signer=False, is_writable=False),
-            AccountMeta(reserve, is_signer=False, is_writable=False),
-            AccountMeta(debt_position, is_signer=False, is_writable=True),
-            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-        ]
-        ix = self._client.build_instruction(DISC_OPEN_DEBT_POSITION, b"", accounts)
-        return await self._client.build_write_envelope(
-            [ix], authority, purpose="user_open_debt_position",
-            summary={"action": "open_debt_position", "asset": asset.symbol},
-        )
-
     async def borrow(
         self, authority: Pubkey, asset_symbol: str, amount_ui, max_debt_shares: int | None = None,
-        auto_open_debt_position: bool = True,
     ) -> WriteEnvelope:
         from vanna_core.contracts.oracle_refresh import maybe_refresh_prices
 
@@ -259,8 +254,7 @@ class MarginTradeContract:
         margin = self.margin_address(authority)
         margin_decoded = await self._client.fetch_program_account(margin, "MarginAccount", MarginAccountLayout)
         instructions = await self._borrow_instructions(
-            authority, margin, asset, amount_ui, registry, margin_decoded,
-            max_debt_shares=max_debt_shares, auto_open_debt_position=auto_open_debt_position,
+            authority, margin, asset, amount_ui, registry, margin_decoded, max_debt_shares=max_debt_shares,
         )
         return await self._client.build_write_envelope(
             instructions, authority, purpose="user_borrow", compute_unit_limit=600_000,
@@ -269,7 +263,7 @@ class MarginTradeContract:
 
     async def _borrow_instructions(
         self, authority: Pubkey, margin: Pubkey, asset: DiscoveredAsset, amount_ui, registry: AssetRegistry,
-        margin_decoded, *, max_debt_shares: int | None = None, auto_open_debt_position: bool = True,
+        margin_decoded, *, max_debt_shares: int | None = None,
     ) -> list:
         mint = Pubkey.from_string(asset.mint)
         token_program = Pubkey.from_string(asset.token_program)
@@ -279,25 +273,8 @@ class MarginTradeContract:
 
         from vanna_core.layouts import Reserve as ReserveLayout
 
-        reserve, debt_position_exists = await asyncio.gather(
-            self._client.fetch_program_account(reserve_address, "Reserve", ReserveLayout),
-            self._client.account_exists(debt_position),
-        )
-
-        instructions = []
-        if not debt_position_exists:
-            if not auto_open_debt_position:
-                raise ValueError(f"No open debt position for {asset.symbol}; call open_debt_position first")
-            open_accounts = [
-                AccountMeta(authority, is_signer=True, is_writable=False),
-                AccountMeta(authority, is_signer=True, is_writable=True),
-                AccountMeta(margin, is_signer=False, is_writable=True),
-                AccountMeta(Pubkey.from_string(asset.config_address), is_signer=False, is_writable=False),
-                AccountMeta(reserve_address, is_signer=False, is_writable=False),
-                AccountMeta(debt_position, is_signer=False, is_writable=True),
-                AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-            ]
-            instructions.append(self._client.build_instruction(DISC_OPEN_DEBT_POSITION, b"", open_accounts))
+        reserve = await self._client.fetch_program_account(reserve_address, "Reserve", ReserveLayout)
+        instructions = []  # the borrow creates its own debt position (no separate "open")
 
         remaining = await build_health_accounts(
             self._client, margin, margin_decoded, registry,
@@ -501,12 +478,8 @@ class MarginTradeContract:
                 summary={"action": "close_position", "next_step": "repay", "assets": [r["symbol"] for r in payable_rows]},
             )
 
-        zero_debt_slots = [r for r in debt_rows if r["raw_debt"] == 0]
-        if zero_debt_slots:
-            envelope = await self.close_debt_position(authority, zero_debt_slots[0]["symbol"])
-            envelope.summary["next_step"] = "close_debt"
-            return envelope
-
+        # A fully repaid debt is no longer active on the margin (the repay itself removes it), so there is no
+        # "close the debt slot" step any more.
         if collateral_rows:
             row = collateral_rows[0]
             balance_ui = math_utils.ui_amount(row["raw_balance"], registry.by_symbol(row["symbol"], allow_unoffered=True).decimals)
@@ -515,6 +488,12 @@ class MarginTradeContract:
             return envelope
 
         if margin_decoded.collateral_count == 0 and margin_decoded.debt_count == 0:
+            leftover = await self._next_reclaimable(address, registry)
+            if leftover is not None:
+                asset, vault, debt = leftover
+                envelope = await self.reclaim_rent(authority, asset.symbol, vault=vault, debt=debt)
+                envelope.summary["next_step"] = "reclaim_rent"
+                return envelope
             envelope = await self.close_margin(authority)
             envelope.summary["next_step"] = "close_margin"
             return envelope
@@ -536,25 +515,8 @@ class MarginTradeContract:
         )
 
     async def close_debt_position(self, authority: Pubkey, asset_symbol: str) -> WriteEnvelope:
-        registry = AssetRegistry(self._client)
-        await registry.load()
-        asset = registry.by_symbol(asset_symbol)
-        margin = self.margin_address(authority)
-        reserve = Pubkey.from_string(asset.reserve)
-        debt_position, _ = debt_position_pda(margin, reserve, self._client.program_id)
-
-        accounts = [
-            AccountMeta(authority, is_signer=True, is_writable=True),
-            AccountMeta(margin, is_signer=False, is_writable=False),
-            AccountMeta(Pubkey.from_string(asset.config_address), is_signer=False, is_writable=False),
-            AccountMeta(reserve, is_signer=False, is_writable=False),
-            AccountMeta(debt_position, is_signer=False, is_writable=True),
-        ]
-        ix = self._client.build_instruction(DISC_CLOSE_DEBT_POSITION, b"", accounts)
-        return await self._client.build_write_envelope(
-            [ix], authority, purpose="user_close_debt_position",
-            summary={"action": "close_debt_position", "asset": asset.symbol},
-        )
+        """Close a fully repaid debt position (the old `user_close_debt_position`): reclaims its rent."""
+        return await self.reclaim_rent(authority, asset_symbol, debt=True)
 
     # -- repay --------------------------------------------------------------
 
@@ -594,40 +556,86 @@ class MarginTradeContract:
     async def repay_from_wallet(
         self, payer: Pubkey, margin_authority: Pubkey, asset_symbol: str, max_assets_ui, repay_all: bool = False
     ) -> WriteEnvelope:
+        """Repay from the owner's WALLET: the tokens are deposited into the margin vault and repaid from it in the same
+        transaction (`user_repay_from_margin` is the only repay path now, and only its owner may call it, so someone
+        else's debt can no longer be repaid from a third wallet). A "repay all" deposits the debt plus a 0.2% accrual
+        buffer; what is left over stays in the margin account as collateral."""
+        if payer != margin_authority:
+            raise ValueError(
+                "Only the margin account's owner can repay its debt: the program's only repay path is "
+                "user_repay_from_margin, signed by the owner. Repay from the owner's own wallet."
+            )
+        from vanna_core.contracts.margin import MarginContract
+
         registry = AssetRegistry(self._client)
         await registry.load()
         asset = registry.by_symbol(asset_symbol)
         margin = self.margin_address(margin_authority)
+        reserve = Pubkey.from_string(asset.reserve)
         mint = Pubkey.from_string(asset.mint)
         token_program = Pubkey.from_string(asset.token_program)
-        reserve = Pubkey.from_string(asset.reserve)
         debt_position, _ = debt_position_pda(margin, reserve, self._client.program_id)
-        payer_token_account = find_associated_token_address(payer, mint, token_program)
-        reserve_vault = await self._reserve_vault(reserve)
-        max_assets = 0 if repay_all else math_utils.base_units(max_assets_ui, asset.decimals)
 
+        _address, _decoded, _collateral, debt_rows, _snapshot = await MarginContract(self._client).snapshot(margin_authority)
+        row = next((r for r in debt_rows if r["symbol"] == asset.symbol), None)
+        debt_raw = row["raw_debt"] if row else 0
+        if debt_raw <= 0:
+            raise ValueError(f"There is no {asset.symbol} debt to repay")
+        requested = debt_raw if repay_all else min(math_utils.base_units(max_assets_ui, asset.decimals), debt_raw)
+        if requested <= 0:
+            raise ValueError("The amount to repay has to be above zero")
+        repays_everything = repay_all or requested >= debt_raw
+        needed = requested + (requested * REPAY_ALL_BUFFER_BPS) // 10_000 + 1 if repays_everything else requested
+
+        deposit_ixs = self._deposit_collateral_instructions(
+            payer, margin, asset, math_utils.ui_amount(needed, asset.decimals)
+        )
+        margin_vault = find_associated_token_address(margin, mint, token_program)
+        reserve_vault = await self._reserve_vault(reserve)
         accounts = [
-            AccountMeta(payer, is_signer=True, is_writable=True),
+            AccountMeta(payer, is_signer=True, is_writable=False),
             AccountMeta(margin, is_signer=False, is_writable=True),
             AccountMeta(Pubkey.from_string(asset.config_address), is_signer=False, is_writable=False),
             AccountMeta(reserve, is_signer=False, is_writable=True),
             AccountMeta(debt_position, is_signer=False, is_writable=True),
             AccountMeta(mint, is_signer=False, is_writable=False),
-            AccountMeta(payer_token_account, is_signer=False, is_writable=True),
+            AccountMeta(margin_vault, is_signer=False, is_writable=True),
             AccountMeta(reserve_vault, is_signer=False, is_writable=True),
             AccountMeta(token_program, is_signer=False, is_writable=False),
         ]
-        args = _u64(max_assets) + bytes([1 if repay_all else 0])
-        ix = self._client.build_instruction(DISC_REPAY_FROM_WALLET, args, accounts)
+        args = _u64(0 if repays_everything else requested) + bytes([1 if repays_everything else 0])
+        repay_ix = self._client.build_instruction(DISC_REPAY_FROM_MARGIN, args, accounts)
+        instructions = [*deposit_ixs, repay_ix]
+        if repays_everything:
+            # The debt position is now empty and inactive: reclaim its rent in the same transaction.
+            instructions.append(self._reclaim_rent_instruction(payer, margin, asset, mint, token_program, margin_vault, debt_position, False, True))
         return await self._client.build_write_envelope(
-            [ix], payer, purpose="public_repay_from_wallet",
+            instructions, payer, purpose="repay_from_wallet", compute_unit_limit=600_000,
             summary={
-                "action": "repay_from_wallet", "asset": asset.symbol, "repay_all": repay_all,
+                "action": "repay_from_wallet", "asset": asset.symbol, "repay_all": repays_everything,
                 "max_assets": str(max_assets_ui), "margin_account": str(margin),
+                "deposited": math_utils.ui_amount(needed, asset.decimals),
             },
         )
 
     # -- shared helpers -----------------------------------------------------
+
+    async def _next_reclaimable(self, margin: Pubkey, registry: AssetRegistry):
+        """The first asset with an EMPTY margin vault or a closed (zero-share) debt position still holding rent, as
+        `(asset, vault?, debt?)`, or None. Lets `close_position` hand the rent back before it closes the account."""
+        candidates = [a for a in registry.all(include_unoffered=True) if not a.is_venue]
+        addresses: list[Pubkey] = []
+        for asset in candidates:
+            addresses.append(find_associated_token_address(margin, Pubkey.from_string(asset.mint), Pubkey.from_string(asset.token_program)))
+            addresses.append(debt_position_pda(margin, Pubkey.from_string(asset.reserve), self._client.program_id)[0] if asset.has_reserve else margin)
+        raw = await self._client.get_multiple_accounts_raw(addresses)
+        for i, asset in enumerate(candidates):
+            vault_entry = raw.get(str(addresses[2 * i]))
+            vault = vault_entry is not None and int.from_bytes(vault_entry[1][64:72], "little") == 0
+            debt = asset.has_reserve and raw.get(str(addresses[2 * i + 1])) is not None
+            if vault or debt:
+                return asset, vault, debt
+        return None
 
     async def _reserve_vault(self, reserve_address: Pubkey) -> Pubkey:
         from vanna_core.layouts import Reserve as ReserveLayout

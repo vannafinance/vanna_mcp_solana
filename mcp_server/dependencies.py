@@ -52,11 +52,11 @@ class VannaContext:
 
         from vanna_core.client import compute_idl_sha256
 
-        idl_path = pathlib.Path(__file__).resolve().parent.parent / "idl" / "vanna_lending.json"
+        idl_path = pathlib.Path(__file__).resolve().parent.parent / "idl" / "vanna_credit_layer.json"
         actual = compute_idl_sha256(idl_path)
         if actual != self._settings.pinned_idl_sha256:
             raise RuntimeError(
-                f"IDL hash mismatch: idl/vanna_lending.json is {actual}, pinned "
+                f"IDL hash mismatch: idl/vanna_credit_layer.json is {actual}, pinned "
                 f"{self._settings.pinned_idl_sha256}. Refusing to start — verify the deployed program "
                 "matches the new IDL, then update PINNED_IDL_SHA256."
             )

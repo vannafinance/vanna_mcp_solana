@@ -1,0 +1,5064 @@
+{
+  "address": "H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC",
+  "metadata": {
+    "name": "vanna_credit_layer",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Vanna credit layer: lending pools, cross-margin accounts, liquidation and margin_execute"
+  },
+  "instructions": [
+    {
+      "name": "admin_collect_protocol_fees",
+      "discriminator": [
+        221,
+        64,
+        237,
+        77,
+        79,
+        234,
+        88,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidity_vault",
+          "writable": true
+        },
+        {
+          "name": "treasury_ata",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "admin_initialize_reserve",
+      "discriminator": [
+        112,
+        120,
+        94,
+        208,
+        244,
+        120,
+        140,
+        116
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidity_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "reserve"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "share_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "share_token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rate_curve",
+          "type": {
+            "defined": {
+              "name": "RateCurve"
+            }
+          }
+        },
+        {
+          "name": "reserve_factor_bps",
+          "type": "u16"
+        },
+        {
+          "name": "supply_cap",
+          "type": "u64"
+        },
+        {
+          "name": "borrow_cap",
+          "type": "u64"
+        },
+        {
+          "name": "status",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "admin_propose_authority",
+      "discriminator": [
+        129,
+        226,
+        137,
+        193,
+        185,
+        49,
+        77,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "admin_register_asset",
+      "discriminator": [
+        102,
+        222,
+        185,
+        83,
+        217,
+        237,
+        73,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "asset_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_collateral_per_margin",
+          "type": "u64"
+        },
+        {
+          "name": "ltv_bps",
+          "type": "u16"
+        },
+        {
+          "name": "liquidation_threshold_bps",
+          "type": "u16"
+        },
+        {
+          "name": "liquidation_bonus_bps",
+          "type": "u16"
+        },
+        {
+          "name": "collateral_enabled",
+          "type": "bool"
+        },
+        {
+          "name": "borrow_enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "admin_register_integration",
+      "discriminator": [
+        159,
+        18,
+        117,
+        75,
+        144,
+        46,
+        3,
+        39
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "target_program"
+        },
+        {
+          "name": "validator"
+        },
+        {
+          "name": "integration",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "target_program"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_register_venue",
+      "discriminator": [
+        220,
+        195,
+        85,
+        224,
+        181,
+        71,
+        110,
+        134
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "venue"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settle_asset",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "settle_asset.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "venue",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "admin_set_asset_oracle",
+      "discriminator": [
+        20,
+        70,
+        27,
+        28,
+        178,
+        157,
+        34,
+        21
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_config.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_set_integration_enabled",
+      "discriminator": [
+        33,
+        222,
+        212,
+        252,
+        95,
+        151,
+        64,
+        69
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "integration",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "integration.program_id",
+                "account": "Integration"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "admin_set_integration_validator",
+      "discriminator": [
+        181,
+        52,
+        130,
+        129,
+        155,
+        224,
+        142,
+        226
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "integration",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "integration.program_id",
+                "account": "Integration"
+              }
+            ]
+          }
+        },
+        {
+          "name": "validator"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_set_operating_mode",
+      "discriminator": [
+        200,
+        95,
+        61,
+        164,
+        49,
+        74,
+        164,
+        155
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_mode",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "admin_update_asset_config",
+      "discriminator": [
+        246,
+        30,
+        203,
+        70,
+        206,
+        191,
+        226,
+        213
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_config.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "max_collateral_per_margin",
+          "type": "u64"
+        },
+        {
+          "name": "ltv_bps",
+          "type": "u16"
+        },
+        {
+          "name": "liquidation_threshold_bps",
+          "type": "u16"
+        },
+        {
+          "name": "liquidation_bonus_bps",
+          "type": "u16"
+        },
+        {
+          "name": "collateral_enabled",
+          "type": "bool"
+        },
+        {
+          "name": "borrow_enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "admin_update_reserve_config",
+      "discriminator": [
+        16,
+        184,
+        69,
+        228,
+        32,
+        7,
+        42,
+        112
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "rate_curve",
+          "type": {
+            "defined": {
+              "name": "RateCurve"
+            }
+          }
+        },
+        {
+          "name": "reserve_factor_bps",
+          "type": "u16"
+        },
+        {
+          "name": "supply_cap",
+          "type": "u64"
+        },
+        {
+          "name": "borrow_cap",
+          "type": "u64"
+        },
+        {
+          "name": "status",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "authority_accept_admin",
+      "discriminator": [
+        20,
+        204,
+        160,
+        173,
+        192,
+        92,
+        164,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "pending_admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize_protocol",
+      "discriminator": [
+        188,
+        233,
+        252,
+        106,
+        134,
+        146,
+        202,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "treasury",
+          "type": "pubkey"
+        },
+        {
+          "name": "max_assets_per_margin",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "lender_redeem",
+      "discriminator": [
+        22,
+        48,
+        40,
+        70,
+        164,
+        48,
+        75,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "lender",
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "lender_token_account",
+          "writable": true
+        },
+        {
+          "name": "liquidity_vault",
+          "writable": true
+        },
+        {
+          "name": "share_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lender_share_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "share_token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "shares",
+          "type": "u64"
+        },
+        {
+          "name": "min_assets_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "lender_supply",
+      "discriminator": [
+        52,
+        247,
+        77,
+        250,
+        74,
+        122,
+        100,
+        33
+      ],
+      "accounts": [
+        {
+          "name": "lender",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "lender_token_account",
+          "writable": true
+        },
+        {
+          "name": "liquidity_vault",
+          "writable": true
+        },
+        {
+          "name": "share_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lender_share_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lender"
+              },
+              {
+                "kind": "account",
+                "path": "share_token_program"
+              },
+              {
+                "kind": "account",
+                "path": "share_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "share_token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "assets",
+          "type": "u64"
+        },
+        {
+          "name": "min_shares_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "margin_execute",
+      "discriminator": [
+        71,
+        55,
+        105,
+        226,
+        51,
+        233,
+        66,
+        127
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "integration",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "target_program"
+              }
+            ]
+          }
+        },
+        {
+          "name": "target_program"
+        },
+        {
+          "name": "validator",
+          "relations": [
+            "integration"
+          ]
+        },
+        {
+          "name": "venue_asset",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "venue_asset.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "venue_account",
+          "writable": true,
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "data",
+          "type": "bytes"
+        },
+        {
+          "name": "call_account_count",
+          "type": "u16"
+        },
+        {
+          "name": "new_assets",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "public_liquidate",
+      "discriminator": [
+        134,
+        75,
+        140,
+        26,
+        29,
+        233,
+        74,
+        37
+      ],
+      "accounts": [
+        {
+          "name": "liquidator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "public_refresh_reserve",
+      "discriminator": [
+        212,
+        53,
+        162,
+        184,
+        171,
+        222,
+        142,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "reserve.underlying_mint",
+                "account": "Reserve"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "public_venue_settle",
+      "discriminator": [
+        2,
+        249,
+        207,
+        219,
+        167,
+        99,
+        179,
+        111
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "venue_asset",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "venue_asset.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settle_asset",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "settle_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settle_mint"
+        },
+        {
+          "name": "venue_account",
+          "writable": true
+        },
+        {
+          "name": "idle",
+          "writable": true
+        },
+        {
+          "name": "margin_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "settle_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "public_venue_unwind",
+      "discriminator": [
+        87,
+        27,
+        66,
+        84,
+        72,
+        200,
+        163,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "margin_account",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "venue_asset",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "venue_asset.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "integration",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "target_program"
+              }
+            ]
+          }
+        },
+        {
+          "name": "target_program"
+        },
+        {
+          "name": "validator",
+          "relations": [
+            "integration"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "data",
+          "type": "bytes"
+        },
+        {
+          "name": "call_account_count",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "user_borrow",
+      "discriminator": [
+        125,
+        34,
+        221,
+        55,
+        252,
+        190,
+        132,
+        154
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "debt_position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  98,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "reserve"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "reserve_vault",
+          "writable": true
+        },
+        {
+          "name": "margin_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "assets",
+          "type": "u64"
+        },
+        {
+          "name": "max_debt_shares",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "user_close_margin",
+      "discriminator": [
+        251,
+        12,
+        109,
+        24,
+        26,
+        96,
+        200,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "user_create_margin",
+      "discriminator": [
+        105,
+        23,
+        202,
+        134,
+        147,
+        166,
+        130,
+        205
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "user_deposit_collateral",
+      "discriminator": [
+        238,
+        206,
+        161,
+        246,
+        218,
+        26,
+        100,
+        157
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "source_token_account",
+          "writable": true
+        },
+        {
+          "name": "margin_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "user_reclaim_rent",
+      "discriminator": [
+        9,
+        50,
+        43,
+        151,
+        56,
+        112,
+        170,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "margin_account",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "margin_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "debt_position",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  98,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "asset_config.reserve",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "user_repay_from_margin",
+      "discriminator": [
+        108,
+        103,
+        220,
+        205,
+        63,
+        240,
+        73,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "debt_position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  98,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account"
+              },
+              {
+                "kind": "account",
+                "path": "reserve"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "margin_vault",
+          "writable": true
+        },
+        {
+          "name": "reserve_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_assets",
+          "type": "u64"
+        },
+        {
+          "name": "repay_all",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "user_withdraw_collateral",
+      "discriminator": [
+        81,
+        34,
+        228,
+        68,
+        219,
+        88,
+        210,
+        28
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "margin_account"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "margin_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  103,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "margin_account.authority",
+                "account": "MarginAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "margin_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "min_health_factor_wad",
+          "type": "u128"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AssetConfig",
+      "discriminator": [
+        57,
+        112,
+        247,
+        166,
+        247,
+        64,
+        140,
+        23
+      ]
+    },
+    {
+      "name": "DebtPosition",
+      "discriminator": [
+        234,
+        251,
+        104,
+        142,
+        74,
+        57,
+        146,
+        84
+      ]
+    },
+    {
+      "name": "Integration",
+      "discriminator": [
+        220,
+        47,
+        107,
+        1,
+        128,
+        155,
+        188,
+        120
+      ]
+    },
+    {
+      "name": "MarginAccount",
+      "discriminator": [
+        133,
+        220,
+        173,
+        213,
+        179,
+        211,
+        43,
+        238
+      ]
+    },
+    {
+      "name": "ProtocolConfig",
+      "discriminator": [
+        207,
+        91,
+        250,
+        28,
+        152,
+        179,
+        215,
+        209
+      ]
+    },
+    {
+      "name": "Reserve",
+      "discriminator": [
+        43,
+        242,
+        204,
+        202,
+        26,
+        247,
+        59,
+        127
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AdminAccepted",
+      "discriminator": [
+        174,
+        12,
+        76,
+        139,
+        158,
+        99,
+        110,
+        254
+      ]
+    },
+    {
+      "name": "AdminProposed",
+      "discriminator": [
+        129,
+        249,
+        226,
+        227,
+        199,
+        82,
+        110,
+        243
+      ]
+    },
+    {
+      "name": "AssetConfigUpdated",
+      "discriminator": [
+        12,
+        97,
+        64,
+        94,
+        123,
+        177,
+        111,
+        10
+      ]
+    },
+    {
+      "name": "AssetOracleUpdated",
+      "discriminator": [
+        65,
+        194,
+        182,
+        231,
+        240,
+        224,
+        55,
+        50
+      ]
+    },
+    {
+      "name": "AssetRegistered",
+      "discriminator": [
+        252,
+        56,
+        47,
+        89,
+        8,
+        180,
+        249,
+        254
+      ]
+    },
+    {
+      "name": "Borrowed",
+      "discriminator": [
+        225,
+        182,
+        241,
+        78,
+        34,
+        145,
+        253,
+        230
+      ]
+    },
+    {
+      "name": "CollateralDeposited",
+      "discriminator": [
+        244,
+        62,
+        77,
+        11,
+        135,
+        112,
+        61,
+        96
+      ]
+    },
+    {
+      "name": "CollateralSeized",
+      "discriminator": [
+        165,
+        149,
+        146,
+        90,
+        242,
+        23,
+        11,
+        168
+      ]
+    },
+    {
+      "name": "CollateralWithdrawn",
+      "discriminator": [
+        51,
+        224,
+        133,
+        106,
+        74,
+        173,
+        72,
+        82
+      ]
+    },
+    {
+      "name": "DebtRepaid",
+      "discriminator": [
+        145,
+        11,
+        56,
+        225,
+        154,
+        212,
+        54,
+        105
+      ]
+    },
+    {
+      "name": "IntegrationRegistered",
+      "discriminator": [
+        80,
+        201,
+        188,
+        187,
+        254,
+        8,
+        200,
+        22
+      ]
+    },
+    {
+      "name": "IntegrationStatusUpdated",
+      "discriminator": [
+        133,
+        201,
+        95,
+        4,
+        220,
+        122,
+        198,
+        57
+      ]
+    },
+    {
+      "name": "IntegrationValidatorUpdated",
+      "discriminator": [
+        171,
+        252,
+        96,
+        58,
+        229,
+        175,
+        178,
+        4
+      ]
+    },
+    {
+      "name": "Liquidated",
+      "discriminator": [
+        231,
+        57,
+        55,
+        75,
+        0,
+        170,
+        246,
+        68
+      ]
+    },
+    {
+      "name": "LiquidityRedeemed",
+      "discriminator": [
+        78,
+        81,
+        213,
+        176,
+        1,
+        84,
+        138,
+        65
+      ]
+    },
+    {
+      "name": "LiquiditySupplied",
+      "discriminator": [
+        31,
+        41,
+        157,
+        195,
+        234,
+        245,
+        107,
+        235
+      ]
+    },
+    {
+      "name": "MarginClosed",
+      "discriminator": [
+        173,
+        209,
+        43,
+        160,
+        192,
+        131,
+        174,
+        84
+      ]
+    },
+    {
+      "name": "MarginCreated",
+      "discriminator": [
+        239,
+        138,
+        224,
+        149,
+        137,
+        242,
+        49,
+        175
+      ]
+    },
+    {
+      "name": "MarginExecuted",
+      "discriminator": [
+        7,
+        152,
+        32,
+        215,
+        123,
+        134,
+        132,
+        1
+      ]
+    },
+    {
+      "name": "OperatingModeChanged",
+      "discriminator": [
+        248,
+        85,
+        58,
+        243,
+        153,
+        227,
+        24,
+        65
+      ]
+    },
+    {
+      "name": "ProtocolFeesCollected",
+      "discriminator": [
+        165,
+        34,
+        125,
+        155,
+        15,
+        86,
+        99,
+        191
+      ]
+    },
+    {
+      "name": "ProtocolInitialized",
+      "discriminator": [
+        173,
+        122,
+        168,
+        254,
+        9,
+        118,
+        76,
+        132
+      ]
+    },
+    {
+      "name": "RentReclaimed",
+      "discriminator": [
+        148,
+        54,
+        67,
+        236,
+        53,
+        252,
+        14,
+        165
+      ]
+    },
+    {
+      "name": "ReserveAccrued",
+      "discriminator": [
+        117,
+        35,
+        100,
+        201,
+        10,
+        45,
+        108,
+        101
+      ]
+    },
+    {
+      "name": "ReserveConfigUpdated",
+      "discriminator": [
+        137,
+        71,
+        35,
+        179,
+        205,
+        230,
+        29,
+        133
+      ]
+    },
+    {
+      "name": "ReserveInitialized",
+      "discriminator": [
+        22,
+        27,
+        136,
+        173,
+        244,
+        120,
+        20,
+        49
+      ]
+    },
+    {
+      "name": "VenueRegistered",
+      "discriminator": [
+        86,
+        82,
+        191,
+        91,
+        171,
+        241,
+        178,
+        9
+      ]
+    },
+    {
+      "name": "VenueSettled",
+      "discriminator": [
+        200,
+        98,
+        120,
+        97,
+        18,
+        63,
+        203,
+        107
+      ]
+    },
+    {
+      "name": "VenueUnwound",
+      "discriminator": [
+        195,
+        163,
+        6,
+        77,
+        230,
+        43,
+        63,
+        109
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Signer is not authorized to perform this action"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidPendingAdmin",
+      "msg": "Signer is not the pending admin"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidTreasury",
+      "msg": "Treasury cannot be the zero address"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidOperatingMode",
+      "msg": "Operating mode value is not a recognized mode"
+    },
+    {
+      "code": 6004,
+      "name": "ProtocolActionPaused",
+      "msg": "This action is paused by the current protocol operating mode"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidReserveStatus",
+      "msg": "This action is not allowed by the current reserve status"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidPda",
+      "msg": "Account did not derive from the expected PDA seeds"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidBump",
+      "msg": "Account bump does not match the stored canonical bump"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidMint",
+      "msg": "Mint does not match the expected asset mint"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidTokenProgram",
+      "msg": "Token program must be classic SPL Token or Token-2022"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidVaultAuthority",
+      "msg": "Token account authority does not match the expected PDA"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidShareMintAuthority",
+      "msg": "Share mint authority does not match the expected Reserve PDA"
+    },
+    {
+      "code": 6012,
+      "name": "UnsupportedTokenExtension",
+      "msg": "Token-2022 mint extension is not supported in this release"
+    },
+    {
+      "code": 6013,
+      "name": "AssetNotCollateralEnabled",
+      "msg": "Asset is not enabled as collateral"
+    },
+    {
+      "code": 6014,
+      "name": "AssetNotBorrowEnabled",
+      "msg": "Asset is not enabled for borrowing"
+    },
+    {
+      "code": 6015,
+      "name": "SupplyCapExceeded",
+      "msg": "Reserve supply cap exceeded"
+    },
+    {
+      "code": 6016,
+      "name": "CollateralCapExceeded",
+      "msg": "Margin account collateral cap exceeded for this asset"
+    },
+    {
+      "code": 6017,
+      "name": "BorrowCapExceeded",
+      "msg": "Reserve borrow cap exceeded"
+    },
+    {
+      "code": 6018,
+      "name": "InsufficientLiquidity",
+      "msg": "Reserve does not have enough available liquidity"
+    },
+    {
+      "code": 6019,
+      "name": "InsufficientCollateral",
+      "msg": "Margin account does not have enough credited collateral"
+    },
+    {
+      "code": 6020,
+      "name": "InsufficientShares",
+      "msg": "Lender does not have enough shares"
+    },
+    {
+      "code": 6021,
+      "name": "SlippageExceeded",
+      "msg": "Actual result exceeded the caller's slippage bound"
+    },
+    {
+      "code": 6022,
+      "name": "TooManyAssets",
+      "msg": "Margin account already holds the maximum number of active assets"
+    },
+    {
+      "code": 6023,
+      "name": "DuplicateAssetIndex",
+      "msg": "Asset index is already present in the canonical active list"
+    },
+    {
+      "code": 6024,
+      "name": "IncompletePositionAccounts",
+      "msg": "Remaining accounts did not include every active collateral/debt position"
+    },
+    {
+      "code": 6025,
+      "name": "StalePrice",
+      "msg": "Oracle price update is older than the configured maximum age"
+    },
+    {
+      "code": 6026,
+      "name": "ConfidenceTooWide",
+      "msg": "Oracle price confidence interval is wider than the configured maximum"
+    },
+    {
+      "code": 6027,
+      "name": "HealthFactorTooLow",
+      "msg": "Projected borrow health factor would fall below the required minimum"
+    },
+    {
+      "code": 6028,
+      "name": "PositionHealthy",
+      "msg": "Margin account is healthy and is not eligible for liquidation"
+    },
+    {
+      "code": 6029,
+      "name": "CloseFactorExceeded",
+      "msg": "Liquidation repay amount exceeds the configured close factor"
+    },
+    {
+      "code": 6030,
+      "name": "OutstandingDebt",
+      "msg": "Margin account still has outstanding debt"
+    },
+    {
+      "code": 6031,
+      "name": "NonEmptyMargin",
+      "msg": "Margin account still has open collateral or debt positions"
+    },
+    {
+      "code": 6032,
+      "name": "MathOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6033,
+      "name": "MathUnderflow",
+      "msg": "Arithmetic underflow"
+    },
+    {
+      "code": 6034,
+      "name": "DivisionByZero",
+      "msg": "Division by zero"
+    },
+    {
+      "code": 6035,
+      "name": "TimestampRegression",
+      "msg": "Clock timestamp moved backwards relative to stored state"
+    },
+    {
+      "code": 6036,
+      "name": "VaultAccountingInvariantFailed",
+      "msg": "Reserve vault/share-mint accounting invariant failed"
+    },
+    {
+      "code": 6037,
+      "name": "ZeroAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6038,
+      "name": "DuplicateAccount",
+      "msg": "Duplicate account passed where distinct roles are required"
+    },
+    {
+      "code": 6039,
+      "name": "ReserveAlreadyExists",
+      "msg": "Reserve is already registered for this asset"
+    },
+    {
+      "code": 6040,
+      "name": "InvalidRiskParameters",
+      "msg": "Risk parameter configuration is invalid"
+    },
+    {
+      "code": 6041,
+      "name": "InvalidRateModel",
+      "msg": "Interest-rate model configuration is invalid"
+    },
+    {
+      "code": 6042,
+      "name": "BelowMinimumInitialSupply",
+      "msg": "Requested amount is below the required initial supply floor"
+    },
+    {
+      "code": 6043,
+      "name": "NonEmptyCollateralPosition",
+      "msg": "Collateral position is not empty"
+    },
+    {
+      "code": 6044,
+      "name": "NonEmptyDebtPosition",
+      "msg": "Debt position is not empty"
+    },
+    {
+      "code": 6045,
+      "name": "NonEmptyVault",
+      "msg": "Collateral vault still holds a raw token balance"
+    },
+    {
+      "code": 6046,
+      "name": "IntegrationDisabled",
+      "msg": "External program integration is disabled"
+    },
+    {
+      "code": 6047,
+      "name": "CallNotAllowed",
+      "msg": "This external call is not allowed"
+    },
+    {
+      "code": 6048,
+      "name": "InvalidCallAccounts",
+      "msg": "External call accounts do not match the roles the validator's permit requires"
+    },
+    {
+      "code": 6049,
+      "name": "InvalidCallResult",
+      "msg": "External call left a margin vault in an invalid state"
+    },
+    {
+      "code": 6050,
+      "name": "PriceTooDivergentFromTwap",
+      "msg": "Oracle price is too far from its TWAP"
+    },
+    {
+      "code": 6051,
+      "name": "InvalidAgentAccounts",
+      "msg": "Agent accounts are missing, out of place or not the registered agent"
+    },
+    {
+      "code": 6052,
+      "name": "InvalidAgentAnswer",
+      "msg": "Agent answer is inconsistent with the call it was asked about"
+    },
+    {
+      "code": 6053,
+      "name": "VenueAssetNotTransferable",
+      "msg": "A venue asset is held only through the margin's venue account"
+    },
+    {
+      "code": 6054,
+      "name": "NotAVenue",
+      "msg": "Asset is not a venue"
+    },
+    {
+      "code": 6055,
+      "name": "NotAToken",
+      "msg": "Asset is not a token"
+    },
+    {
+      "code": 6056,
+      "name": "InvalidVenueAccount",
+      "msg": "Account is not the margin's venue account or its token account"
+    },
+    {
+      "code": 6057,
+      "name": "VenuePositionsOpen",
+      "msg": "The venue account still holds an open position or a pending order"
+    },
+    {
+      "code": 6058,
+      "name": "NotProtocolConfig",
+      "msg": "Account is not Vanna's protocol config"
+    },
+    {
+      "code": 6059,
+      "name": "NothingToReclaim",
+      "msg": "Pass the empty vault or debt position to close"
+    }
+  ],
+  "types": [
+    {
+      "name": "AdminAccepted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "previous_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AdminProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "current_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_collateral_per_margin",
+            "type": "u64"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_threshold_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "asset_index",
+            "type": "u16"
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "collateral_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "borrow_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "AssetKind"
+              }
+            }
+          },
+          {
+            "name": "oracle",
+            "type": "pubkey"
+          },
+          {
+            "name": "settle_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_threshold_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_collateral_per_margin",
+            "type": "u64"
+          },
+          {
+            "name": "collateral_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "borrow_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Token"
+          },
+          {
+            "name": "Venue"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetOracleUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_index",
+            "type": "u16"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_threshold_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Borrowed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "assets",
+            "type": "u64"
+          },
+          {
+            "name": "debt_shares",
+            "type": "u128"
+          },
+          {
+            "name": "total_debt_shares",
+            "type": "u128"
+          },
+          {
+            "name": "borrow_health_factor_wad",
+            "type": "u128"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralDeposited",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "new_collateral_amount",
+            "type": "u64"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralSeized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "new_collateral_amount",
+            "type": "u64"
+          },
+          {
+            "name": "borrow_health_factor_wad",
+            "type": "u128"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DebtPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "borrow_shares",
+            "type": "u128"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                48
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "DebtRepaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "assets",
+            "type": "u64"
+          },
+          {
+            "name": "debt_shares_burned",
+            "type": "u128"
+          },
+          {
+            "name": "remaining_debt_shares",
+            "type": "u128"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Integration",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "validator",
+            "type": "pubkey"
+          },
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "IntegrationRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "integration",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "validator",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IntegrationStatusUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "integration",
+            "type": "pubkey"
+          },
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IntegrationValidatorUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "integration",
+            "type": "pubkey"
+          },
+          {
+            "name": "validator",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Liquidated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_value",
+            "type": "u128"
+          },
+          {
+            "name": "debt_value",
+            "type": "u128"
+          },
+          {
+            "name": "health_factor_wad",
+            "type": "u128"
+          },
+          {
+            "name": "collaterals_seized",
+            "type": "u8"
+          },
+          {
+            "name": "debts_repaid",
+            "type": "u8"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LiquidityRedeemed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "lender",
+            "type": "pubkey"
+          },
+          {
+            "name": "assets",
+            "type": "u64"
+          },
+          {
+            "name": "shares",
+            "type": "u64"
+          },
+          {
+            "name": "total_borrow_assets",
+            "type": "u64"
+          },
+          {
+            "name": "accounted_liquidity_assets",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LiquiditySupplied",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "lender",
+            "type": "pubkey"
+          },
+          {
+            "name": "assets",
+            "type": "u64"
+          },
+          {
+            "name": "shares",
+            "type": "u64"
+          },
+          {
+            "name": "total_borrow_assets",
+            "type": "u64"
+          },
+          {
+            "name": "accounted_liquidity_assets",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarginAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "collateral_count",
+            "type": "u8"
+          },
+          {
+            "name": "debt_count",
+            "type": "u8"
+          },
+          {
+            "name": "collateral_asset_indexes",
+            "type": {
+              "array": [
+                "u16",
+                24
+              ]
+            }
+          },
+          {
+            "name": "debt_asset_indexes",
+            "type": {
+              "array": [
+                "u16",
+                24
+              ]
+            }
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "venue_legs",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "VenueLegs"
+                  }
+                },
+                6
+              ]
+            }
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                36
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarginClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarginCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarginExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "validator",
+            "type": "pubkey"
+          },
+          {
+            "name": "spent",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "TokenAmount"
+                }
+              }
+            }
+          },
+          {
+            "name": "received",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "TokenAmount"
+                }
+              }
+            }
+          },
+          {
+            "name": "borrow_health_factor_wad",
+            "type": "u128"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperatingModeChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_mode",
+            "type": "u8"
+          },
+          {
+            "name": "new_mode",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "operating_mode",
+            "type": "u8"
+          },
+          {
+            "name": "max_assets_per_margin",
+            "type": "u8"
+          },
+          {
+            "name": "next_asset_index",
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolFeesCollected",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_ata",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_assets_per_margin",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RateCurve",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "linear_coeff_wad",
+            "type": "u64"
+          },
+          {
+            "name": "jump_coeff_wad",
+            "type": "u64"
+          },
+          {
+            "name": "rate_multiplier_wad",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RentReclaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_closed",
+            "type": "bool"
+          },
+          {
+            "name": "debt_position_closed",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Reserve",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "underlying_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidity_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "share_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "supply_cap",
+            "type": "u64"
+          },
+          {
+            "name": "borrow_cap",
+            "type": "u64"
+          },
+          {
+            "name": "accounted_liquidity_assets",
+            "type": "u64"
+          },
+          {
+            "name": "total_borrow_assets",
+            "type": "u64"
+          },
+          {
+            "name": "total_borrow_shares",
+            "type": "u128"
+          },
+          {
+            "name": "borrow_index_wad",
+            "type": "u128"
+          },
+          {
+            "name": "accrued_protocol_fees",
+            "type": "u64"
+          },
+          {
+            "name": "last_update_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "rate_curve",
+            "type": {
+              "defined": {
+                "name": "RateCurve"
+              }
+            }
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReserveAccrued",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_borrow_assets",
+            "type": "u64"
+          },
+          {
+            "name": "accounted_liquidity_assets",
+            "type": "u64"
+          },
+          {
+            "name": "borrow_index_wad",
+            "type": "u128"
+          },
+          {
+            "name": "accrued_protocol_fees",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReserveConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "rate_curve",
+            "type": {
+              "defined": {
+                "name": "RateCurve"
+              }
+            }
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "supply_cap",
+            "type": "u64"
+          },
+          {
+            "name": "borrow_cap",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReserveInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "underlying_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidity_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "share_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "supply_cap",
+            "type": "u64"
+          },
+          {
+            "name": "borrow_cap",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokenAmount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VenueLegs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_index",
+            "type": "u16"
+          },
+          {
+            "name": "legs",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VenueRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "venue",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_index",
+            "type": "u16"
+          },
+          {
+            "name": "settle_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VenueSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "venue",
+            "type": "pubkey"
+          },
+          {
+            "name": "swept",
+            "type": "u64"
+          },
+          {
+            "name": "lamports_refunded",
+            "type": "u64"
+          },
+          {
+            "name": "open_legs",
+            "type": "u64"
+          },
+          {
+            "name": "closed",
+            "type": "bool"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VenueUnwound",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "venue",
+            "type": "pubkey"
+          },
+          {
+            "name": "caller",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "health_factor_wad",
+            "type": "u128"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "ASSET_SEED",
+      "type": "bytes",
+      "value": "[97, 115, 115, 101, 116]"
+    },
+    {
+      "name": "DEBT_SEED",
+      "type": "bytes",
+      "value": "[100, 101, 98, 116]"
+    },
+    {
+      "name": "INTEGRATION_SEED",
+      "type": "bytes",
+      "value": "[105, 110, 116, 101, 103, 114, 97, 116, 105, 111, 110]"
+    },
+    {
+      "name": "MARGIN_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 103, 105, 110]"
+    },
+    {
+      "name": "PROTOCOL_SEED",
+      "type": "bytes",
+      "value": "[112, 114, 111, 116, 111, 99, 111, 108]"
+    },
+    {
+      "name": "RESERVE_SEED",
+      "type": "bytes",
+      "value": "[114, 101, 115, 101, 114, 118, 101]"
+    },
+    {
+      "name": "SHARE_MINT_SEED",
+      "type": "bytes",
+      "value": "[115, 104, 97, 114, 101, 95, 109, 105, 110, 116]"
+    }
+  ]
+}

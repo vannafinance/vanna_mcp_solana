@@ -167,8 +167,6 @@ async def test_borrow_and_supply_rejected_for_collateral_only_assets(ctx):
             deposit_asset="SOL", deposit_amount="1", borrow_asset=asset, borrow_amount="1",
         )
         assert result["error"] == "asset_not_offered"
-        result = await vanna_margin_trade(action="open_debt", authority=fresh, asset=asset)
-        assert result["error"] == "asset_not_offered"
 
     from mcp_server.dispatchers.earn_write import vanna_earn_write
 

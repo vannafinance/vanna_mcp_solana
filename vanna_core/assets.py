@@ -2,9 +2,13 @@
 
 TOOLS_CATALOGUE.md 1.2/1.3: a small static table gives symbols/decimals/icons
 for the product's known assets, but on-chain `AssetConfig` accounts are the only
-authority for flags, `asset_index`, decimals, token program and - since the
-oracle rework - each asset's whole `OracleConfig` (Scope chain, Pyth fallback,
-klend receipt source). The registry discovers EVERY AssetConfig the program owns
+authority for flags, `asset_index`, decimals, token program and kind. How a token is
+PRICED (its `OracleConfig`: Scope chain, Pyth fallback, klend receipt source) lives in the
+ORACLE AGENT's price book (`vanna_oracle`, keyed by mint) since the agent split; the registry
+reads the book in the same call and joins each token with its entry, so `DiscoveredAsset.oracle`
+means what it always did. A venue asset (GMTrade perps) has no price-book entry: the oracle
+values it from its market book, which this server does not read (see `is_venue`).
+The registry discovers EVERY AssetConfig the program owns
 (`getProgramAccounts`), so assets added on-chain (JupUSD, the Token-2022 xStocks
 NVDAx/TSLAx, ...) show up without a code change. A static catalogue must never
 cause an active collateral/debt position to be omitted from a health check - an
@@ -151,9 +155,14 @@ KAMINO_RECEIPTS: tuple[KaminoReceiptInfo, ...] = (
     ),
 )
 
+# GMTrade (perps) venue: its AssetConfig is keyed by the venue's store, not a mint (`lib/solana/perps-accounts.ts`).
+GMTRADE_PROGRAM_ID = Pubkey.from_string("Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6MDucLo")
+GMTRADE_STORE = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
+
 # Assets the program registers on-chain that are not in the app's five-token catalogue -
 # display names only (decimals, token program and oracle always come from the AssetConfig).
 EXTRA_ASSET_SYMBOLS: dict[str, str] = {
+    GMTRADE_STORE: "GMTrade",
     "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD": "JupUSD",
     "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": "NVDAx",
     "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB": "TSLAx",
@@ -231,9 +240,17 @@ class DiscoveredAsset:
     token_program: str
     collateral_enabled: bool
     borrow_enabled: bool
-    oracle: OracleSpec
+    oracle: OracleSpec  # the token's price-book entry (empty for a venue)
     max_collateral_per_margin: int
     liquidation_bonus_bps: int
+    kind: int = 0  # 0 = Token, 1 = Venue (layouts.ASSET_KIND_*)
+    oracle_program: str = ""  # the oracle agent program that values this asset
+    settle_mint: str = ""  # a venue's settle token (USDC for GMTrade)
+    in_price_book: bool = True  # False for a token the oracle has no source for (it cannot be priced)
+
+    @property
+    def is_venue(self) -> bool:
+        return self.kind == 1
 
     @property
     def is_receipt(self) -> bool:
@@ -253,7 +270,7 @@ class DiscoveredAsset:
 # remember when the RPC rejects getProgramAccounts (the hosted fork does) so it is not retried per call.
 _REGISTRY_CACHE_TTL_SECS = 60.0
 _GPA_RETRY_AFTER_SECS = 600.0
-_registry_cache: dict[str, tuple[float, str, list]] = {}
+_registry_cache: dict[str, tuple[float, str, list, bytes | None]] = {}
 _gpa_blocked_until: dict[str, float] = {}
 
 
@@ -285,7 +302,7 @@ class AssetRegistry:
         now = time.monotonic()
         cached = _registry_cache.get(key)
         if cached is not None and cached[0] > now:
-            _, self.discovery_mode, found = cached
+            _, self.discovery_mode, found, book = cached
         else:
             found = None
             if _gpa_blocked_until.get(key, 0.0) <= now:
@@ -302,8 +319,12 @@ class AssetRegistry:
             if found is None:
                 found = await self._load_known_mints(ASSET_CONFIG_ACCOUNT_LEN, discriminator)
                 self.discovery_mode = "known_mints"
-            _registry_cache[key] = (now + _REGISTRY_CACHE_TTL_SECS, self.discovery_mode, found)
-        discovered = [_decode_asset_config(address, AssetConfigLayout.parse(data[8:])) for address, data in found]
+            book = await self._load_price_book()
+            _registry_cache[key] = (now + _REGISTRY_CACHE_TTL_SECS, self.discovery_mode, found, book)
+        sources = parse_price_book(book)
+        discovered = [
+            _decode_asset_config(address, AssetConfigLayout.parse(data[8:]), sources) for address, data in found
+        ]
         # Stable, product-first ordering: catalogue assets, then receipts, then the rest by index.
         rank = {a.mint: i for i, a in enumerate(ASSETS)}
         rank.update({r.collateral_mint: 100 + i for i, r in enumerate(KAMINO_RECEIPTS)})
@@ -313,6 +334,18 @@ class AssetRegistry:
             self._by_symbol[asset.symbol.upper()] = asset
             self._by_mint[asset.mint] = asset
         self._loaded = True
+
+    async def _load_price_book(self) -> bytes | None:
+        """The oracle agent's price book bytes (None when it has not been opened on this deployment)."""
+        from vanna_core.pdas import price_book_pda
+
+        oracle_program = Pubkey.from_string(self._client.settings.vanna_oracle_program_id)
+        address = price_book_pda(oracle_program)[0]
+        raw = await self._client.get_multiple_accounts_raw([address])
+        entry = raw.get(str(address))
+        if entry is None or entry[0] != str(oracle_program):
+            return None
+        return entry[1]
 
     async def _load_known_mints(self, data_len: int, discriminator: bytes) -> list[tuple[Pubkey, bytes]]:
         """Fallback discovery when the RPC rejects `getProgramAccounts`: derive the
@@ -391,26 +424,33 @@ def _symbol_for_mint(mint: str) -> str:
     return EXTRA_ASSET_SYMBOLS.get(mint, mint[:6])
 
 
-def _decode_asset_config(config_address: Pubkey, decoded: object) -> DiscoveredAsset:
-    from vanna_core.layouts import pubkey_bytes_to_base58
+def parse_price_book(data: bytes | None) -> dict[str, OracleSpec]:
+    """Decode the oracle agent's price book into {mint: OracleSpec}. Entries are 220 bytes after a 12-byte header;
+    the count is a byte at offset 9 (see layouts.py)."""
+    from vanna_core.layouts import (
+        PRICE_BOOK_HEADER_LEN,
+        PRICE_BOOK_MAX_SOURCES,
+        PRICE_SOURCE_LEN,
+        PriceSource,
+        pubkey_bytes_to_base58,
+    )
+
+    sources: dict[str, OracleSpec] = {}
+    if not data or len(data) < PRICE_BOOK_HEADER_LEN:
+        return sources
+    count = min(data[9], PRICE_BOOK_MAX_SOURCES)
 
     def key(raw: object) -> str:
         text = pubkey_bytes_to_base58(raw)
         return "" if text == ZERO_PUBKEY else text
 
-    o = decoded.oracle
-    mint = pubkey_bytes_to_base58(decoded.mint)
-    return DiscoveredAsset(
-        symbol=_symbol_for_mint(mint),
-        asset_index=decoded.asset_index,
-        config_address=str(config_address),
-        mint=mint,
-        reserve=pubkey_bytes_to_base58(decoded.reserve),
-        decimals=decoded.decimals,
-        token_program=pubkey_bytes_to_base58(decoded.token_program),
-        collateral_enabled=decoded.collateral_enabled,
-        borrow_enabled=decoded.borrow_enabled,
-        oracle=OracleSpec(
+    for i in range(count):
+        start = PRICE_BOOK_HEADER_LEN + PRICE_SOURCE_LEN * i
+        if len(data) < start + PRICE_SOURCE_LEN:
+            break
+        entry = PriceSource.parse(data[start : start + PRICE_SOURCE_LEN])
+        o = entry.config
+        sources[pubkey_bytes_to_base58(entry.mint)] = OracleSpec(
             scope_prices=key(o.scope_prices),
             scope_chain=tuple(int(x) for x in o.scope_chain),
             scope_twap_chain=tuple(int(x) for x in o.scope_twap_chain),
@@ -421,9 +461,42 @@ def _decode_asset_config(config_address: Pubkey, decoded: object) -> DiscoveredA
             max_age_secs=o.max_age_secs,
             max_twap_divergence_bps=o.max_twap_divergence_bps,
             max_confidence_bps=o.max_confidence_bps,
-        ),
+        )
+    return sources
+
+
+_EMPTY_ORACLE = OracleSpec(
+    scope_prices="", scope_chain=(0xFFFF,) * 4, scope_twap_chain=(0xFFFF,) * 4, pyth_price="", pyth_factor="",
+    klend_reserve="", klend_program="", max_age_secs=0, max_twap_divergence_bps=0, max_confidence_bps=0,
+)
+
+
+def _decode_asset_config(config_address: Pubkey, decoded: object, sources: dict[str, OracleSpec]) -> DiscoveredAsset:
+    from vanna_core.layouts import pubkey_bytes_to_base58
+
+    def key(raw: object) -> str:
+        text = pubkey_bytes_to_base58(raw)
+        return "" if text == ZERO_PUBKEY else text
+
+    mint = pubkey_bytes_to_base58(decoded.mint)
+    book_entry = sources.get(mint)
+    return DiscoveredAsset(
+        symbol=_symbol_for_mint(mint),
+        asset_index=decoded.asset_index,
+        config_address=str(config_address),
+        mint=mint,
+        reserve=pubkey_bytes_to_base58(decoded.reserve),
+        decimals=decoded.decimals,
+        token_program=pubkey_bytes_to_base58(decoded.token_program),
+        collateral_enabled=decoded.collateral_enabled,
+        borrow_enabled=decoded.borrow_enabled,
+        oracle=book_entry if book_entry is not None else _EMPTY_ORACLE,
         max_collateral_per_margin=decoded.max_collateral_per_margin,
         liquidation_bonus_bps=decoded.liquidation_bonus_bps,
+        kind=int(decoded.kind),
+        oracle_program=pubkey_bytes_to_base58(decoded.oracle),
+        settle_mint=key(decoded.settle_mint),
+        in_price_book=book_entry is not None or int(decoded.kind) == 1,
     )
 
 

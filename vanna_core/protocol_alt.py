@@ -36,7 +36,7 @@ from vanna_core.assets import (
     PYTH_RECEIVER_PROGRAM_ID,
     AssetRegistry,
 )
-from vanna_core.pdas import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, integration_pda, protocol_config_pda
+from vanna_core.pdas import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, integration_pda, price_book_pda, protocol_config_pda
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCX
 MAX_TABLE_ADDRESSES = 256
 
 
-async def protocol_lookup_addresses(program_id: Pubkey, registry: AssetRegistry) -> list[Pubkey]:
+async def protocol_lookup_addresses(program_id: Pubkey, registry: AssetRegistry, settings) -> list[Pubkey]:
     """Every protocol-wide key a margin build may name, de-duplicated, in a stable order."""
     keys: list[Pubkey] = [
         program_id,
@@ -65,8 +65,14 @@ async def protocol_lookup_addresses(program_id: Pubkey, registry: AssetRegistry)
         ASSOCIATED_TOKEN_PROGRAM_ID,
         SYSTEM_PROGRAM_ID,
     ]
+    # The oracle agent and the validator agent: every margin_execute / health read names them.
+    oracle_program = Pubkey.from_string(settings.vanna_oracle_program_id)
+    validator_program = Pubkey.from_string(settings.vanna_validator_program_id)
+    keys += [oracle_program, price_book_pda(oracle_program)[0], validator_program]
     for asset in registry.all(include_unoffered=True):
         keys.append(Pubkey.from_string(asset.config_address))
+        if asset.oracle_program:
+            keys.append(Pubkey.from_string(asset.oracle_program))
         keys.append(Pubkey.from_string(asset.mint))
         keys.append(Pubkey.from_string(asset.token_program))
         if asset.has_reserve:

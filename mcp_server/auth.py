@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import anyio
 import jwt
@@ -137,17 +137,28 @@ class AuthMiddleware:
         verifier: TokenVerifier,
         allowed_origins: frozenset[str],
         resource_url: str,
+        *,
+        extra_public_path: Callable[[str], bool] | None = None,
+        claims_check: Callable[[dict[str, Any]], Awaitable[bool]] | None = None,
     ) -> None:
+        """`extra_public_path`: further paths served without a bearer (the public connector's own OAuth
+        endpoints). `claims_check`: an async veto on verified claims, used to refuse a token whose grant
+        has been revoked even though the JWT itself has not expired."""
         self._app = app
         self._verifier = verifier
         self._allowed_origins = allowed_origins
         self._resource_url = resource_url.rstrip("/")
+        self._extra_public_path = extra_public_path
+        self._claims_check = claims_check
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
-        if scope["type"] != "http" or is_public_path(str(scope.get("path", ""))):
+        path = str(scope.get("path", ""))
+        if scope["type"] != "http" or is_public_path(path) or (
+            self._extra_public_path is not None and self._extra_public_path(path)
+        ):
             await self._app(scope, receive, send)
             return
 
@@ -170,6 +181,10 @@ class AuthMiddleware:
             claims = await anyio.to_thread.run_sync(self._verifier.verify, token)
         except AuthError as exc:
             await self._send_401(send, exc.message)
+            return
+
+        if self._claims_check is not None and not await self._claims_check(claims):
+            await self._send_401(send, "Token has been revoked")
             return
 
         forwarded = headers.get(USER_ASSERTION_HEADER, "").strip()
@@ -212,7 +227,9 @@ async def _send_json(
     await send({"type": "http.response.body", "body": content, "more_body": False})
 
 
-def build_protected_resource_metadata(resource_url: str, issuer: str) -> dict[str, Any]:
+def build_protected_resource_metadata(
+    resource_url: str, issuer: str, scopes_supported: list[str] | None = None
+) -> dict[str, Any]:
     """RFC 9728 document served at /.well-known/oauth-protected-resource.
 
     Only standard OIDC scopes are advertised: advertising the internal vanna:*
@@ -223,6 +240,6 @@ def build_protected_resource_metadata(resource_url: str, issuer: str) -> dict[st
         "resource": resource_url,
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+        "scopes_supported": scopes_supported or ["openid", "profile", "email", "offline_access"],
         "resource_documentation": "https://vanna.finance/docs/mcp",
     }

@@ -25,17 +25,19 @@ from vanna_core.assets import JUPITER_V6_PROGRAM_ID, AssetRegistry
 from vanna_core.client import SolanaClient
 from vanna_core.contracts.jupiter import ALLOWED_SELECTORS, JupiterClient, decode_jupiter_instruction, fetch_lookup_tables
 from vanna_core.envelope import SimulationOutcome, WriteEnvelope
-from vanna_core.margin_execute import build_margin_execute_instruction
+from vanna_core.margin_execute import EXEC_COMPUTE_UNITS, build_margin_execute_instructions
 from vanna_core.pdas import find_associated_token_address, margin_pda
 from vanna_core.types import ContractCallError
 
 DEFAULT_SLIPPAGE_BPS = 100  # 1%, matches the app's own default
 
 MAX_TX_BYTES = 1232  # Solana packet limit for one serialized transaction
-MARGIN_SWAP_COMPUTE_UNITS = 1_000_000
+MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 # Jupiter route account caps for a margin swap, tried in order until the transaction fits. None = Jupiter's
 # default (unconstrained) route, which most pairs fit; the tighter caps cost a little price, not safety
-# (min_received still comes from the quote that was actually built).
+# (Jupiter's own minimum out, `otherAmountThreshold`, still comes from the quote that was actually built).
+# The core program also runs out of heap on long routes next to the position and oracle segments, so the
+# app asks Jupiter for at most 20 accounts (`MARGIN_SWAP_MAX_ACCOUNTS`); this list ends there too.
 MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
 
 
@@ -193,19 +195,17 @@ class SwapContract:
                 raise ContractCallError("Jupiter returned a route type the margin adapter doesn't allow")
 
             cpi_instruction = decode_jupiter_instruction(swap_ix_dict)
-            min_received = int(quote.get("otherAmountThreshold", quote["outAmount"]))
 
-            instruction = await build_margin_execute_instruction(
+            instructions = await build_margin_execute_instructions(
                 self._client, authority, margin,
                 target_program=JUPITER_V6_PROGRAM_ID, spent=from_asset, received=to_asset,
-                cpi_accounts=cpi_instruction.accounts, data=cpi_instruction.data,
-                min_received=min_received, registry=registry,
+                cpi_accounts=cpi_instruction.accounts, data=cpi_instruction.data, registry=registry,
             )
 
             lookup_tables = await fetch_lookup_tables(self._client, swap_response.get("addressLookupTableAddresses", []))
             route_keys = {t.key for t in lookup_tables}
             all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
-            if fits_one_transaction([instruction], authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS):
+            if fits_one_transaction(instructions, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS):
                 break
             last_error = ContractCallError(
                 f"Transaction too large: margin swap {from_asset.symbol}->{to_asset.symbol} route "
@@ -215,7 +215,7 @@ class SwapContract:
             raise last_error or ContractCallError("Transaction too large: no margin swap route fits in one transaction")
 
         return await self._client.build_write_envelope(
-            [instruction], authority, purpose="margin_execute:jupiter_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
+            instructions, authority, purpose="margin_execute:jupiter_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
             address_lookup_tables=lookup_tables, use_protocol_lookup_tables=True,
             summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui)},
         )

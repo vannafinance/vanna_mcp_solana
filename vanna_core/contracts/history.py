@@ -23,9 +23,8 @@ from vanna_core.pdas import margin_pda
 _DISCRIMINATOR_TO_NAME: dict[bytes, str] = {event_discriminator(name): name for name in EVENT_LAYOUTS}
 
 _MARGIN_EVENT_NAMES = {
-    "MarginCreated", "MarginClosed", "CollateralDeposited", "CollateralWithdrawn",
-    "CollateralPositionClosed", "DebtPositionOpened", "DebtPositionClosed",
-    "Borrowed", "DebtRepaid", "CollateralSeized", "Liquidated",
+    "MarginCreated", "MarginClosed", "CollateralDeposited", "CollateralWithdrawn", "RentReclaimed",
+    "Borrowed", "DebtRepaid", "MarginExecuted", "CollateralSeized", "Liquidated",
 }
 _EARN_EVENT_NAMES = {"LiquiditySupplied", "LiquidityRedeemed"}
 
@@ -84,14 +83,33 @@ class HistoryContract:
             f = e["fields"]
             row = {"event": e["event"], "signature": e["signature"], "slot": e["slot"], "timestamp": f.timestamp}
 
-            if e["event"] in ("CollateralDeposited", "CollateralWithdrawn", "CollateralPositionClosed"):
+            if e["event"] in ("CollateralDeposited", "CollateralWithdrawn", "RentReclaimed"):
                 mint = pubkey_bytes_to_base58(f.mint)
                 symbol = mint_to_symbol.get(mint, mint)
                 row["asset"] = symbol
                 if hasattr(f, "amount"):
                     decimals = next((a.decimals for a in registry.all(include_unoffered=True) if a.mint == mint), 0)
                     row["amount"] = math_utils.ui_amount(f.amount, decimals)
-            elif e["event"] in ("Borrowed", "DebtRepaid", "DebtPositionOpened", "DebtPositionClosed"):
+            elif e["event"] == "MarginExecuted":
+                # A call into Kamino or Jupiter: one entry per margin vault paid out of / paid into.
+                from vanna_core.assets import JUPITER_V6_PROGRAM_ID, KLEND_PROGRAM_ID
+
+                decimals_of = {a.mint: a.decimals for a in every}
+
+                def legs(entries) -> list[dict]:
+                    out = []
+                    for t in entries:
+                        mint = pubkey_bytes_to_base58(t.mint)
+                        out.append({"asset": mint_to_symbol.get(mint, mint),
+                                    "amount": math_utils.ui_amount(t.amount, decimals_of.get(mint, 0))})
+                    return out
+
+                program = pubkey_bytes_to_base58(f.program_id)
+                row["program"] = {str(KLEND_PROGRAM_ID): "kamino", str(JUPITER_V6_PROGRAM_ID): "jupiter"}.get(program, program)
+                row["spent"], row["received"] = legs(f.spent), legs(f.received)
+                if row["spent"]:
+                    row["asset"], row["amount"] = row["spent"][0]["asset"], row["spent"][0]["amount"]
+            elif e["event"] in ("Borrowed", "DebtRepaid"):
                 reserve = pubkey_bytes_to_base58(f.reserve)
                 asset = reserve_to_asset.get(reserve)
                 row["asset"] = asset.symbol if asset else reserve

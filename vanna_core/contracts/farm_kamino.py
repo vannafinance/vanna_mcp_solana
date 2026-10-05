@@ -37,13 +37,12 @@ from vanna_core.pdas import (
     find_associated_token_address,
     margin_pda,
 )
-from vanna_core.margin_execute import build_margin_execute_instruction
+from vanna_core.margin_execute import EXEC_COMPUTE_UNITS, build_margin_execute_instructions
 
 # Verified against Kamino's own on-chain IDL (kamino_lending v1.25.0).
 KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISC = bytes([169, 201, 30, 126, 6, 205, 102, 68])
 KAMINO_REDEEM_RESERVE_COLLATERAL_DISC = bytes([234, 117, 181, 125, 185, 142, 220, 29])
 
-DEFAULT_SLIPPAGE_BPS = 50  # 0.5%, TOOLS_CATALOGUE.md §2.6
 
 
 def _u64(value: int) -> bytes:
@@ -73,17 +72,13 @@ class FarmKaminoContract:
         raw_amount = math_utils.base_units(amount_ui, underlying.decimals)
         reserve = Pubkey.from_string(receipt.oracle.klend_reserve)
 
-        rate = await self._kamino.read_reserve_rate(reserve, KLEND_PROGRAM_ID, Pubkey.from_string(receipt.mint))
-        expected_received = rate.receipts_for_underlying(raw_amount)
-        min_received = math_utils.mul_div_floor(expected_received, 10_000 - DEFAULT_SLIPPAGE_BPS, 10_000)
-
         margin = margin_pda(authority, self._client.program_id)[0]
         cpi_accounts = self._deposit_cpi_accounts(margin, underlying, receipt, reserve)
         data = KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISC + _u64(raw_amount)
 
         return await self._build_and_submit(
             authority, margin, spent=underlying, received=receipt, registry=registry,
-            cpi_accounts=cpi_accounts, data=data, min_received=min_received,
+            cpi_accounts=cpi_accounts, data=data,
             purpose="margin_execute:kamino_deposit",
             summary={"action": "farm_deposit", "underlying": underlying.symbol, "amount": str(amount_ui)},
         )
@@ -98,17 +93,13 @@ class FarmKaminoContract:
         raw_amount = math_utils.base_units(receipt_amount_ui, receipt.decimals)
         reserve = Pubkey.from_string(receipt.oracle.klend_reserve)
 
-        rate = await self._kamino.read_reserve_rate(reserve, KLEND_PROGRAM_ID, Pubkey.from_string(receipt.mint))
-        expected_received = rate.underlying_for_receipts(raw_amount)
-        min_received = math_utils.mul_div_floor(expected_received, 10_000 - DEFAULT_SLIPPAGE_BPS, 10_000)
-
         margin = margin_pda(authority, self._client.program_id)[0]
         cpi_accounts = self._redeem_cpi_accounts(margin, underlying, receipt, reserve)
         data = KAMINO_REDEEM_RESERVE_COLLATERAL_DISC + _u64(raw_amount)
 
         return await self._build_and_submit(
             authority, margin, spent=receipt, received=underlying, registry=registry,
-            cpi_accounts=cpi_accounts, data=data, min_received=min_received,
+            cpi_accounts=cpi_accounts, data=data,
             purpose="margin_execute:kamino_redeem",
             summary={"action": "farm_redeem", "underlying": underlying.symbol, "receipt_amount": str(receipt_amount_ui)},
         )
@@ -166,14 +157,15 @@ class FarmKaminoContract:
 
     async def _build_and_submit(
         self, authority: Pubkey, margin: Pubkey, *, spent: DiscoveredAsset, received: DiscoveredAsset,
-        registry: AssetRegistry, cpi_accounts: list[AccountMeta], data: bytes, min_received: int,
+        registry: AssetRegistry, cpi_accounts: list[AccountMeta], data: bytes,
         purpose: str, summary: dict,
     ) -> WriteEnvelope:
-        instruction = await build_margin_execute_instruction(
+        instructions = await build_margin_execute_instructions(
             self._client, authority, margin,
             target_program=KLEND_PROGRAM_ID, spent=spent, received=received,
-            cpi_accounts=cpi_accounts, data=data, min_received=min_received, registry=registry,
+            cpi_accounts=cpi_accounts, data=data, registry=registry,
         )
         return await self._client.build_write_envelope(
-            [instruction], authority, purpose=purpose, compute_unit_limit=600_000, summary=summary
+            instructions, authority, purpose=purpose, compute_unit_limit=EXEC_COMPUTE_UNITS,
+            use_protocol_lookup_tables=True, summary=summary
         )

@@ -33,8 +33,6 @@ _RESERVE_STATUSES: dict[int, tuple[str, str]] = {
     3: ("Frozen", "Blocks supply, redeem, and borrow"),
 }
 
-_ADAPTER_NAMES: dict[int, str] = {0: "KaminoLend", 1: "Jupiter"}
-
 # The all-zero pubkey (base58 of 32 zero bytes) — `AssetConfig.reserve` holds
 # this for a collateral-only asset (e.g. a Kamino receipt) that never had
 # `admin_initialize_reserve` called for it.
@@ -102,6 +100,7 @@ class ProtocolContract:
                     "reserve": d.reserve if reserve is not None else None,
                     "reserve_status": status_name,
                     "price_source": d.price_source,
+                    "oracle_program": d.oracle_program,
                     "oracle": {
                         "scope": d.oracle.uses_scope,
                         "scope_chain": [e for e in d.oracle.scope_chain if e != 0xFFFF],
@@ -127,8 +126,10 @@ class ProtocolContract:
             if record is None:
                 return None
             return {
-                "adapter": _ADAPTER_NAMES.get(record.adapter, "Unknown"),
+                "adapter": name,
                 "program_id": pubkey_bytes_to_base58(record.program_id),
+                # The validator agent that reviews every margin_execute call into this program.
+                "validator": pubkey_bytes_to_base58(record.validator),
                 "enabled": record.enabled,
             }
 

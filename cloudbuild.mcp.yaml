@@ -8,7 +8,7 @@
 # vanna-credit, service vanna-mcp-solana. Ingress is all, but Cloud Run IAM must stay
 # REQUIRED: only the app's runtime SA in vanna-credit-solana-test is run.invoker, and
 # the MCP checks the WorkOS token. Never add an allUsers invoker. (ingress=internal
-# does not work across projects: the caller gets a 404.) See COPILOT_ARCHITECTURE.md §11.
+# does not work across projects: the caller gets a 404.) See vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md §11.
 # The Cloud Build service account needs storage.objectViewer, artifactregistry.writer,
 # logging.logWriter (and run.admin + iam.serviceAccountUser for the deploy step below);
 # the first hosted build used a build-only config with --service-account instead.

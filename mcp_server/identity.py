@@ -31,6 +31,9 @@ _SCOPE_KEY = "vanna.identity"
 
 WRITE_SCOPES = frozenset({"vanna:write", "write", "*", "vanna:*"})
 
+# Claim carried only by tokens the public connector itself issued after a wallet login (mcp_server/oauth/).
+WALLET_CLAIM = "vanna_wallet"
+
 
 class IdentityError(RuntimeError):
     """Raised by require_caller_sub() when a caller identity is required but absent."""
@@ -104,6 +107,24 @@ def require_caller_sub() -> str:
     if sub is None:
         raise IdentityError("No authenticated caller identity in this request context.")
     return sub
+
+
+def caller_wallet() -> str | None:
+    """The wallet this request is authenticated as, for a public-connector wallet login; else None.
+
+    Honoured only on a PUBLIC_MODE service and only when the token's issuer is this service itself, so a
+    token minted by any other issuer (WorkOS, the Copilot's machine token) can never claim a wallet.
+    """
+    claims = current_claims()
+    if not claims:
+        return None
+    from vanna_core.config import get_settings
+
+    settings = get_settings()
+    if not settings.public_mode or claims.get("iss") != settings.external_base_url.rstrip("/"):
+        return None
+    wallet = claims.get(WALLET_CLAIM)
+    return wallet if isinstance(wallet, str) and wallet and claims.get("sub") == wallet else None
 
 
 def caller_client_id() -> str | None:

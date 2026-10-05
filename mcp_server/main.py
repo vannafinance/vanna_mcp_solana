@@ -34,11 +34,13 @@ from starlette.types import ASGIApp
 
 from vanna_core.config import MCPTransport, get_settings
 from mcp_server.agent_firewall import get_agent_instructions
+from mcp_server import safety as safety_layer
 from mcp_server.dependencies import VannaContext, _set_context
 from mcp_server.dispatchers import ALL_DISPATCHERS, FORK_DISPATCHERS
-from mcp_server.identity import caller_has_write_scope, request_identity
+from mcp_server.identity import caller_has_write_scope, caller_wallet, request_identity
 from mcp_server.rate_limit import get_circuit_breaker
 from mcp_server.scopes import WRITE_ONLY_TOOLS, is_write_call
+from mcp_server.wallet_scope import apply_wallet_scope, signer_param
 
 settings = get_settings()
 
@@ -63,7 +65,11 @@ async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
 
 
 def _json_result(payload: dict[str, Any], *, is_error: bool = True) -> CallToolResult:
-    return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload))], is_error=is_error)
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload))],
+        structured_content=None if is_error else payload,
+        is_error=is_error,
+    )
 
 
 def _result_error_code(result: Any) -> str | None:
@@ -120,6 +126,81 @@ def _normalize_sdk_error(tool: str, result: Any) -> Any:
     return result
 
 
+# Tools that run their own safety checks per step (the plan engine pre-flights every step it builds) or are not
+# transactions (the faucet has its own per-wallet cap).
+_OWN_SAFETY_TOOLS = frozenset({"vanna_plan", "vanna_wallet", "vanna_fork"})
+
+
+def _acting_wallet(tool: str, arguments: dict[str, Any]) -> str | None:
+    """The wallet a write is for when no login supplies it (local runs): the argument that must sign."""
+    action = arguments.get("action")
+    param = signer_param(tool, action if isinstance(action, str) else None)
+    value = arguments.get(param) if param else None
+    return value if isinstance(value, str) and value else None
+
+
+async def _guard_write(wallet: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Pre-flight a direct write with the same code a plan step gets; {} when it may proceed."""
+    from mcp_server.planning.guard import error_for, guard_direct_write
+
+    try:
+        result = await guard_direct_write(wallet, tool, arguments)
+    except Exception:  # noqa: BLE001 — a pre-flight that cannot run refuses (fail closed)
+        logger.warning("safety pre-flight failed | tool=%s", tool, exc_info=True)
+        return {"error": "unavailable", "message": "The safety checks could not run just now, so this was not built. Try again."}
+    if result.skip:
+        return {"error": "invalid_input", "message": result.skip}
+    if not result.ok:
+        return error_for(result)
+    return {}
+
+
+async def _attach_signing_link(result: Any, tool: str, arguments: dict[str, Any], wallet: str | None) -> Any:
+    """Add the plan link (where the user's wallet reviews and signs) to a successful write envelope."""
+    from mcp_server.planning.engine import get_engine
+    from mcp_server.planning.guard import describe_call
+
+    engine = get_engine()
+    if engine is None or getattr(result, "is_error", False):
+        return result
+    payload = _result_payload(result)
+    if not isinstance(payload, dict) or not payload.get("transactions"):
+        return result
+    acting = wallet or _acting_wallet(tool, arguments) or payload.get("feePayer")
+    if not isinstance(acting, str):
+        return result
+    if payload.get("simulation_success") is not True:
+        payload["signing"] = {"available": False, "reason": "The transaction failed its simulation, so there is nothing to sign."}
+        return _json_result(payload, is_error=False)
+    try:
+        view = await engine.create_from_call(acting, tool, arguments, describe_call(tool, arguments))
+    except Exception:  # noqa: BLE001 — a link that can't be made must not hide a good build
+        logger.warning("could not create signing link", exc_info=True)
+        return result
+    payload["sign_url"] = view["plan_url"]
+    payload["plan_id"] = view["plan_id"]
+    payload["signing"] = {
+        "available": True, "url": view["plan_url"], "approve_within_seconds": view["approve_within_seconds"],
+        "instruction": "Show this link to the user. They open it, approve with their own wallet, and sign. Then call "
+                       "vanna_plan action=status with plan_id to confirm; do not say it succeeded before it is confirmed.",
+    }
+    return _json_result(payload, is_error=False)
+
+
+def _result_payload(result: Any) -> Any:
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
+        return dict(structured.get("result", structured))
+    for block in getattr(result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if text:
+            try:
+                return json.loads(text)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 class ScopedMCPServer(MCPServer):
     """MCPServer that binds the per-request caller identity around every tool
     handler, hides/refuses write actions without write scope, and applies the
@@ -152,17 +233,35 @@ class ScopedMCPServer(MCPServer):
                     "message": f"{name} is temporarily degraded after repeated downstream failures. "
                     f"Retry in {max(1, round(breaker.retry_after_seconds(name)))}s.",
                 })
-            if is_write_call(name, action if isinstance(action, str) else None) and not caller_has_write_scope():
+            is_write = is_write_call(name, action if isinstance(action, str) else None)
+            if is_write and not caller_has_write_scope():
                 return _json_result({
                     "error": "forbidden",
                     "code": "insufficient_scope",
                     "message": f"{name} action={action!r} requires write scope (vanna:write).",
                 })
+            wallet = caller_wallet()
+            if wallet is not None:
+                # Public-connector login: act only as the wallet the token was issued for.
+                scoped, refusal = apply_wallet_scope(name, arguments, wallet, is_write=is_write)
+                if refusal is not None:
+                    return _json_result({"error": "forbidden", "code": "wallet_mismatch", "message": refusal})
+                params = params.model_copy(update={"arguments": scoped})
+            guarded: dict[str, Any] | None = None
+            if is_write and name not in _OWN_SAFETY_TOOLS and safety_layer.active():
+                # The Copilot's guardrails, enforced where the transaction is built (see mcp_server/safety.py).
+                acting = wallet or _acting_wallet(name, params.arguments or {})
+                if acting is not None:
+                    guarded = await _guard_write(acting, name, params.arguments or {})
+                    if guarded.get("error"):
+                        return _json_result(guarded)
             try:
                 result = _normalize_sdk_error(name, await super()._handle_call_tool(ctx, params))
             except Exception:
                 breaker.record_failure(name)
                 raise
+            if is_write and name not in _OWN_SAFETY_TOOLS:
+                result = await _attach_signing_link(result, name, params.arguments or {}, wallet)
         if _result_error_code(result) in _DOWNSTREAM_ERRORS:
             breaker.record_failure(name)
         else:
@@ -172,12 +271,16 @@ class ScopedMCPServer(MCPServer):
 
 mcp = ScopedMCPServer(
     name="vanna-solana",
-    instructions=get_agent_instructions(),
+    instructions=get_agent_instructions(public=settings.public_mode),
     lifespan=_lifespan,
 )
 
 for _dispatcher in ALL_DISPATCHERS:
     mcp.add_tool(_dispatcher)
+
+from mcp_server.prompts import register_prompts  # noqa: E402
+
+register_prompts(mcp, public=settings.public_mode)
 
 if settings.enable_fork_tools:
     logger.warning("ENABLE_FORK_TOOLS=true — registering dev-only fork tools (never for production/Copilot use)")
@@ -231,8 +334,78 @@ for _path, _handler in (
     mcp.custom_route(_path, methods=["GET"])(_handler)
 
 
+def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGIApp:
+    """The public connector: this process is its own OAuth authorization server (wallet-as-login).
+
+    Composition, outermost first:
+      OAuthRateLimitMiddleware (per-IP, unauthenticated OAuth endpoints)
+      -> AuthMiddleware (our own ES256 tokens, revocation check; OAuth endpoints exempt)
+      -> RateLimitMiddleware (per-wallet, POST /mcp) -> MCP app + OAuth routes.
+    `store` defaults to the in-process store (single instance only until the shared store lands);
+    `server` defaults to the real dispatcher server (tests pass a stub one).
+    """
+    from mcp_server.auth import AuthMiddleware
+    from mcp_server.oauth.http import OAuthRateLimitMiddleware, build_oauth_routes, is_oauth_public_path
+    from mcp_server.oauth.keys import KeySet
+    from mcp_server.oauth.provider import OAuthConfig, VannaOAuthProvider
+    from mcp_server.oauth.store import MemoryRecordStore
+    from mcp_server.oauth.verifier import LocalTokenVerifier
+    from mcp_server.rate_limit import RateLimitMiddleware
+    from mcp_server.web.routes import is_web_public_path
+
+    if not settings.auth_enabled:
+        raise RuntimeError("PUBLIC_MODE requires AUTH_ENABLED=true.")
+    if settings.first_party_client_ids.strip():
+        raise RuntimeError("PUBLIC_MODE must not set FIRST_PARTY_CLIENT_IDS: no public client may be first-party.")
+    if settings.enable_fork_tools:
+        raise RuntimeError("PUBLIC_MODE must not enable the dev-only fork tools.")
+
+    config = OAuthConfig.from_settings(settings)
+    keys = KeySet.from_settings(settings)
+    if store is None:
+        logger.warning("PUBLIC_MODE is using the in-process OAuth state store: run a single instance only.")
+        store = MemoryRecordStore()
+    provider = VannaOAuthProvider(store, keys, config)
+    # The public connector always runs the safety layer and the signing pages (same store as the OAuth state).
+    from mcp_server.web.setup import attach_to_app, configure_signing
+
+    configure_signing(settings, store)
+
+    # Stateless: any instance can answer any request, so there is no session to lose on a scale-out or restart.
+    app = (server or mcp).streamable_http_app(host=settings.mcp_http_host, stateless_http=True)
+    app.router.routes[0:0] = build_oauth_routes(provider)
+    attach_to_app(app)
+
+    inner: ASGIApp = app
+    if settings.rate_limit_enabled:
+        inner = RateLimitMiddleware(
+            inner,
+            refill_per_sec=settings.rate_limit_refill_per_sec,
+            burst=settings.rate_limit_burst,
+            trusted_proxy_hops=settings.trusted_proxy_hops,
+        )
+    allowed_origins = frozenset(o.strip() for o in settings.oauth_allowed_origins.split(",") if o.strip())
+    inner = AuthMiddleware(
+        app=inner,
+        verifier=LocalTokenVerifier(keys, config.issuer, config.resource),  # type: ignore[arg-type]
+        allowed_origins=allowed_origins,
+        resource_url=config.issuer,
+        extra_public_path=lambda path: is_oauth_public_path(path) or is_web_public_path(path),
+        claims_check=provider.is_token_active,
+    )
+    logger.info("Public connector enabled — issuer=%s consent=%s", config.issuer, config.consent_origin)
+    return OAuthRateLimitMiddleware(
+        inner,
+        store,
+        register_per_hour=settings.oauth_dcr_per_ip_per_hour,
+        trusted_proxy_hops=settings.trusted_proxy_hops,
+    )
+
+
 def build_streamable_http_app() -> ASGIApp:
     """Compose the hosted ASGI app without binding a socket (testable)."""
+    if settings.public_mode:
+        return build_public_app()
     from mcp_server.auth import AuthMiddleware, TokenVerifier
     from mcp_server.rate_limit import RateLimitMiddleware
 
@@ -241,6 +414,11 @@ def build_streamable_http_app() -> ASGIApp:
     # reject every request that reaches a hosted deployment by its public name.
     # Origin validation for hosted use is AuthMiddleware's job.
     app: ASGIApp = mcp.streamable_http_app(host=settings.mcp_http_host)
+    if settings.enable_sign_links:
+        from mcp_server.web.setup import attach_to_app, configure_signing
+
+        configure_signing(settings)
+        attach_to_app(app)
 
     if settings.rate_limit_enabled:
         app = RateLimitMiddleware(
@@ -273,6 +451,9 @@ def build_streamable_http_app() -> ASGIApp:
             allowed_origins=allowed_origins,
             resource_url=settings.external_base_url
             or f"http://{settings.mcp_http_host}:{settings.mcp_http_port}",
+            extra_public_path=(lambda p: __import__("mcp_server.web.routes", fromlist=["x"]).is_web_public_path(p))
+            if settings.enable_sign_links
+            else None,
         )
         logger.info(
             "Auth enabled — issuer=%s audience=%s allowed_origins=%s",
@@ -290,6 +471,11 @@ def build_streamable_http_app() -> ASGIApp:
 
 def main() -> None:
     if settings.mcp_transport == MCPTransport.STDIO:
+        if settings.enable_sign_links:
+            from mcp_server.web.setup import configure_signing, start_local_web_server
+
+            configure_signing(settings)
+            start_local_web_server(settings)
         mcp.run()
     else:
         import uvicorn

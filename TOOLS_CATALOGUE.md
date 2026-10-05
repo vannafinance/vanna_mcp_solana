@@ -32,7 +32,7 @@ The on-chain mechanics are Solana-native:
 |---|---|
 | `vanna-credit-layer/programs/vanna_lending/src/**` (working tree on `aae7659`) | **The authority** for instruction accounts, arguments, math and on-chain rules (`constants.rs`, `math/*.rs`, `risk_engine.rs`, `validation/accounts.rs`, `oracle/*.rs`, `adapters/*.rs`) |
 | `vanna-credit-layer/target/idl/vanna_lending.json` (byte-identical to `vanna-credit-backend/idl/vanna_lending.json`, SHA-256 `b438bfdd66281209440c93cfe0f2f1bbd7bdc65cfa2fccd7b652215851cd32d4`) | The generated contract interface: 27 instructions, 6 accounts, 26 events, 56 errors |
-| `Vanna-Solana-Copilot-Answers.pdf` (28 Sep 2026, in this repo) | The team's answers to the Part A build questions and Part B wrapper requirements. It uses the labels **Verified**, **Proposed** and **Pending**, and this catalogue keeps them. |
+| `Vanna-Solana-Copilot-Answers.pdf` (28 Sep 2026, in `vanna-credit-backend/docs/copilot/`) | The team's answers to the Part A build questions and Part B wrapper requirements. It uses the labels **Verified**, **Proposed** and **Pending**, and this catalogue keeps them. |
 | `vanna-credit-backend` @ `27e6129` (`lib/solana/*`, `app/api/*`) | **An evolving implementation reference**: how the app assembles transactions, the fork price keeper, history. It is not a finished API contract. Its helpers sign and broadcast, so the MCP reuses its *instruction construction* only (§2.2). |
 
 `Backend-Solana` / `Backend-Solana-v2` are not references; they belong to the old stack.
@@ -316,7 +316,7 @@ All in integer fixed point, mirroring the contract's rounding:
 tools**, each taking an `action` string parameter and action-specific args —
 not one flat tool per instruction/read. This mirrors how the Stellar MCP
 actually runs in production (14 dispatchers) and matches the tool list in
-`COPILOT_ARCHITECTURE.md` §7, which was written against this exact action set. Every
+`vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §7, which was written against this exact action set. Every
 action below is unchanged in mechanics from the flat-tool draft this replaces
 — only the grouping and calling convention changed. **Mirrors** names the
 `lib/solana` function whose *instruction construction* the action must match
@@ -369,7 +369,7 @@ price" action.
 | `deposit` | 2 | `depositCollateral` | One or more assets in one transaction; wraps SOL; no price check needed |
 | `withdraw` | 2 | `withdrawCollateral` | Oracle prep (§2.3); scan excluding this asset; receipts pass `price_source_account`; SOL to a temporary receiver |
 | `close_collateral` | 2 | `closeCollateralPosition` | Zero vault balance only |
-| `open_debt` | 2 | `openDebtIx` | Normally auto-bundled by `borrow` |
+| `open_debt` | — | — | Removed with the credit-layer split: `borrow` opens its own debt position |
 | `borrow` | 2 | `borrow` | Oracle prep; opens debt before the first borrow; funds land in the margin vault and count as collateral |
 | `close_debt` | 2 | `closeDebtPosition` | Zero shares only |
 | `repay` | 2 | `user_repay_from_margin(max_assets, repay_all)` | Balance-limited; no price scan. After it lands, **re-read** remaining debt; `repay_all` doesn't guarantee closure. Close is a separate action (only when the preview shows zero shares). |
@@ -451,7 +451,7 @@ Scans use the **owner wallet**.
 
 ### 3.14 `vanna_sign` — read
 
-Signing is the user's connected wallet, through the app's execution adapter (`COPILOT_ARCHITECTURE.md` §4-§5): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign, so the MCP only builds and reports status.
+Signing is the user's connected wallet, through the app's execution adapter (`vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §4-§5): build → simulate → wallet signs → hosted-RPC broadcast → confirm. There is no Sign Service and no auto-sign, so the MCP only builds and reports status.
 
 | Action | Phase | Mirrors | Purpose |
 |---|---|---|---|
@@ -464,6 +464,59 @@ The Stellar-style `sign_and_submit` and auto-sign session actions were removed. 
 | Action | Type | Purpose |
 |---|---|---|
 | `faucet` | dev cheatcode | `POST /api/faucet` `{ address, symbol? }` → `{ ok, results, note }` or `{ error }`. Registered only when `SOLANA_CLUSTER_LABEL` is a fork **and** `ENABLE_FORK_TOOLS=true`; never in the Copilot's allowlist. Not a devnet airdrop. |
+
+### 3.16 `vanna_plan` — plans and multi-step actions (the Copilot's planner and workflow engine)
+
+Added 2026-10-04 so an MCP client (Claude, Cursor) can do everything the website Copilot does. The client's model
+decides what the user wants; this tool does every number and every rule. Mirrors `vanna-credit-backend`
+`lib/copilot/{workflow/strategy,workflow/unwind,workflow/steps,workflow/funding,plan,risk}.ts`.
+
+| Action | Purpose |
+|---|---|
+| `lever` | "lever X Nx": deposit X if not already margin collateral → borrow a stable (`borrow_asset`; omitted = the tool returns the choices) → `margin_swap` into X → report HF. Sized so the 1.15 floor holds with the swap at its worst allowed price; checks pool liquidity, `can_borrow`, a live quote, wallet funding |
+| `unwind` | "close everything" (`scope` all/margin/earn/farm, `close_account`): Kamino redeem → repay each debt (margin balance, else wallet, else swap other collateral in by *required output*) → withdraw → Earn redeem; health only improves; capped at 8 steps, never cut between a swap and its repay |
+| `swap_exact_out` | "swap SOL to get 100 USDC": input sized from live quotes (4 correction rounds) so the *minimum received* covers the target |
+| `custom` | a chain of up to 8 steps (`create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap, farm_deposit, farm_redeem, close_account, report`); amounts exact / `all` / `NN%` (resolved once) / `out:N` |
+| `status` / `cancel` | plan and per-step state (`pending, built, submitted, confirmed, skipped, failed, uncertain, expired`); owner-only |
+
+A drawn plan is frozen (exact amounts, sha256 digest over every executable slot + wallet + floor), valid for approval for 5
+minutes, runnable for 30. It returns `plan_url`: the user opens it, **approves by signing a message that names the digest**
+with their own wallet, and signs each step. Each step is pre-flighted again against live data when its turn comes
+(`mcp_server/planning/preflight.py`: "all"/percent resolution, the 1.15 gate on borrow/withdraw/margin swap, per-action
+and daily USD caps, funding), then built and simulated by the existing write dispatchers; a step that would breach the
+floor **pauses** the plan. Exactly-once per step; an unclear send is `uncertain` and never retried; a transaction that
+never lands is rebuilt. The server checks the signed bytes equal its own build and relays them. Needs `ENABLE_SIGN_LINKS`;
+without it a drawn plan is a preview (`executable: false`).
+
+### 3.17 `vanna_risk` — advisor reads (the Copilot's capacity / what-if / liquidation answers)
+
+| Action | Purpose |
+|---|---|
+| `capacity` | largest SAFE borrow or withdrawal at the floor, per asset, verified through the program's `can_*`; `protocol_max` (1.10) for reference |
+| `what_if` | `op` borrow/withdraw/repay with an `amount` (program's own check, projected HF) or a `target_hf` (solves for the amount) |
+| `max_leverage` | highest leverage on an amount that holds the floor at the swap's worst price, plus a 1.5x–10x table |
+| `liquidation_distance` | % collateral can fall before HF reaches 1.10 (read-only; liquidation is never executed) |
+| `funding_check` | can the wallet pay for a plan's wallet-funded steps |
+| `policy` | the product's floor, limits, asset policy and refusals |
+
+### 3.18 `vanna_portfolio` — the Portfolio page
+
+| Action | Purpose |
+|---|---|
+| `overview` | wallet tokens with USD, margin account (collateral, debt, equity, leverage = gross collateral / equity, LTV, HF), Earn deposits with interest and APR, Kamino positions, net worth (receipts not double-counted) |
+
+### Extensions to existing dispatchers (2026-10-04)
+
+- `vanna_wallet` `faucet` (write-scoped): tops up the caller's wallet on the test fork (needs `ENABLE_TEST_FAUCET` and a fork
+  cluster; the app's faucet endpoint; capped per wallet per day). Replaces `vanna_fork` for users; `vanna_fork` stays dev-only.
+- `vanna_earn_market` `rate_curve`: borrow and supply APR at every 5% utilization from the reserve's on-chain curve.
+- `vanna_protocol_info` `concepts`: the Copilot's plain-language explanations (health factor, liquidation, leverage,
+  collateral, earn, farm, margin).
+- Every write dispatcher, when `SAFETY_LAYER` is on, is pre-flighted by `mcp_server/planning/guard.py` (same code as a plan
+  step) and returns `sign_url`/`plan_id` when signing pages are enabled (a single action is a one-step plan).
+
+Tool count is now **17 dispatchers** (14 original + `vanna_plan`, `vanna_risk`, `vanna_portfolio`). The Copilot's own
+allowlist is unchanged: it keeps calling the original 14 by name.
 
 ### Composite flows (built from the dispatchers above, not separate actions)
 

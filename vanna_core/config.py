@@ -98,6 +98,11 @@ class VannaSettings(BaseSettings):
     # owner verified the live executable matches their pinned build
     # (2026-09-29); that build is vanna-credit-layer HEAD ecdb9b6.
     vanna_program_id: str = "H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC"
+    # The core program's two agents (vanna-credit-layer origin/main, `vanna_oracle` and `vanna_validator`): the oracle
+    # values every holding (a price book keyed by mint), the validator reviews every `margin_execute` call. Both are
+    # named in the AssetConfig / Integration accounts, so a redeploy only needs these two overrides.
+    vanna_oracle_program_id: str = "FXY5DRfekMUTbUp4uyCFpCZmCccrp6kPq3hTM4GRihnc"
+    vanna_validator_program_id: str = "6fND3vhtstp486iE6rsSNVUox3kcjNNRsSLAN7ZPs7th"
 
     # Fork price preparation (the app's price keeper; no Hermes this release).
     oracle_mode: OracleMode = OracleMode.DEV_FORK
@@ -145,7 +150,7 @@ class VannaSettings(BaseSettings):
     # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
     # after the oracle / whole-account-liquidation program update. The MCP refuses
     # to start if the loaded IDL differs (a pinned-contract safety rule).
-    pinned_idl_sha256: str = "47cd9ced07539538e42e859b99ba535720a030371399a11ff732b6bc817ffe73"
+    pinned_idl_sha256: str = "c57af1f19e8fe8ce73535160457ed4116713fd62b4e5a5a6b0f25432c4964a2d"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.
     read_cache_ttl_seconds: int = 30
@@ -177,6 +182,65 @@ class VannaSettings(BaseSettings):
     # Client IDs whose tokens carry no scope claim but are trusted first-party
     # apps (comma-separated). They are granted vanna:read + vanna:write.
     first_party_client_ids: str = ""
+
+    # ---------------------------------------------------------------------------
+    # Public connector mode (mcp_server/oauth/): this process is its own OAuth authorization server and
+    # users log in with their wallet (Sign-In-With-Solana). Only for the separate public service —
+    # never set on the Copilot's IAM-locked service, which keeps WorkOS machine-to-machine auth.
+    # Requires AUTH_ENABLED=true, EXTERNAL_BASE_URL (the issuer) and OAUTH_CONSENT_URL; refuses to
+    # start with FIRST_PARTY_CLIENT_IDS set. See MCP_CONNECTOR_PLAN.md.
+    # ---------------------------------------------------------------------------
+    public_mode: bool = False
+    # The Vanna app page that hosts the wallet-connect consent UI (it only renders; the MCP decides).
+    oauth_consent_url: str = ""
+    # ES256 private key (PEM) that signs access tokens. Keep in Secret Manager. Empty is refused unless
+    # OAUTH_ALLOW_EPHEMERAL_KEY=true (local dev / tests: tokens then die with the process).
+    oauth_signing_key_pem: str = ""
+    # Retired public keys (PEM, concatenated) still published at the JWKS so tokens signed before a
+    # rotation verify until they expire.
+    oauth_retired_public_keys_pem: str = ""
+    oauth_allow_ephemeral_key: bool = False
+    oauth_access_token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    oauth_refresh_token_ttl_seconds: int = Field(default=30 * 86400, ge=3600)
+    oauth_code_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    oauth_pending_ttl_seconds: int = Field(default=600, ge=60, le=1800)
+    oauth_siws_ttl_seconds: int = Field(default=120, ge=30, le=600)
+    # Dynamic client registration caps (per source IP per hour, and across the whole service per day).
+    oauth_dcr_per_ip_per_hour: int = Field(default=10, ge=1)
+    oauth_dcr_global_per_day: int = Field(default=2000, ge=1)
+
+    # ---------------------------------------------------------------------------
+    # Product safety layer: the website Copilot's guardrails, applied to every write an MCP client (Claude,
+    # Cursor) asks for. In the Copilot these live in its own server code around Gemini; with an MCP client
+    # doing the language and planning, they must live here. Always on for the public connector. Off by default
+    # for the Copilot's private service (the Copilot enforces them itself) and for the legacy test suite;
+    # a local .env turns it on. See mcp_server/safety.py.
+    # ---------------------------------------------------------------------------
+    safety_layer: bool = False
+    # The product's health-factor floor (the program liquidates at 1.10; actions that lower health are held at 1.15).
+    min_health_factor: float = Field(default=1.15, gt=1.10)
+    # USD value of one write / of a UTC day's writes (per wallet).
+    max_action_usd: float = Field(default=5_000, gt=0)
+    max_daily_usd: float = Field(default=25_000, gt=0)
+    # Transaction builds per wallet per minute.
+    write_rate_per_minute: int = Field(default=6, ge=1)
+    # A plan must be approved within this long of being drawn, and may keep starting steps for the run window.
+    plan_approval_ttl_seconds: int = Field(default=300, ge=30)
+    plan_run_window_seconds: int = Field(default=1800, ge=60)
+    max_plan_steps: int = Field(default=8, ge=1, le=16)
+
+    # Fork test faucet (`vanna_wallet` action=faucet): tops up the caller's own wallet on the test fork. Needs the
+    # app's faucet endpoint (price_keeper_url) and a fork cluster; refused anywhere else.
+    enable_test_faucet: bool = False
+    faucet_requests_per_wallet_per_day: int = Field(default=3, ge=1)
+
+    # Signing links. A write returns, besides the unsigned transaction, a link where the user's own wallet reviews
+    # and signs it; the server then relays what the wallet signed. The server never signs. Needs an HTTP transport.
+    enable_sign_links: bool = False
+    # Origin of the pages above as the user's browser reaches it (e.g. http://127.0.0.1:8000 locally). Defaults to
+    # EXTERNAL_BASE_URL, else the local bind address.
+    sign_base_url: str = ""
+    sign_intent_ttl_seconds: int = Field(default=900, ge=60)
 
     # Per-caller token bucket on POST /mcp (mcp_server/rate_limit.py).
     rate_limit_enabled: bool = True

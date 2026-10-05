@@ -362,6 +362,10 @@ class MarginContract:
 
         collateral_assets = await self._resolve_slots(margin.collateral_asset_indexes, registry)
         debt_assets = await self._resolve_slots(margin.debt_asset_indexes, registry)
+        from vanna_core.remaining_accounts import refuse_venue
+
+        for asset in collateral_assets:
+            refuse_venue(asset)  # a GMTrade perps position is valued from the oracle's market book, which is not read here
         view = await self._reader.view([*collateral_assets, *debt_assets, *(extra_assets or [])])
 
         collateral_rows, debt_rows = await asyncio.gather(

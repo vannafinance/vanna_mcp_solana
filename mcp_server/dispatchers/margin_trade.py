@@ -13,7 +13,7 @@ from mcp_server.dependencies import get_context
 from mcp_server.error_handling import tool_safe
 
 MarginTradeAction = Literal[
-    "deposit", "withdraw", "close_collateral", "open_debt", "borrow", "close_debt",
+    "deposit", "withdraw", "close_collateral", "borrow", "close_debt",
     "repay", "repay_from_wallet", "deposit_and_borrow", "close_position",
 ]
 
@@ -36,14 +36,16 @@ async def vanna_margin_trade(
     Args:
         action: "deposit" — deposit `amount` of `asset` as collateral. "withdraw"
             — withdraw `amount` of `asset` (fails closed if it would breach the
-            1.10 health threshold). "close_collateral" — close an emptied
-            collateral slot. "open_debt" — open a debt position for `asset`
-            before its first borrow (normally auto-bundled by "borrow").
-            "borrow" — borrow `amount` of `asset` into the margin vault.
-            "close_debt" — close a zero-balance debt position. "repay" —
+            1.10 health threshold). "close_collateral" — reclaim the rent of an
+            emptied collateral vault. "borrow" — borrow `amount` of `asset` into the
+            margin vault (the first borrow of an asset opens its debt position itself).
+            "close_debt" — reclaim the rent of a fully repaid debt position. "repay" —
             repay from the margin account's own vault (`amount`, or all debt
-            if `repay_all`). "repay_from_wallet" — anyone (`payer`) may repay
-            this margin account's debt directly from their own wallet.
+            if `repay_all`). "repay_from_wallet" — repay from the OWNER's wallet: the
+            tokens are deposited into the margin vault and repaid in the same
+            transaction (a repay-all deposits the debt plus a 0.2% accrual buffer,
+            which stays as collateral). Only the owner can repay now, so `payer`
+            must be the owner.
         authority: Base58 wallet address that owns the margin account.
         asset: Required for every action except "repay_from_wallet" doesn't
             need `authority` to sign (see `payer`).
@@ -51,8 +53,7 @@ async def vanna_margin_trade(
             optional for repay/repay_from_wallet when `repay_all=True`.
         repay_all: For "repay"/"repay_from_wallet" — repay the full
             outstanding debt instead of a capped `amount`.
-        payer: For "repay_from_wallet" only — the Base58 wallet actually
-            paying (and signing), which may differ from `authority`.
+        payer: For "repay_from_wallet" only — the wallet paying; must equal `authority`.
         deposit_asset, deposit_amount, borrow_asset, borrow_amount: For
             "deposit_and_borrow" only — deposit `deposit_amount` of
             `deposit_asset`, then borrow `borrow_amount` of `borrow_asset`
@@ -60,9 +61,9 @@ async def vanna_margin_trade(
 
     "close_position" takes no extra args — it re-reads real on-chain state
     on every call and returns the single next applicable transaction (repay
-    all debt, then close each debt slot, then withdraw each collateral
-    position one at a time, then close each collateral slot, then close the
-    margin account) — call it repeatedly until `summary.next_step == "done"`.
+    all debt, then withdraw each collateral position one at a time, then
+    reclaim the rent of any empty vault / closed debt position, then close
+    the margin account) — call it repeatedly until `summary.next_step == "done"`.
 
     Returns: the schema-v1 write envelope.
     On error: {"error": "contract_error" | "invalid_input" | "account_not_found"
@@ -87,12 +88,6 @@ async def vanna_margin_trade(
         if asset is None:
             return {"error": "invalid_input", "message": "'asset' is required for action=close_collateral"}
         envelope = await trade.close_collateral_position(Pubkey.from_string(authority), asset)
-        return envelope.to_dict()
-
-    if action == "open_debt":
-        if asset is None:
-            return {"error": "invalid_input", "message": "'asset' is required for action=open_debt"}
-        envelope = await trade.open_debt_position(Pubkey.from_string(authority), asset)
         return envelope.to_dict()
 
     if action == "borrow":

@@ -89,7 +89,8 @@ async def test_close_debt_with_outstanding_debt_fails_closed(ctx, live_margin_po
     assert result["simulation_success"] is False
 
 
-async def test_repay_from_wallet_with_no_token_account_fails_closed(ctx, live_margin_position, funded_fork_pubkey):
+async def test_repay_from_wallet_by_a_third_party_is_refused(ctx, live_margin_position, funded_fork_pubkey):
+    # The program's only repay path is `user_repay_from_margin`, signed by the owner: nobody else can repay.
     result = await vanna_margin_trade(
         action="repay_from_wallet",
         authority=live_margin_position,
@@ -97,5 +98,5 @@ async def test_repay_from_wallet_with_no_token_account_fails_closed(ctx, live_ma
         asset="USDC",
         amount="0.1",
     )
-    assert "schemaVersion" in result
-    assert result["simulation_success"] is False
+    assert result["error"] == "invalid_input"
+    assert "owner" in result["message"]

@@ -16,12 +16,16 @@ from __future__ import annotations
 WRITE_ACTIONS: dict[str, frozenset[str]] = {
     "vanna_account": frozenset({"create", "close"}),
     "vanna_margin_trade": frozenset({
-        "deposit", "withdraw", "close_collateral", "open_debt", "borrow", "close_debt",
+        "deposit", "withdraw", "close_collateral", "borrow", "close_debt",
         "repay", "repay_from_wallet", "deposit_and_borrow", "close_position",
     }),
     "vanna_earn_write": frozenset({"supply", "redeem"}),
     "vanna_farm_kamino": frozenset({"deposit", "redeem"}),
     "vanna_swap": frozenset({"margin_swap", "wallet_swap"}),
+    "vanna_wallet": frozenset({"faucet"}),
+    # Drawing a plan creates an executable path (the user still approves it with their wallet), so a read-only login
+    # does not get it; `status` is a read.
+    "vanna_plan": frozenset({"lever", "unwind", "swap_exact_out", "custom", "cancel"}),
     "vanna_fork": frozenset({"faucet"}),
 }
 
@@ -42,6 +46,9 @@ EXPENSIVE_READ_TOOLS: frozenset[str] = frozenset({
     "vanna_margin_status",
     "vanna_earn_position",
     "vanna_wallet",
+    "vanna_portfolio",
+    "vanna_risk",
+    "vanna_plan",
 })
 
 

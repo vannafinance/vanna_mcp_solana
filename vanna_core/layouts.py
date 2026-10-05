@@ -1,9 +1,8 @@
-"""Borsh layouts for vanna_lending on-chain account structs.
+"""Borsh layouts for the `vanna_credit_layer` on-chain account structs (and the oracle agent's price book).
 
 Field lists and byte layout are transcribed 1:1 from the real IDL's `types`
-section (`idl/vanna_lending.json`, verified against
-`vanna-credit-layer/programs/vanna_lending/src/state/*.rs` in the
-`Vanna-Solana-Copilot-Answers.pdf` handoff, 2026-09-28) — see
+section (`idl/vanna_credit_layer.json`, verified against
+`vanna-credit-layer/programs/vanna_credit_layer/src/state/*.rs` at origin/main `465f21a`, 2026-10-04) — see
 TOOLS_CATALOGUE.md §1 for the PDA each struct belongs to. Anchor emits
 account fields in declared order with no alignment padding (Borsh has none).
 
@@ -43,8 +42,9 @@ OPERATING_MODE_HALTED = 3
 
 SCOPE_CHAIN_UNUSED = 0xFFFF
 
-# state/asset_config.rs::OracleConfig — how one asset is priced (Scope chain primary,
-# Pyth fallback, optional second Pyth factor, klend cToken rate for receipts).
+# vanna_oracle/src/config.rs::OracleConfig — how one token is priced (Scope chain primary, Pyth fallback, optional
+# second Pyth factor, klend cToken rate for receipts). 184 bytes. Since the agent split it is NOT part of AssetConfig:
+# it is the `config` of a token's entry in the oracle agent's price book (below).
 OracleConfig = borsh.CStruct(
     "scope_prices" / PUBKEY,
     "scope_chain" / borsh.U16[4],
@@ -58,9 +58,13 @@ OracleConfig = borsh.CStruct(
     "max_confidence_bps" / borsh.U16,
 )
 
-# state/asset_config.rs::AssetConfig (340 bytes incl. the 8-byte discriminator).
+# vanna_credit_layer/src/state/asset_config.rs::AssetConfig (221 bytes incl. the 8-byte discriminator).
+# `kind` is a fieldless enum (u8): 0 = Token, 1 = Venue (GMTrade, held through the margin's venue account).
+# `oracle` is the PROGRAM ID of the oracle agent that values this asset (not a price config).
+ASSET_KIND_TOKEN = 0
+ASSET_KIND_VENUE = 1
 AssetConfig = borsh.CStruct(
-    "mint" / PUBKEY,
+    "mint" / PUBKEY,  # a token's mint, or a venue's key (GMTrade: its store)
     "token_program" / PUBKEY,
     "reserve" / PUBKEY,
     "max_collateral_per_margin" / borsh.U64,
@@ -72,11 +76,26 @@ AssetConfig = borsh.CStruct(
     "collateral_enabled" / borsh.Bool,
     "borrow_enabled" / borsh.Bool,
     "bump" / borsh.U8,
-    "oracle" / OracleConfig,
+    "kind" / borsh.U8,
+    "oracle" / PUBKEY,
+    "settle_mint" / PUBKEY,  # a venue's settle token (USDC for GMTrade); all-zero for a token
     "reserved" / borsh.U8[32],
 )
 
-ASSET_CONFIG_ACCOUNT_LEN = 340  # 8-byte discriminator + 332-byte body (state/asset_config.rs)
+ASSET_CONFIG_ACCOUNT_LEN = 221  # 8-byte discriminator + 213-byte body
+
+# vanna_oracle/src/tokens.rs: the oracle agent's PriceBook (zero-copy account, seed `price_book`, owned by
+# `vanna_oracle`): discriminator (8) | bump u8 | count u8 | padding [2] | 32 x PriceSource. A PriceSource is
+# mint (32) | decimals u8 | padding [3] | OracleConfig (184) = 220 bytes.
+PRICE_BOOK_HEADER_LEN = 12
+PRICE_BOOK_MAX_SOURCES = 32
+PRICE_SOURCE_LEN = 220
+PriceSource = borsh.CStruct(
+    "mint" / PUBKEY,
+    "decimals" / borsh.U8,
+    "padding" / borsh.U8[3],
+    "config" / OracleConfig,
+)
 
 RateCurve = borsh.CStruct(
     "linear_coeff_wad" / borsh.U64,
@@ -119,6 +138,13 @@ EMPTY_ASSET_INDEX = 65_535
 # TOOLS_CATALOGUE.md §1/§6.1.
 MARGIN_ACCOUNT_MAX_ASSETS = 24
 
+MARGIN_ACCOUNT_MAX_VENUES = 6
+
+VenueLegs = borsh.CStruct(
+    "asset_index" / borsh.U16,
+    "legs" / borsh.U64,
+)
+
 MarginAccount = borsh.CStruct(
     "authority" / PUBKEY,
     "status" / borsh.U8,
@@ -128,7 +154,8 @@ MarginAccount = borsh.CStruct(
     "debt_asset_indexes" / borsh.U16[MARGIN_ACCOUNT_MAX_ASSETS],
     "event_sequence" / borsh.U64,
     "bump" / borsh.U8,
-    "reserved" / borsh.U8[96],
+    "venue_legs" / VenueLegs[MARGIN_ACCOUNT_MAX_VENUES],  # per venue: the bitmap of legs (markets) that may hold exposure
+    "reserved" / borsh.U8[36],
 )
 
 DebtPosition = borsh.CStruct(
@@ -139,16 +166,15 @@ DebtPosition = borsh.CStruct(
     "reserved" / borsh.U8[48],
 )
 
+# An external program `margin_execute` may call, and the VALIDATOR agent that reviews every such call (which call
+# account is the margin, which vaults are spent / received). 138 bytes incl. the discriminator.
 Integration = borsh.CStruct(
     "program_id" / PUBKEY,
-    "adapter" / borsh.U8,  # 0 = KaminoLend, 1 = Jupiter
+    "validator" / PUBKEY,
     "enabled" / borsh.Bool,
     "bump" / borsh.U8,
     "reserved" / borsh.U8[64],
 )
-
-ADAPTER_KIND_KAMINO_LEND = 0
-ADAPTER_KIND_JUPITER = 1
 
 
 # ---------------------------------------------------------------------------
@@ -215,14 +241,25 @@ EVENT_CollateralWithdrawn = borsh.CStruct(
     "event_sequence" / borsh.U64,
     "timestamp" / borsh.I64,
 )
-EVENT_CollateralPositionClosed = borsh.CStruct(
-    "margin_account" / PUBKEY, "mint" / PUBKEY, "timestamp" / borsh.I64
+# `user_reclaim_rent` (replaces the old Collateral/DebtPosition Closed/Opened events).
+EVENT_RentReclaimed = borsh.CStruct(
+    "margin_account" / PUBKEY,
+    "mint" / PUBKEY,
+    "vault_closed" / borsh.Bool,
+    "debt_position_closed" / borsh.Bool,
+    "timestamp" / borsh.I64,
 )
-EVENT_DebtPositionOpened = borsh.CStruct(
-    "margin_account" / PUBKEY, "reserve" / PUBKEY, "timestamp" / borsh.I64
-)
-EVENT_DebtPositionClosed = borsh.CStruct(
-    "margin_account" / PUBKEY, "reserve" / PUBKEY, "timestamp" / borsh.I64
+# `margin_execute`: one entry per margin vault paid out of / paid into.
+TokenAmount = borsh.CStruct("mint" / PUBKEY, "amount" / borsh.U64)
+EVENT_MarginExecuted = borsh.CStruct(
+    "margin_account" / PUBKEY,
+    "program_id" / PUBKEY,
+    "validator" / PUBKEY,
+    "spent" / borsh.Vec(TokenAmount),
+    "received" / borsh.Vec(TokenAmount),
+    "borrow_health_factor_wad" / borsh.U128,
+    "event_sequence" / borsh.U64,
+    "timestamp" / borsh.I64,
 )
 EVENT_Borrowed = borsh.CStruct(
     "margin_account" / PUBKEY,
@@ -291,9 +328,8 @@ EVENT_LAYOUTS: dict[str, "borsh.CStruct"] = {
     "MarginClosed": EVENT_MarginClosed,
     "CollateralDeposited": EVENT_CollateralDeposited,
     "CollateralWithdrawn": EVENT_CollateralWithdrawn,
-    "CollateralPositionClosed": EVENT_CollateralPositionClosed,
-    "DebtPositionOpened": EVENT_DebtPositionOpened,
-    "DebtPositionClosed": EVENT_DebtPositionClosed,
+    "RentReclaimed": EVENT_RentReclaimed,
+    "MarginExecuted": EVENT_MarginExecuted,
     "Borrowed": EVENT_Borrowed,
     "DebtRepaid": EVENT_DebtRepaid,
     "CollateralSeized": EVENT_CollateralSeized,

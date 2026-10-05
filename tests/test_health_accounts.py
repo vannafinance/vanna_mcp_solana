@@ -13,7 +13,7 @@ from solders.pubkey import Pubkey
 from vanna_core import pricing as pr
 from vanna_core.assets import DiscoveredAsset
 from vanna_core.contracts import oracle_refresh as refresh
-from vanna_core.pdas import debt_position_pda, find_associated_token_address
+from vanna_core.pdas import debt_position_pda, find_associated_token_address, price_book_pda
 from vanna_core.pricing import OracleSpec
 from vanna_core.remaining_accounts import build_health_accounts, oracle_account_metas, position_groups
 
@@ -55,7 +55,8 @@ def margin_with(collateral: list[int], debt: list[int]):
     return SimpleNamespace(collateral_asset_indexes=pad(collateral), debt_asset_indexes=pad(debt))
 
 
-CLIENT = SimpleNamespace(program_id=PROGRAM)
+ORACLE_PROGRAM = "FXY5DRfekMUTbUp4uyCFpCZmCccrp6kPq3hTM4GRihnc"
+CLIENT = SimpleNamespace(program_id=PROGRAM, settings=SimpleNamespace(vanna_oracle_program_id=ORACLE_PROGRAM))
 
 
 def keys(metas):
@@ -106,9 +107,9 @@ def test_oracle_tail_is_deduplicated_and_readonly():
     assert all(not m.is_writable and not m.is_signer for m in metas)
 
 
-def test_oracle_tail_skips_keys_already_in_the_instruction():
+def test_oracle_tail_repeats_keys_the_instruction_already_names():
+    # The oracle agent reads only its own segment, so a key that also appears among the call's accounts is repeated.
     receipt = make_asset("kSOL", 300, scope=False, pyth=False, klend=True, has_reserve=False)
-    assert keys(oracle_account_metas([receipt], skip=[receipt.oracle.klend_reserve])) == []
     assert keys(oracle_account_metas([receipt])) == [receipt.oracle.klend_reserve]
 
 
@@ -124,6 +125,8 @@ async def test_health_accounts_include_oracles_of_named_and_active_assets():
     for asset in (sol, usdc):
         assert set(asset.oracle.accounts()) <= tail
     assert not set(jup.oracle.accounts()) - {SCOPE} <= tail  # JupSOL isn't involved -> its Pyth accounts absent
+    oracle_at = keys(accounts).index(ORACLE_PROGRAM)  # the oracle segment starts [vanna_oracle, price_book, ...]
+    assert keys(accounts)[oracle_at + 1] == str(price_book_pda(Pubkey.from_string(ORACLE_PROGRAM))[0])
     assert keys(accounts)[:2] == [sol.config_address, str(find_associated_token_address(MARGIN, Pubkey.from_string(sol.mint), Pubkey.from_string(TOKEN_PROGRAM)))]
 
 

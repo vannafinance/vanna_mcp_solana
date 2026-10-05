@@ -23,6 +23,9 @@ from mcp_server.dispatchers.margin_status import vanna_margin_status
 from mcp_server.dispatchers.margin_trade import vanna_margin_trade
 from mcp_server.dispatchers.fork import vanna_fork
 from mcp_server.dispatchers.oracle import vanna_oracle
+from mcp_server.dispatchers.plan import vanna_plan
+from mcp_server.dispatchers.portfolio import vanna_portfolio
+from mcp_server.dispatchers.risk_advisor import vanna_risk
 from mcp_server.dispatchers.protocol_info import vanna_protocol_info
 from mcp_server.dispatchers.sign import vanna_sign
 from mcp_server.dispatchers.swap import vanna_swap
@@ -43,6 +46,9 @@ ALL_DISPATCHERS = [
     vanna_farm_kamino,
     vanna_swap,
     vanna_sign,
+    vanna_risk,
+    vanna_portfolio,
+    vanna_plan,
 ]
 
 # Dev-only — registered by main.py only when ENABLE_FORK_TOOLS=true. Never

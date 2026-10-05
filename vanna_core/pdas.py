@@ -44,6 +44,17 @@ def debt_position_pda(
     )
 
 
+def price_book_pda(oracle_program_id: Pubkey) -> tuple[Pubkey, int]:
+    """The oracle agent's price book: every token's OracleConfig, keyed by mint (seed `price_book`,
+    owned by `vanna_oracle`, not by the core program)."""
+    return Pubkey.find_program_address([b"price_book"], oracle_program_id)
+
+
+def venue_account_pda(margin: Pubkey, venue: Pubkey, program_id: Pubkey) -> tuple[Pubkey, int]:
+    """A margin's account at a venue (GMTrade, keyed by its store). Only needed to recognise a margin that holds a venue."""
+    return Pubkey.find_program_address([b"venue_account", bytes(margin), bytes(venue)], program_id)
+
+
 def integration_pda(external_program_id: Pubkey, program_id: Pubkey) -> tuple[Pubkey, int]:
     """Whitelist entry PDA for one external program `margin_execute` may call
     (Kamino Lend or Jupiter today). Seeds: `["integration", external_program_id]`."""

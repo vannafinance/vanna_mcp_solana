@@ -1,6 +1,6 @@
 # Vanna MCP — Solana
 
-MCP server for the Vanna Finance lending protocol on Solana (`vanna_lending`,
+MCP server for the Vanna Finance lending protocol on Solana (`vanna_credit_layer`, with its oracle and validator agents,
 program `H37YVBG3eGtz89ofd7iDLc2PJgn12778392XeU2QJcGC` on the hosted Surfpool
 mainnet fork). Sibling to the Stellar/Soroban `vanna-mcp` server, adapted for a
 single-program, no-registry protocol.
@@ -14,8 +14,11 @@ the app broadcasts; there is no Sign Service.
 
 - `TOOLS_CATALOGUE.md` — the frozen v1 tool surface, envelope schema, health
   and interest rules.
-- `COPILOT_ARCHITECTURE.md` — how the Copilot inside `vanna-credit-backend`
+- `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` — how the Copilot inside `vanna-credit-backend`
   uses this server.
+- `docs/CONNECTING_CLIENTS.md` — using this server from Claude, Cursor, Windsurf or any MCP client: the
+  hosted connector (log in with your wallet) and local stdio, plus operator settings.
+- `MCP_CONNECTOR_PLAN.md` — the plan and security model for the public connector (wallet-as-login OAuth).
 
 References are `vanna-credit-layer` (program source, the authority) and
 `vanna-credit-backend` (the Solana app). `Backend-Solana` is the old stack and
@@ -48,20 +51,26 @@ mcp_server/                    # MCP transport + dispatcher registration
   error_handling.py              # @tool_safe decorator — maps exceptions to structured error dicts
   main.py                        # entrypoint: ScopedMCPServer (mcp>=2.2.0), stdio/streamable-http, /healthz, OAuth discovery
   auth.py, identity.py           # OAuth 2.1 resource server (JWKS bearer), caller identity per request
+  oauth/                         # PUBLIC_MODE only: wallet-as-login OAuth authorization server (see below)
+  planning/                      # the Copilot's brain as tools: risk facts, pre-flight, lever/unwind strategies, plan engine, guard
+  safety.py                      # the safety layer: 1.15 floor gate, USD/day limits, build rate, faucet cap (counters in the record store)
+  signing.py, web/               # signature checks + the browser pages where the user's wallet approves and signs
+  prompts.py                     # MCP prompts (/mcp__vanna-solana__lever ...)
+  wallet_scope.py                # public logins may only act as their own wallet (forced on every write)
   scopes.py                      # read/write classification of every dispatcher action
   rate_limit.py                  # token-bucket rate limit + circuit breaker
   read_cache.py                  # 30 s cache for shared market reads
   agent_firewall.py              # instructions served to MCP clients
   dispatchers/                   # one file per MCP tool
 
-idl/vanna_lending.json         # instruction IDL regenerated from vanna-credit-layer ecdb9b6 (pinned SHA-256, see below)
+idl/vanna_credit_layer.json    # instruction IDL of the vanna_credit_layer program (layer 465f21a; pinned SHA-256, see below)
 Dockerfile, cloudbuild.mcp.yaml # container + Cloud Build for the hosted MCP
 tests/                          # see the Testing section below
 ```
 
 ## Why this isn't built on anchorpy
 
-anchorpy 0.21.0's IDL parser cannot parse `idl/vanna_lending.json` — it uses
+anchorpy 0.21.0's IDL parser cannot parse `idl/vanna_credit_layer.json` — it uses
 Anchor's newer explicit per-instruction/per-account `discriminator` array
 format, and anchorpy-core (Rust) rejects it with
 `SerdeJSONError: data did not match any variant of untagged enum
@@ -97,6 +106,45 @@ server instead (`POST /mcp`, plus `/healthz`). For a hosted deployment set
 (and `FIRST_PARTY_CLIENT_IDS` for the Copilot); callers without write scope
 only see and use read actions. The `Dockerfile` runs exactly this.
 
+## Using it from Claude, Cursor or any MCP client
+
+The MCP client's model replaces the Copilot's Gemini (understanding, planning, wording); this server does everything that
+must be exact — sizing, risk checks, limits, building and simulating transactions, approval and exactly-once execution —
+with the Copilot's guardrails. 17 dispatcher tools: reads, `vanna_plan` (lever, unwind, exact-output swap, custom chains),
+`vanna_risk` (capacity, what-if, leverage, liquidation distance), `vanna_portfolio`, the original write tools, and a
+test faucet. Writes return a link where the user's own wallet approves and signs; the server never signs.
+
+```powershell
+.venv\Scripts\python scripts\run_local.py
+claude mcp add --transport http vanna-solana http://127.0.0.1:8000/mcp
+```
+
+Full local walkthrough, what is enforced, and settings: `docs/CONNECTING_CLIENTS.md`.
+
+## Public connector (any MCP client)
+
+Besides the Copilot's private service, the same image can run as a **public connector** (`PUBLIC_MODE=true`)
+that anyone can add to Claude, Cursor or another MCP client. There is no separate account: the user's
+**wallet is the login**.
+
+- The process is its own OAuth 2.1 authorization server (`mcp_server/oauth/`), built on the MCP SDK's
+  authorization-server toolkit: dynamic client registration, PKCE (S256 only), refresh rotation, revocation.
+- `/authorize` parks the request and sends the browser to the Vanna app's consent page (`OAUTH_CONSENT_URL`),
+  which is UI only. The **server** builds the Sign-In-With-Solana message, verifies the wallet's Ed25519
+  signature, and only then mints a single-use authorization code. Tokens are 15-minute ES256 JWTs bound to
+  this server (`aud`) whose subject is the wallet.
+- Every call then acts as that wallet (`wallet_scope.py`): a missing `authority`/`owner` defaults to it, and a
+  write that names any other wallet is refused with `wallet_mismatch`. Reads of public addresses stay open.
+- Nothing is ever signed server-side. Writes return the same unsigned envelope as today; the user signs in
+  their own wallet. No auto-sign, no Sign Service.
+- The Copilot's service is untouched (IAM-locked, WorkOS machine-to-machine). Public mode refuses to start
+  alongside `FIRST_PARTY_CLIENT_IDS` or the fork tools.
+
+Status: phases 1-3 of `MCP_CONNECTOR_PLAN.md` are built and tested locally (offline suite and a real MCP SDK
+OAuth client). Not yet built or deployed: the consent and sign pages in the app, the sign-link handoff, the
+shared (Firestore) state store, and the public Cloud Run service. Operator settings:
+`docs/CONNECTING_CLIENTS.md` §3.
+
 ## Deploying
 
 - **Reproducible build:** the `Dockerfile` installs `requirements.txt` under `constraints.txt`, the exact
@@ -115,7 +163,7 @@ only see and use read actions. The `Dockerfile` runs exactly this.
   `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
   `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
-  Concrete project values: `COPILOT_ARCHITECTURE.md` §11.
+  Concrete project values: `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §11.
 - **Margin swaps and transaction size:** a margin swap is the Jupiter route plus the margin instruction's
   own accounts, which can exceed Solana's 1232-byte limit (always for routes into JupSOL/JitoSOL before this
   fix). `margin_swap` checks the compiled size and re-quotes with a tighter Jupiter `maxAccounts` until it
@@ -136,6 +184,7 @@ only see and use read actions. The `Dockerfile` runs exactly this.
 ```bash
 pytest tests/ -v    # full suite; most files hit the live fork
 pytest tests/test_foundation.py tests/test_pricing.py tests/test_health_accounts.py tests/test_hosting.py tests/test_price_keeper.py tests/test_read_cache.py -q   # offline only
+pytest tests/test_oauth_connector.py tests/test_wallet_scope.py tests/test_connector_sdk_client.py tests/test_risk_math.py tests/test_planning.py tests/test_web_and_dispatch.py -q   # connector, planner, safety layer, signing pages: offline (no RPC)
 ```
 
 `tests/test_http_e2e.py` starts the real server process and talks raw Streamable HTTP to it, as a Copilot
@@ -150,8 +199,7 @@ DEX pools drift from mainnet.
 
 ## Keeping the IDL in sync
 
-`idl/vanna_lending.json` is regenerated from the `vanna-credit-layer` program
-source at `ecdb9b6` (`cargo test -p vanna_lending --features idl-build`, merging the emitted
-program/event/type sections), because the backend's copy still describes the older program. The server refuses to start unless the
+`idl/vanna_credit_layer.json` is the IDL of the `vanna_credit_layer` program (layer `465f21a`), copied from
+`vanna-credit-backend/idl/` (the previous `vanna_lending` IDL is kept in `handoff/old/`). The server refuses to start unless the
 file hashes to `PINNED_IDL_SHA256` (`vanna_core/config.py`). When the program
 changes: regenerate, verify against the deployed program, then update the pin.

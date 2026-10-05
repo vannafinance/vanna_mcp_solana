@@ -22,8 +22,10 @@ class ForkContract:
         self._settings = settings
 
     async def faucet(self, address: str, symbol: str | None = None) -> dict:
-        if not self._settings.enable_fork_tools:
-            raise ContractCallError("vanna_fork is disabled (ENABLE_FORK_TOOLS is not set)")
+        if not (self._settings.enable_fork_tools or self._settings.enable_test_faucet):
+            raise ContractCallError("The test faucet is disabled (set ENABLE_TEST_FAUCET=true on a fork).")
+        if "fork" not in self._settings.solana_cluster_label.lower():
+            raise ContractCallError("The test faucet only exists on the test fork, not on this cluster.")
 
         payload: dict = {"address": address}
         if symbol is not None:

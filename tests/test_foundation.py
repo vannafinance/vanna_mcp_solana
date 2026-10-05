@@ -35,9 +35,9 @@ def test_reserve_layout_size_matches_live_account():
 
 
 def test_asset_config_layout_size_matches_live_account():
-    # 340-byte live account (verified on the fork) = 8-byte discriminator + 332-byte body
+    # 221-byte live account (vanna_credit_layer, verified on the fork) = 8-byte discriminator + 213-byte body
     # (the OracleConfig-based layout; the pre-oracle-rework account was 258 bytes).
-    assert AssetConfig.sizeof() == 340 - 8
+    assert AssetConfig.sizeof() == 221 - 8
 
 
 def test_margin_account_layout_has_24_slots_each():
@@ -214,7 +214,7 @@ def test_idl_hash_matches_pin():
     from vanna_core.client import compute_idl_sha256
     from vanna_core.config import VannaSettings
 
-    idl = pathlib.Path(__file__).resolve().parent.parent / "idl" / "vanna_lending.json"
+    idl = pathlib.Path(__file__).resolve().parent.parent / "idl" / "vanna_credit_layer.json"
     assert compute_idl_sha256(idl) == VannaSettings().pinned_idl_sha256  # type: ignore[call-arg]
 
 
@@ -233,7 +233,10 @@ async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts
     class FakeClient:
         def __init__(self):
             self.program_id = program_id
-            self.settings = SimpleNamespace(solana_rpc_url="http://fake-rpc-for-cache-test")
+            self.settings = SimpleNamespace(
+                solana_rpc_url="http://fake-rpc-for-cache-test",
+                vanna_oracle_program_id="FXY5DRfekMUTbUp4uyCFpCZmCccrp6kPq3hTM4GRihnc",
+            )
             self.gpa_calls = 0
             self.batch_calls = 0
 
@@ -253,12 +256,12 @@ async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts
     assert first.discovery_mode == "known_mints"
     second = AssetRegistry(client)
     await second.load()  # within the TTL: no RPC at all
-    assert (client.gpa_calls, client.batch_calls) == (1, 1)
+    assert (client.gpa_calls, client.batch_calls) == (1, 2)  # known mints + the oracle price book
 
     assets_mod._registry_cache.clear()  # TTL expiry: re-read, but getProgramAccounts stays skipped
     third = AssetRegistry(client)
     await third.load()
-    assert (client.gpa_calls, client.batch_calls) == (1, 2)
+    assert (client.gpa_calls, client.batch_calls) == (1, 4)
     assets_mod.clear_registry_cache()
 
 
