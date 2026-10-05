@@ -51,6 +51,20 @@ the OAuth issuer and every issued token names it.
 On Cloud Run the service **refuses to start** unless `STATE_STORE=firestore`, `EXTERNAL_BASE_URL` is https, a signing key
 is present, and no first-party client or dev-only fork tool is configured.
 
+## Public access and the organization policy
+
+`--allow-unauthenticated` adds an `allUsers` invoker. On 2026-10-05 the first deploy of `vanna-mcp-solana-public`
+(revision `00001-d6v`, image `mcp-solana:c72e93e`) started cleanly, but granting that invoker failed with
+`FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted customer`: the organization's
+domain-restricted-sharing policy (`constraints/iam.allowedPolicyMemberDomains`) forbids `allUsers` in `solana-mcp`. Until the
+service is publicly invokable, no MCP client can reach it. Resolve it with the organization admin, in this order of preference:
+
+1. Give the project `solana-mcp` an exception to that constraint (Organization Policies, project override: allow all values),
+   then `gcloud run services add-iam-policy-binding vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --member=allUsers --role=roles/run.invoker`.
+2. Run the public service in a project where public services are already allowed.
+3. Cloud Run can also skip the invoker check (`--no-invoker-iam-check`), which exposes the service without an `allUsers`
+   binding. That sidesteps the policy rather than satisfying it, so use it only with the organization admin's agreement.
+
 ## Verify
 
 ```
