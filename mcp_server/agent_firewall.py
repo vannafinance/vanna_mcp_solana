@@ -31,8 +31,8 @@ to do it; the tools do everything that has to be exactly right: every number, ev
    - **arbitrary program calls, raw transactions, or sending funds to another address**;
    - **Kamino multi-asset liquidity / LP positions** (single-asset Kamino lend "farm" is supported);
    - **perpetuals, options, futures and short positions** (leveraged LONG exposure through margin is supported);
-   - **tokens outside the product**: only SOL, USDC, USDT, JitoSOL, JupSOL (and the Kamino receipts kSOL, kUSDC, kUSDT,
-     kJitoSOL, kJupSOL that farming produces). Other registered assets are hidden and return `asset_not_offered`;
+   - **tokens outside the product**: only {product_assets} (and the Kamino receipts {receipts} that farming
+     produces). Other registered assets are hidden and return `asset_not_offered`;
    - **acting for any other wallet** than the connected/user's own;
    - **conditional, scheduled or standing orders** — limit orders, stop-loss, take-profit, DCA, "every week", "when SOL
      hits 90", "at 5pm", auto-repay/auto-compound. You can only act on what is asked right now; you cannot watch
@@ -50,9 +50,9 @@ to do it; the tools do everything that has to be exactly right: every number, ev
   (whole-account). With no debt there is no HF. Borrowed funds stay in the margin account and count as collateral.
 - The product holds every action that can lower health (borrow, withdraw, margin swap) at **1.15 or above** — the server
   refuses a build below it, and flags one close to it. Adding collateral or repaying is always allowed.
-- Only **SOL, USDC, USDT** can be lent (Earn) and borrowed. **JitoSOL, JupSOL** are collateral, swap and Kamino-farm only.
+- Only **{lend_borrow}** can be lent (Earn) and borrowed. **{collateral_only}** are margin collateral and swap only.
 - Per-action and per-day USD limits, a build rate and a plan step cap (8) apply; a refusal says which.
-- Amounts are exact decimal strings. More decimals than the token has (USDC/USDT 6, others 9) is refused, never rounded.
+- Amounts are exact decimal strings. More decimals than the token has ({decimals}) is refused, never rounded.
   Negative, zero, `NaN`, scientific notation (`1e3`) and ambiguous commas (`1,5`) are refused — ask the user to restate.
   "all"/"max" means all; "half" or "50%" is resolved by the tool against live balances.
 - Keep ~0.05 SOL in the wallet for fees and rent; the tools reserve it.
@@ -123,7 +123,30 @@ Omit `authority` / `owner` and it defaults to their wallet. A write for any othe
 """.strip()
 
 
+def _with_assets(text: str) -> str:
+    """Fill the asset lists from the asset module, so these instructions name exactly the assets the server offers."""
+    from vanna_core.assets import LEND_BORROW_SYMBOLS, PRODUCT_SYMBOLS, collateral_only_symbols, receipt_symbols, symbol_decimals
+
+    lend_borrow = [s for s in ("SOL", "USDC", "USDT") if s in LEND_BORROW_SYMBOLS]
+    collateral_only = collateral_only_symbols()
+    by_dp: dict[int, list[str]] = {}
+    for s in [*lend_borrow, *collateral_only]:
+        by_dp.setdefault(symbol_decimals(s), []).append(s)
+    values = {
+        "product_assets": ", ".join([*lend_borrow, *collateral_only]),
+        "receipts": ", ".join(receipt_symbols()),
+        "lend_borrow": ", ".join(lend_borrow),
+        "collateral_only": ", ".join(collateral_only),
+        "decimals": "; ".join(f"{'/'.join(v)} {k}" for k, v in sorted(by_dp.items())),
+    }
+    for k, v in values.items():
+        text = text.replace("{" + k + "}", v)
+    assert PRODUCT_SYMBOLS  # imported for the fill above; kept explicit
+    return text
+
+
 def get_agent_instructions(*, public: bool = False) -> str:
+    base = _with_assets(AGENT_INSTRUCTIONS)
     if public:
-        return f"{AGENT_INSTRUCTIONS}\n\n{PUBLIC_CONNECTOR_INSTRUCTIONS}"
-    return AGENT_INSTRUCTIONS
+        return f"{base}\n\n{PUBLIC_CONNECTOR_INSTRUCTIONS}"
+    return base

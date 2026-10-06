@@ -159,14 +159,22 @@ KAMINO_RECEIPTS: tuple[KaminoReceiptInfo, ...] = (
 GMTRADE_PROGRAM_ID = Pubkey.from_string("Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6MDucLo")
 GMTRADE_STORE = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
 
-# Assets the program registers on-chain that are not in the app's five-token catalogue -
-# display names only (decimals, token program and oracle always come from the AssetConfig).
+# Assets the program registers on-chain beyond the catalogue above - display names only (decimals, token program,
+# oracle and lend/borrow capability always come from the AssetConfig and the chain). JupUSD and the Token-2022 xStocks
+# are margin collateral and swap assets in the app (vanna-credit-backend `lib/solana/tokens.ts`); naming a mint here is
+# what makes it a product asset (see `is_offered`). A venue (GMTrade) is named but never offered as a token.
 EXTRA_ASSET_SYMBOLS: dict[str, str] = {
     GMTRADE_STORE: "GMTrade",
     "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD": "JupUSD",
     "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": "NVDAx",
     "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB": "TSLAx",
+    "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN": "GOOGLx",
+    "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": "AAPLx",
 }
+VENUE_SYMBOLS = frozenset({"GMTrade"})
+# Decimals of the named on-chain assets, for the planning maths that runs before the registry is read (the registry's
+# AssetConfig stays the authority for every build). Same values as the app's registry.
+EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8}
 
 _BY_SYMBOL: dict[str, AssetInfo] = {a.symbol.upper(): a for a in ASSETS}
 _RECEIPT_BY_SYMBOL: dict[str, KaminoReceiptInfo] = {r.symbol.upper(): r for r in KAMINO_RECEIPTS}
@@ -500,25 +508,45 @@ def _decode_asset_config(config_address: Pubkey, decoded: object, sources: dict[
     )
 
 
-# Product scope (team, 2026-09-30): exactly these five tokens, plus the Kamino receipts farming
-# produces from them. Other assets the program registers on-chain (JupUSD and the Token-2022
-# xStocks NVDAx/TSLAx today) are not in the app, so they are not offered: they're hidden from
-# listings and refused for actions (`asset_not_offered`). Positions in them still count in health
-# reads (resolved by index), and withdraw/close stay allowed so nobody is stuck.
-PRODUCT_SYMBOLS = frozenset({"SOL", "USDC", "USDT", "JitoSOL", "JupSOL"})
+# Product scope: every token the app lists - the catalogue (SOL, USDC, USDT, JitoSOL, JupSOL) and the named on-chain
+# assets above (JupUSD, NVDAx, TSLAx, GOOGLx, AAPLx) - plus the Kamino receipts farming produces. A registered asset with
+# no name here is not offered: hidden from listings and refused for actions (`asset_not_offered`); positions in it still
+# count in health reads (resolved by index), and withdraw/close stay allowed so nobody is stuck. A venue is never a token.
+PRODUCT_SYMBOLS = frozenset([a.symbol for a in ASSETS] + [s for s in EXTRA_ASSET_SYMBOLS.values() if s not in VENUE_SYMBOLS])
 
 
 def is_offered(asset: "DiscoveredAsset") -> bool:
+    if asset.is_venue:
+        return False
     if asset.symbol in PRODUCT_SYMBOLS:
         return True
     receipt = _RECEIPT_BY_MINT.get(asset.mint)
     return receipt is not None and receipt.underlying_symbol in PRODUCT_SYMBOLS
 
 
-# Product policy (confirmed by the team): only these assets are lendable
-# (Earn) and borrowable. JitoSOL/JupSOL are collateral + swap + Kamino-farm
-# only — their on-chain reserves are live and borrow_enabled, but the app
-# doesn't offer them, so neither does the Copilot-facing MCP.
+def symbol_decimals(symbol: str) -> int:
+    """Token decimals for a product symbol (catalogue, then named on-chain assets); 9 when unknown."""
+    asset = find_asset(symbol)
+    if asset is not None:
+        return asset.decimals
+    receipt = find_receipt(symbol)
+    if receipt is not None:
+        return 6
+    return EXTRA_ASSET_DECIMALS.get(symbol, 9)
+
+
+def receipt_symbols() -> list[str]:
+    return [r.symbol for r in KAMINO_RECEIPTS]
+
+
+def collateral_only_symbols() -> list[str]:
+    """Product assets that are margin collateral and swap assets but cannot be lent or borrowed."""
+    return [s for s in sorted(PRODUCT_SYMBOLS) if s not in LEND_BORROW_SYMBOLS]
+
+
+# Product policy (confirmed by the team), matching the app's `lendable` flag and the chain (only these three have a
+# Vanna Earn reserve): only these assets are lendable (Earn) and borrowable. Every other product asset is margin
+# collateral and swap only.
 LEND_BORROW_SYMBOLS = frozenset({"SOL", "USDC", "USDT"})
 
 
@@ -530,5 +558,38 @@ def assert_lend_borrow_offered(symbol: str, action: str) -> None:
     if upper not in LEND_BORROW_SYMBOLS:
         raise AssetNotOfferedError(
             f"{action} is not offered for {symbol}: only {', '.join(sorted(LEND_BORROW_SYMBOLS))} "
-            "can be lent or borrowed (JitoSOL/JupSOL are collateral, swap and farm only)."
+            f"can be lent or borrowed ({', '.join(collateral_only_symbols())} are collateral and swap only)."
+        )
+
+
+# The app's product rules for two actions, mirrored so every MCP client follows the website:
+# - margin collateral deposits: every product token except these (`depositable: false` in the app's
+#   `lib/solana/tokens.ts`; USDT stays lendable, borrowable and withdrawable, it is only not offered as a deposit);
+# - Kamino farm: no new supply for these underlyings (`FARM_DELISTED_UNDERLYINGS` in the app's `lib/solana/farm.ts`);
+#   an existing position can still be redeemed.
+NOT_DEPOSITABLE_SYMBOLS = frozenset({"USDT"})
+FARM_DELISTED_UNDERLYINGS = frozenset({"JitoSOL", "JupSOL"})
+
+
+def assert_depositable(symbol: str) -> None:
+    from vanna_core.types import AssetNotOfferedError
+
+    asset = find_asset(symbol)
+    name = asset.symbol if asset else symbol.strip()
+    if name in NOT_DEPOSITABLE_SYMBOLS:
+        offered = [s for s in sorted(PRODUCT_SYMBOLS) if s not in NOT_DEPOSITABLE_SYMBOLS]
+        raise AssetNotOfferedError(
+            f"{name} is not offered as a margin collateral deposit. It can still be lent, borrowed, repaid and withdrawn, "
+            f"and held in the margin account by borrowing or swapping into it. Collateral deposits: {', '.join(offered)}."
+        )
+
+
+def assert_farm_listed(symbol: str) -> None:
+    from vanna_core.types import AssetNotOfferedError
+
+    asset = find_asset(symbol)
+    name = asset.symbol if asset else symbol.strip()
+    if name in FARM_DELISTED_UNDERLYINGS:
+        raise AssetNotOfferedError(
+            f"The Kamino farm for {name} is closed to new supply. An existing {name} farm position can still be redeemed."
         )

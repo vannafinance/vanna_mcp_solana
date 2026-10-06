@@ -41,11 +41,17 @@ MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
 
 
-def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute_unit_limit: int | None) -> bool:
-    """True when these instructions compile into a v0 transaction within Solana's packet limit."""
-    full = list(instructions)
-    if compute_unit_limit is not None:
-        full = [set_compute_unit_limit(compute_unit_limit), *full]
+def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute_unit_limit: int | None, program_id: Pubkey | None = None) -> bool:
+    """True when these instructions compile into a v0 transaction within Solana's packet limit, counting the same
+    ComputeBudget instructions the envelope builder adds."""
+    if program_id is not None:
+        from vanna_core.client import compute_budget_prefix
+
+        full = [*compute_budget_prefix(instructions, program_id, compute_unit_limit), *instructions]
+    else:
+        full = list(instructions)
+        if compute_unit_limit is not None:
+            full = [set_compute_unit_limit(compute_unit_limit), *full]
     try:
         message = MessageV0.try_compile(fee_payer, full, lookup_tables, Hash.default())
         tx = VersionedTransaction.populate(message, [Signature.default()] * message.header.num_required_signatures)
@@ -205,7 +211,7 @@ class SwapContract:
             lookup_tables = await fetch_lookup_tables(self._client, swap_response.get("addressLookupTableAddresses", []))
             route_keys = {t.key for t in lookup_tables}
             all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
-            if fits_one_transaction(instructions, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS):
+            if fits_one_transaction(instructions, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS, self._client.program_id):
                 break
             last_error = ContractCallError(
                 f"Transaction too large: margin swap {from_asset.symbol}->{to_asset.symbol} route "

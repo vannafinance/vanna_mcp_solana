@@ -265,15 +265,37 @@ async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts
     assets_mod.clear_registry_cache()
 
 
-def test_product_scope_is_the_five_tokens_and_their_receipts():
+def test_product_scope_is_the_apps_tokens_and_their_receipts():
     from types import SimpleNamespace
 
-    from vanna_core.assets import KAMINO_RECEIPTS, PRODUCT_SYMBOLS, is_offered
+    from vanna_core.assets import KAMINO_RECEIPTS, PRODUCT_SYMBOLS, VENUE_SYMBOLS, collateral_only_symbols, is_offered, symbol_decimals
 
-    assert PRODUCT_SYMBOLS == {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL"}
+    assert PRODUCT_SYMBOLS == {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx", "GOOGLx", "AAPLx"}
     for asset in ASSETS:
-        assert is_offered(SimpleNamespace(symbol=asset.symbol, mint=asset.mint))
+        assert is_offered(SimpleNamespace(symbol=asset.symbol, mint=asset.mint, is_venue=False))
     for receipt in KAMINO_RECEIPTS:
-        assert is_offered(SimpleNamespace(symbol=receipt.symbol, mint=receipt.collateral_mint))
-    for mint, symbol in EXTRA_ASSET_SYMBOLS.items():  # JupUSD, NVDAx, TSLAx
-        assert not is_offered(SimpleNamespace(symbol=symbol, mint=mint))
+        assert is_offered(SimpleNamespace(symbol=receipt.symbol, mint=receipt.collateral_mint, is_venue=False))
+    for mint, symbol in EXTRA_ASSET_SYMBOLS.items():
+        offered = is_offered(SimpleNamespace(symbol=symbol, mint=mint, is_venue=symbol in VENUE_SYMBOLS))
+        assert offered is (symbol not in VENUE_SYMBOLS), symbol
+    # A registered asset nobody named is not offered.
+    assert not is_offered(SimpleNamespace(symbol="asset#42", mint=Pubkey.new_unique(), is_venue=False))
+    assert set(collateral_only_symbols()) == {"JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx", "GOOGLx", "AAPLx"}
+    assert [symbol_decimals(s) for s in ("SOL", "USDC", "JupUSD", "NVDAx", "AAPLx", "kSOL")] == [9, 6, 6, 8, 8, 6]
+
+
+def test_deposit_and_farm_rules_follow_the_app():
+    import pytest
+
+    from vanna_core.assets import assert_depositable, assert_farm_listed
+    from vanna_core.types import AssetNotOfferedError
+
+    for symbol in ("SOL", "USDC", "JitoSOL", "JupUSD", "NVDAx"):
+        assert_depositable(symbol)
+    with pytest.raises(AssetNotOfferedError, match="not offered as a margin collateral deposit"):
+        assert_depositable("usdt")
+    for symbol in ("SOL", "USDC", "USDT"):
+        assert_farm_listed(symbol)
+    for symbol in ("JitoSOL", "JupSOL"):
+        with pytest.raises(AssetNotOfferedError, match="closed to new supply"):
+            assert_farm_listed(symbol)

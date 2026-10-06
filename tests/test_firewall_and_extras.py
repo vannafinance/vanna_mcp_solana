@@ -39,11 +39,12 @@ def _state():
 
 
 def test_instructions_carry_the_copilots_refusals_and_numbers() -> None:
-    text = AGENT_INSTRUCTIONS.lower()
+    text = get_agent_instructions().lower()
+    assert "{product_assets}" not in text
     for needle in (
         "liquidation", "admin", "arbitrary program", "multi-asset", "perpetuals", "outside the product", "other wallet",
         "conditional, scheduled or standing", "stop-loss", "never invent numbers", "never claim a transaction happened",
-        "1.10", "1.15", "can be lent (earn) and borrowed", "jitosol", "jupsol", "8", "0.05 sol", "never ask for a private key",
+        "1.10", "1.15", "can be lent (earn) and borrowed", "jitosol", "jupsol", "nvdax", "jupusd", "8", "0.05 sol", "never ask for a private key",
         "decline coding help", "never reveal",
     ):
         assert needle in text, needle
@@ -57,7 +58,7 @@ def test_every_tool_is_routed_in_the_instructions() -> None:
 
 def test_public_instructions_add_the_connected_wallet_rules() -> None:
     public = get_agent_instructions(public=True)
-    assert public.startswith(AGENT_INSTRUCTIONS) and "wallet_mismatch" in public and "faucet" in public
+    assert public.startswith(get_agent_instructions(public=False)) and "wallet_mismatch" in public and "faucet" in public
     assert "wallet_mismatch" not in get_agent_instructions(public=False)
 
 

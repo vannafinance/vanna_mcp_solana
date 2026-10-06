@@ -5,6 +5,8 @@ This dispatcher never signs or broadcasts anything.
 
 from __future__ import annotations
 
+from vanna_core.assets import assert_depositable
+
 from typing import Any, Literal
 
 from solders.pubkey import Pubkey
@@ -75,6 +77,7 @@ async def vanna_margin_trade(
     if action == "deposit":
         if asset is None or amount is None:
             return {"error": "invalid_input", "message": "'asset' and 'amount' are required for action=deposit"}
+        assert_depositable(asset)
         envelope = await trade.deposit_collateral(Pubkey.from_string(authority), asset, amount)
         return envelope.to_dict()
 
@@ -134,6 +137,7 @@ async def vanna_margin_trade(
                     "are all required for action=deposit_and_borrow"
                 ),
             }
+        assert_depositable(deposit_asset)
         envelope = await trade.deposit_and_borrow(
             Pubkey.from_string(authority), deposit_asset, deposit_amount, borrow_asset, borrow_amount
         )

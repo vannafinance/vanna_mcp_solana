@@ -30,7 +30,7 @@ is not a reference.
 ```
 vanna_core/                    # protocol logic — no MCP/AI concerns
   config.py                     # env-driven settings (program ID, RPC URL, oracle mode, feature gates)
-  assets.py                     # display catalogue, on-chain AssetConfig discovery, lend/borrow policy (SOL/USDC/USDT only)
+  assets.py                     # display catalogue, on-chain AssetConfig discovery, product scope (the app's token list), lend/borrow, deposit and farm rules
   pdas.py                        # PDA derivation
   layouts.py                     # borsh account struct layouts (verified against live accounts)
   anchor_codec.py                # discriminator derivation (see "Why this isn't built on anchorpy")
@@ -165,6 +165,13 @@ shared (Firestore) state store, and the public Cloud Run service. Operator setti
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
   `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
   Concrete project values: `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §11.
+- **Product scope:** the tokens the app lists: SOL, USDC, USDT, JitoSOL, JupSOL, JupUSD and the Token-2022 xStocks
+  (NVDAx, GOOGLx, AAPLx, TSLAx), plus the Kamino receipts. Only SOL, USDC and USDT are lent and borrowed; the rest are
+  margin collateral and swap only. As on the website, USDT is not a margin collateral deposit (`assert_depositable`)
+  and the JitoSOL/JupSOL Kamino farms are closed to new supply, redeem still allowed (`assert_farm_listed`). A
+  registered asset outside the list, and the GMTrade venue, are refused with `asset_not_offered`.
+- **Heap frame:** the core program's allocator (vanna-credit-layer `src/heap.rs`) can use 256 KiB, so every transaction
+  that calls the core requests a 256 KiB heap frame (`vanna_core/client.py` `compute_budget_prefix`), as the app does.
 - **Margin swaps and transaction size:** a margin swap is the Jupiter route plus the margin instruction's
   own accounts, which can exceed Solana's 1232-byte limit (always for routes into JupSOL/JitoSOL before this
   fix). `margin_swap` checks the compiled size and re-quotes with a tighter Jupiter `maxAccounts` until it

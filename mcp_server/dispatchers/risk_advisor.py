@@ -14,6 +14,7 @@ from mcp_server import internal
 from mcp_server.error_handling import tool_safe
 from mcp_server.internal import ToolError
 from mcp_server.planning import facts
+from vanna_core.assets import receipt_symbols
 from mcp_server.planning.funding import check_funding
 from mcp_server.planning.preflight import humanize, validate_steps
 from vanna_core import risk
@@ -27,7 +28,7 @@ REFUSALS = [
     "Calling arbitrary programs, raw transactions, or sending funds to another address.",
     "Kamino multi-asset liquidity / LP positions (single-asset Kamino lend 'farm' is supported).",
     "Perpetuals, options, futures and short positions (leveraged LONG exposure through margin is supported).",
-    "Tokens outside the product (anything but SOL, USDC, USDT, JitoSOL, JupSOL and the Kamino receipts they produce).",
+    f"Tokens outside the product (anything but {', '.join(facts.PRODUCT_ASSETS)} and the Kamino receipts farming produces).",
     "Conditional, scheduled or standing orders (limit orders, stop-loss, DCA, 'every week', 'when SOL hits 90'): "
     "this assistant only acts on what is asked right now and cannot watch prices or act later.",
     "Acting for any wallet other than the connected one.",
@@ -47,8 +48,8 @@ def _policy() -> dict[str, Any]:
         "writes_per_minute": s.write_rate_per_minute,
         "max_plan_steps": s.max_plan_steps,
         "plan_approval_seconds": s.plan_approval_ttl_seconds,
-        "assets": {"lend_borrow": list(facts.LEND_BORROW_ASSETS), "collateral_swap_farm_only": list(facts.COLLATERAL_ONLY_ASSETS),
-                   "kamino_receipts": ["kSOL", "kUSDC", "kUSDT", "kJitoSOL", "kJupSOL"]},
+        "assets": {"lend_borrow": list(facts.LEND_BORROW_ASSETS), "collateral_swap_only": list(facts.COLLATERAL_ONLY_ASSETS),
+                   "kamino_receipts": receipt_symbols()},
         "sol_fee_reserve": risk.SOL_FEE_RESERVE,
         "safety_layer_active": bool(s.safety_layer or s.public_mode),
         "refused": REFUSALS,

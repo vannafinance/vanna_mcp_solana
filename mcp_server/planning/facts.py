@@ -16,10 +16,13 @@ from mcp_server.internal import ToolError
 from vanna_core import risk
 from vanna_core.config import get_settings
 
-LEND_BORROW_ASSETS = ("SOL", "USDC", "USDT")
-COLLATERAL_ONLY_ASSETS = ("JitoSOL", "JupSOL")
+from vanna_core.assets import KAMINO_RECEIPTS, LEND_BORROW_SYMBOLS, collateral_only_symbols
+
+# The product's assets, from the asset module (catalogue + the named on-chain assets), never a separate list here.
+LEND_BORROW_ASSETS = tuple(s for s in ("SOL", "USDC", "USDT") if s in LEND_BORROW_SYMBOLS)
+COLLATERAL_ONLY_ASSETS = tuple(collateral_only_symbols())
 PRODUCT_ASSETS = LEND_BORROW_ASSETS + COLLATERAL_ONLY_ASSETS
-RECEIPT_TO_UNDERLYING = {"ksol": "SOL", "kusdc": "USDC", "kusdt": "USDT", "kjitosol": "JitoSOL", "kjupsol": "JupSOL"}
+RECEIPT_TO_UNDERLYING = {r.symbol.lower(): r.underlying_symbol for r in KAMINO_RECEIPTS}
 
 
 @dataclass

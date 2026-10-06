@@ -15,8 +15,9 @@ async def test_summary_fresh_wallet_all_zero(ctx):
     result = await vanna_wallet(action="summary", authority=fresh)
     assert result["sol_balance"] == "0"
     assert result["margin_account_exists"] is False
-    # The product's five tokens (assets registered on-chain outside the product are not listed).
-    assert {a["symbol"] for a in result["assets"]} == {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL"}
+    # Every token the app lists (a registered venue is not a token).
+    assert {a["symbol"] for a in result["assets"]} >= {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx"}
+    assert "GMTrade" not in {a["symbol"] for a in result["assets"]}
     assert all(a["wallet_balance"] == "0" for a in result["assets"])
     by_symbol = {a["symbol"]: a for a in result["assets"]}
     assert by_symbol["USDC"]["lender_share_balance"] == "0"  # Earn pool exists

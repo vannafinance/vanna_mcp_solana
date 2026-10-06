@@ -24,7 +24,23 @@ from solana.rpc.async_api import AsyncClient
 from solana.rpc.core import RPCException
 from solana.rpc.commitment import Confirmed
 from solders.address_lookup_table_account import AddressLookupTableAccount
-from solders.compute_budget import set_compute_unit_limit
+from solders.compute_budget import request_heap_frame, set_compute_unit_limit
+
+# Heap frame requested for every transaction that calls the Vanna core. The core's allocator (vanna-credit-layer
+# `src/heap.rs`, 99791e1) grows upward and can use up to 256 KiB; the default 32 KiB runs out on a `margin_execute`
+# into a long Jupiter route (one xStock into another) next to many position groups. Same as the app's `lib/solana/tx.ts`.
+VANNA_HEAP_FRAME_BYTES = 256 * 1024
+
+
+def compute_budget_prefix(instructions, program_id: Pubkey, compute_unit_limit: int | None) -> list[Instruction]:
+    """The ComputeBudget instructions a build puts first: the unit limit when given, and the larger heap frame when any
+    instruction calls the Vanna core. Shared by the envelope builder and the transaction-size check."""
+    prefix: list[Instruction] = []
+    if compute_unit_limit is not None:
+        prefix.append(set_compute_unit_limit(compute_unit_limit))
+    if any(ix.program_id == program_id for ix in instructions):
+        prefix.append(request_heap_frame(VANNA_HEAP_FRAME_BYTES))
+    return prefix
 from solders.instruction import AccountMeta, Instruction
 from solders.message import MessageV0
 from solders.pubkey import Pubkey
@@ -288,9 +304,7 @@ class SolanaClient:
         1.4M for `margin_execute`) — omit it to let the cluster's default
         apply for a single simple instruction.
         """
-        full_instructions = list(instructions)
-        if compute_unit_limit is not None:
-            full_instructions = [set_compute_unit_limit(compute_unit_limit), *full_instructions]
+        full_instructions = [*compute_budget_prefix(instructions, self.program_id, compute_unit_limit), *instructions]
 
         blockhash_resp = await self._rpc.get_latest_blockhash()
         blockhash = blockhash_resp.value.blockhash

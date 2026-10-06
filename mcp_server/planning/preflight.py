@@ -451,9 +451,9 @@ def validate_steps(steps: list[dict[str, Any]]) -> str | None:
             if not asset:
                 return "A step is missing its asset."
             if asset not in facts.PRODUCT_ASSETS:
-                return f"{asset} is not part of the product. The assets are SOL, USDC, USDT (lend and borrow) and JitoSOL, JupSOL (collateral, swap and Kamino farm)."
+                return f"{asset} is not part of the product. The assets are {', '.join(facts.LEND_BORROW_ASSETS)} (lend and borrow) and {', '.join(facts.COLLATERAL_ONLY_ASSETS)} (collateral and swap)."
             if rule == "lend" and asset not in facts.LEND_BORROW_ASSETS:
-                return f"{asset} can be collateral, swapped or farmed on Kamino, but has no Vanna lending pool, so it can't be lent or borrowed."
+                return f"{asset} can be margin collateral and swapped, but has no Vanna lending pool, so it can't be lent or borrowed."
             if not s.get("amount"):
                 return "A step is missing its amount."
         if op == "swap":

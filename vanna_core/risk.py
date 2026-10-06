@@ -51,7 +51,9 @@ def num(value: Any) -> float | None:
 
 
 def token_decimals(symbol: str) -> int:
-    return 6 if symbol in ("USDC", "USDT") else 9
+    from vanna_core.assets import symbol_decimals
+
+    return symbol_decimals(symbol)
 
 
 def floor_decimals(n: float, dp: int) -> str:

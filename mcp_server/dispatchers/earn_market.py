@@ -19,8 +19,8 @@ async def vanna_earn_market(action: EarnMarketAction, asset: str) -> dict[str, A
         action: "pool_stats" — utilization, borrow/supply APR, liquidity,
             caps, reserve status, and rate-curve coefficients, all projected
             to the current chain clock.
-        asset: One of the registered assets (case-insensitive; "SOL" or
-            "wSOL", "USDC", "USDT", "JitoSOL", "JupSOL").
+        asset: A lend/borrow asset (case-insensitive; "SOL" or "wSOL",
+            "USDC", "USDT").
 
     On error: {"error": "contract_error" | "invalid_input", "message": "..."}
     """

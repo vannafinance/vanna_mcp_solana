@@ -21,12 +21,12 @@ async def test_assets_lists_the_product_assets(ctx):
     result = await vanna_protocol_info(action="assets")
     assert "error" not in result
     symbols = {a["symbol"] for a in result["assets"]}
-    # The product's 5 tokens + their 5 Kamino receipts. JupUSD/NVDAx/TSLAx are registered on-chain but are
-    # not in the product (team, 2026-09-30), so they are not listed.
-    assert symbols == {
-        "SOL", "USDC", "USDT", "JitoSOL", "JupSOL",
+    # Every token the app lists + the 5 Kamino receipts. The GMTrade venue is registered but is not a token.
+    assert symbols >= {
+        "SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx",
         "kSOL", "kUSDC", "kUSDT", "kJitoSOL", "kJupSOL",
     }
+    assert "GMTrade" not in symbols
     by_symbol = {a["symbol"]: a for a in result["assets"]}
     # Only SOL/USDC/USDT are lent/borrowed; the rest are collateral-only with no Reserve.
     assert {s for s, a in by_symbol.items() if a["lend_borrow_offered"]} == {"SOL", "USDC", "USDT"}

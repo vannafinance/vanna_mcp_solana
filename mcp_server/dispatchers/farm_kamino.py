@@ -5,6 +5,8 @@ signs or broadcasts anything.
 
 from __future__ import annotations
 
+from vanna_core.assets import assert_farm_listed
+
 from typing import Any, Literal
 
 from solders.pubkey import Pubkey
@@ -43,6 +45,7 @@ async def vanna_farm_kamino(
     authority_pubkey = Pubkey.from_string(authority)
 
     if action == "deposit":
+        assert_farm_listed(underlying)
         envelope = await farm.deposit(authority_pubkey, underlying, amount)
         return envelope.to_dict()
     if action == "redeem":
