@@ -754,3 +754,14 @@ async def test_a_plan_step_waits_for_the_build_budget_instead_of_failing(monkeyp
     assert (await eng.get(view["plan_id"]))["status"] != "paused"  # not a refusal: the plan is still running
     now[0] += 61
     assert (await eng.build_next(view["plan_id"])).get("transactions")  # the next minute's budget builds it
+
+
+def test_transient_simulation_failures_are_rebuilt_others_are_not():
+    def env(reason, ok=False):
+        return {"transactions": [{"id": "t"}], "simulation_success": ok, "reason": reason}
+
+    assert engine_mod._transient_failure(env("InstructionError((2, Custom(6001)))\nProgram log: SlippageToleranceExceeded"))
+    assert engine_mod._transient_failure(env("TransactionErrorFieldless.AccountNotFound\n"))
+    assert not engine_mod._transient_failure(env("Program log: insufficient funds"))
+    assert not engine_mod._transient_failure(env(None, ok=True))
+    assert not engine_mod._transient_failure({"error": "build_failed"})

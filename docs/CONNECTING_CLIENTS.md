@@ -114,12 +114,16 @@ Defaults and limits are in `vanna_risk action=policy`.
 
 ## 3. The hosted public connector (anyone, with their own wallet)
 
-Not deployed yet. The same server can run as `PUBLIC_MODE=true`: it is its own OAuth authorization server and **the wallet
-is the login** (Sign-In-With-Solana), so a client adds one URL and the user connects a wallet once.
+Live on the test fork since 2026-10-07 (Cloud Run service `vanna-mcp-solana-public`, deploy steps in `docs/DEPLOY_PUBLIC.md`).
+The same server runs as `PUBLIC_MODE=true`: it is its own OAuth authorization server and **the wallet is the login**
+(Sign-In-With-Solana), so a client adds one URL and the user connects a wallet once.
 
 ```bash
-claude mcp add --transport http vanna-solana https://<public-mcp-host>/mcp
+claude mcp add --transport http vanna-solana https://vanna-mcp-solana-public-398807408840.us-central1.run.app/mcp
 ```
+
+Any client that speaks MCP over streamable HTTP with OAuth (Claude Code, Claude Desktop, Cursor, Windsurf, an agent
+harness using the MCP SDK's OAuth client) uses that same URL.
 
 1. The client discovers the login and registers itself; the browser opens this service's own `/connect` page, which shows
    who is asking and where it will return, lets the user choose read-only or full access, and has the wallet sign a message
@@ -137,8 +141,12 @@ Operator settings (the process refuses to start unless they are consistent):
 | `OAUTH_CONSENT_URL` | optional; defaults to this service's own `/connect` |
 | `TRUSTED_PROXY_HOPS=1` | Cloud Run's front end appends the client IP |
 
-`FIRST_PARTY_CLIENT_IDS` must be empty. The state store is in-process for now: run **one instance** until the shared
-(Firestore) store lands. The Copilot's own private service is untouched.
+`FIRST_PARTY_CLIENT_IDS` must be empty. On Cloud Run `STATE_STORE=firestore` is required, so any number of instances can
+serve any request. The Copilot's own private service is untouched.
+
+To run the public mode locally (throwaway signing key, in-memory state):
+`PUBLIC_MODE=true AUTH_ENABLED=true OAUTH_ALLOW_EPHEMERAL_KEY=true EXTERNAL_BASE_URL=http://127.0.0.1:8000 python scripts/run_local.py`,
+then `python scripts/smoke_public.py http://127.0.0.1:8000`.
 
 ---
 

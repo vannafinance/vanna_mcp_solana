@@ -47,7 +47,7 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
 _ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
 
-_PUBLIC_EXACT_PATHS = frozenset({"/healthz"})
+_PUBLIC_EXACT_PATHS = frozenset({"/healthz", "/health"})
 
 
 def is_public_path(path: str) -> bool:

@@ -48,6 +48,17 @@ RECORD_TTL_SECONDS = 24 * 3600
 BLOCKHASH_DEAD_AFTER_SECONDS = 180
 FINAL_STEP_STATES = frozenset({"confirmed", "skipped", "failed", "uncertain"})
 FINAL_PLAN_STATES = frozenset({"completed", "failed", "cancelled", "expired"})
+# Simulation failures that a fresh build can clear: a swap quote that moved past its slippage, a stale price feed, the
+# fork momentarily missing an account or blockhash. Anything else (health, funds, caps) would fail the same way again.
+_TRANSIENT_SIMULATION_MARKERS = ("slippagetoleranceexceeded", "0x1771", "custom(6001)", "stalepri", "0x178b",
+                                 "transactionerrorfieldless.accountnotfound", "blockhashnotfound")
+
+
+def _transient_failure(envelope: Any) -> bool:
+    if not isinstance(envelope, dict) or envelope.get("simulation_success") or not envelope.get("transactions"):
+        return False
+    reason = str(envelope.get("reason") or "").lower()
+    return any(m in reason for m in _TRANSIENT_SIMULATION_MARKERS)
 
 
 class PlanError(Exception):
@@ -316,6 +327,10 @@ class PlanEngine:
                 return {"waiting": True, "step": idx, "code": "rate", "reason": rate.message,
                         "retry_after_seconds": rate.retry_after_s, "plan": self.view(rec)}
             envelope = await internal.call_raw(prepared.tool, **prepared.args)
+            if _transient_failure(envelope):
+                # A stale swap quote or a fork hiccup: one rebuild fetches a fresh quote and blockhash.
+                logger.info("plan %s step %s: transient simulation failure, rebuilding once", plan_id, idx)
+                envelope = await internal.call_raw(prepared.tool, **prepared.args)
             if not isinstance(envelope, dict) or not envelope.get("transactions"):
                 step["error"] = humanize(envelope.get("message") if isinstance(envelope, dict) else None)
                 step["attempts"] += 1

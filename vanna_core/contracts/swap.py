@@ -25,6 +25,7 @@ from vanna_core.assets import JUPITER_V6_PROGRAM_ID, AssetRegistry
 from vanna_core.client import SolanaClient
 from vanna_core.contracts.jupiter import ALLOWED_SELECTORS, JupiterClient, decode_jupiter_instruction, fetch_lookup_tables
 from vanna_core.envelope import SimulationOutcome, WriteEnvelope
+from vanna_core.fork_heal import MAX_SWAP_HEALS, heal_stale_dex_pools, looks_stale, unsigned_transaction
 from vanna_core.margin_execute import EXEC_COMPUTE_UNITS, build_margin_execute_instructions
 from vanna_core.pdas import find_associated_token_address, margin_pda
 from vanna_core.types import ContractCallError
@@ -162,6 +163,28 @@ class SwapContract:
         }
 
     async def margin_swap(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> WriteEnvelope:
+        return await self._healing(lambda: self._margin_swap_once(authority, from_symbol, to_symbol, amount_ui, slippage_bps))
+
+    async def wallet_swap(self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> WriteEnvelope:
+        return await self._healing(lambda: self._wallet_swap_once(owner, from_symbol, to_symbol, amount_ui, slippage_bps))
+
+    async def _healing(self, build) -> WriteEnvelope:
+        """Build; on the fork, if the simulation failed because a DEX pool's clone is stale, re-clone the pools the
+        route touched and build again with a fresh quote (vanna_core/fork_heal.py). Never retries off the fork, or
+        when nothing was reset."""
+        envelope = await build()
+        if not self._client.settings.is_fork:
+            return envelope
+        for _ in range(MAX_SWAP_HEALS):
+            if not looks_stale(envelope):
+                break
+            tx = unsigned_transaction(envelope)
+            if tx is None or not await heal_stale_dex_pools(self._client, tx):
+                break
+            envelope = await build()
+        return envelope
+
+    async def _margin_swap_once(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int) -> WriteEnvelope:
         from vanna_core.contracts.oracle_refresh import maybe_refresh_prices
 
         await maybe_refresh_prices(self._client, self._client.settings)
@@ -226,7 +249,7 @@ class SwapContract:
             summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui)},
         )
 
-    async def wallet_swap(self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> WriteEnvelope:
+    async def _wallet_swap_once(self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int) -> WriteEnvelope:
         registry = AssetRegistry(self._client)
         await registry.load()
         from_asset, to_asset, error = await self._pair(from_symbol, to_symbol, registry)

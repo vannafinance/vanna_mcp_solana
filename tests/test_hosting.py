@@ -199,6 +199,7 @@ def test_public_paths() -> None:
     assert is_public_path("/.well-known/oauth-protected-resource")
     assert is_public_path("/.well-known/oauth-authorization-server/mcp")
     assert is_public_path("/healthz")
+    assert is_public_path("/health")
     assert not is_public_path("/mcp")
 
 

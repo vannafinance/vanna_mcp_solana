@@ -7,7 +7,7 @@ Transports, set via MCP_TRANSPORT env var:
 Hosted (streamable-http) composition, outermost first:
   AuthMiddleware (only when AUTH_ENABLED=true) -> RateLimitMiddleware -> MCP app
 The MCP app also serves the OAuth discovery routes (always, so clients can
-learn the auth configuration) and GET /healthz.
+learn the auth configuration) and GET /healthz (also /health: Cloud Run reserves /healthz).
 
 Lifecycle:
   startup  -> VannaContext.startup() -> SolanaClient connected
@@ -331,6 +331,8 @@ for _path, _handler in (
     ("/.well-known/oauth-authorization-server", _authorization_server_metadata),
     ("/.well-known/oauth-authorization-server/{resource:path}", _authorization_server_metadata),
     ("/healthz", _healthz),
+    # Cloud Run's front end answers paths ending in "z" itself (404), so hosted checks use /health.
+    ("/health", _healthz),
 ):
     mcp.custom_route(_path, methods=["GET"])(_handler)
 

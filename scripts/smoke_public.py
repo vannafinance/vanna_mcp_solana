@@ -153,7 +153,7 @@ async def main() -> int:
         check("discovery: JWKS published", jwks.status_code == 200 and jwks.json().get("keys"), jwks.status_code)
         anon = await http.post(f"{BASE}/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check("an anonymous call to /mcp is refused", anon.status_code == 401, anon.status_code)
-        health = await http.get(f"{BASE}/healthz")
+        health = await http.get(f"{BASE}/health")
         check("health endpoint", health.status_code == 200, health.status_code)
 
     outcome: dict[str, Any] = {}

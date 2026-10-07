@@ -57,7 +57,10 @@ is present, and no first-party client or dev-only fork tool is configured.
 (revision `00001-d6v`, image `mcp-solana:c72e93e`) started cleanly, but granting that invoker failed with
 `FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted customer`: the organization's
 domain-restricted-sharing policy (`constraints/iam.allowedPolicyMemberDomains`) forbids `allUsers` in `solana-mcp`. Until the
-service is publicly invokable, no MCP client can reach it. Resolve it with the organization admin, in this order of preference:
+service is publicly invokable, no MCP client can reach it.
+
+**Resolved 2026-10-07:** the organization admin gave `solana-mcp` a project exception, and the `allUsers` invoker was added
+with option 1 below. If the service is ever recreated in another project, the same choices apply, in this order of preference:
 
 1. Give the project `solana-mcp` an exception to that constraint (Organization Policies, project override: allow all values),
    then `gcloud run services add-iam-policy-binding vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --member=allUsers --role=roles/run.invoker`.
@@ -74,6 +77,12 @@ python scripts/smoke_public.py https://vanna-mcp-solana-public-398807408840.us-c
 It performs the whole path with a throwaway wallet (discovery, wallet-signature login, tool list, scoping, faucet, a
 signed Earn supply, the safety refusals, a lever plan and its unwind, refresh-token rotation and reuse revocation) and
 exits non-zero on the first failure. Run it once after every deploy.
+
+Health checks use `/health`: Cloud Run's front end answers any path ending in `z` itself, so `/healthz` returns Google's
+404 on the hosted service (it still works locally).
+
+On the fork, a swap can fail simulation because a DEX pool's clone has drifted from mainnet; the swap builders re-clone
+those pools and rebuild by themselves (`vanna_core/fork_heal.py`, logged as `fork heal: reset N stale DEX account(s)`).
 
 Then connect a real client:
 
