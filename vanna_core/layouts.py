@@ -138,13 +138,10 @@ EMPTY_ASSET_INDEX = 65_535
 # TOOLS_CATALOGUE.md §1/§6.1.
 MARGIN_ACCOUNT_MAX_ASSETS = 24
 
-MARGIN_ACCOUNT_MAX_VENUES = 6
-
-VenueLegs = borsh.CStruct(
-    "asset_index" / borsh.U16,
-    "legs" / borsh.U64,
-)
-
+# MarginAccount ends after `bump` here on purpose. Two program builds are live on the fork: vanna-credit-layer `main`
+# appends `venue_legs` (6 x {u16 asset_index, u64 legs}) and 36 reserved bytes (252-byte accounts), while
+# `feature/phoenix-titan` (deployed to the fork on 2026-10-06) removed `venue_legs` (184-byte accounts). The MCP reads
+# nothing after `bump`, and parsing ignores trailing bytes, so this one layout decodes both.
 MarginAccount = borsh.CStruct(
     "authority" / PUBKEY,
     "status" / borsh.U8,
@@ -154,8 +151,6 @@ MarginAccount = borsh.CStruct(
     "debt_asset_indexes" / borsh.U16[MARGIN_ACCOUNT_MAX_ASSETS],
     "event_sequence" / borsh.U64,
     "bump" / borsh.U8,
-    "venue_legs" / VenueLegs[MARGIN_ACCOUNT_MAX_VENUES],  # per venue: the bitmap of legs (markets) that may hold exposure
-    "reserved" / borsh.U8[36],
 )
 
 DebtPosition = borsh.CStruct(

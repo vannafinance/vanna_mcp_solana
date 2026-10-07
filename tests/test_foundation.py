@@ -41,10 +41,19 @@ def test_asset_config_layout_size_matches_live_account():
 
 
 def test_margin_account_layout_has_24_slots_each():
-    # authority(32) + status(1) + collateral_count(1) + debt_count(1)
-    # + 2*24*2 (u16 arrays) + event_sequence(8) + bump(1) + reserved(96)
-    expected = 32 + 1 + 1 + 1 + 24 * 2 * 2 + 8 + 1 + 96
-    assert MarginAccount.sizeof() == expected
+    # authority(32) + status(1) + collateral_count(1) + debt_count(1) + 2*24*2 (u16 arrays) + event_sequence(8) + bump(1).
+    # The layout stops at `bump`: what follows differs between program builds (see layouts.MarginAccount).
+    assert MarginAccount.sizeof() == 32 + 1 + 1 + 1 + 24 * 2 * 2 + 8 + 1
+
+
+def test_margin_account_decodes_both_program_builds():
+    # 184-byte accounts (feature/phoenix-titan, no venue_legs) and 252-byte accounts (main: venue_legs + reserved).
+    collateral = (1).to_bytes(2, "little") + (2).to_bytes(2, "little") + (65535).to_bytes(2, "little") * 22
+    debt = (0).to_bytes(2, "little") + (65535).to_bytes(2, "little") * 23
+    head = bytes(32) + bytes([0, 2, 1]) + collateral + debt + (7).to_bytes(8, "little") + bytes([254])
+    for tail in (bytes(36), bytes(6 * 10 + 36)):
+        m = MarginAccount.parse(head + tail)
+        assert (m.collateral_count, m.debt_count, list(m.collateral_asset_indexes[:2]), m.event_sequence, m.bump) == (2, 1, [1, 2], 7, 254)
 
 
 def test_protocol_config_layout_size():

@@ -11,9 +11,11 @@ positions) stay static. The table is created and frozen once by `scripts/create_
 builds use it when `PROTOCOL_LOOKUP_TABLES` names it, and skip it if it is missing (for example after a fork
 reset), so a stale setting can never break a build.
 
-Only margin swaps opt in (`build_write_envelope(use_protocol_lookup_tables=True)`). An account loaded from a
-lookup table is not indexed by the fork's getSignaturesForAddress, and Earn history finds a lender's
-deposits by the reserve address; loading reserves in Earn transactions made earned-interest read 0.
+Margin transactions opt in (`build_write_envelope(use_protocol_lookup_tables=True)`): margin swaps, Kamino farm,
+and every deposit / withdraw / borrow / repay (`MarginTradeContract._envelope`). Earn transactions do not: an account
+loaded from a lookup table is not indexed by the fork's getSignaturesForAddress, and Earn history finds a lender's
+deposits by the reserve address; loading reserves in Earn transactions made earned-interest read 0. Margin history is
+found by the margin account's own address, which is never in the table.
 """
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ DEFAULTS = {
     "SIGN_BASE_URL": f"http://127.0.0.1:{port}",
     "AUTH_ENABLED": "false",
     # Lets margin swaps into JupSOL / JitoSOL fit in one transaction (the staging fork's frozen table; skipped if absent).
-    "PROTOCOL_LOOKUP_TABLES": "Df9ZBRDkqd2ReYWP4HjRdn4V9u9PiQp1AgyWGVEH7H66",
+    "PROTOCOL_LOOKUP_TABLES": "GKZhWsASwn94fgRNXxbGzfheXd8ZhyR8LpXc6eJv9Prg",
 }
 for key, value in DEFAULTS.items():
     os.environ.setdefault(key, value)

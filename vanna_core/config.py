@@ -133,6 +133,12 @@ class VannaSettings(BaseSettings):
     # one transaction; empty = build without it (a missing table is skipped, never fatal). See protocol_alt.py.
     protocol_lookup_tables: str = ""
 
+    # Whether the program's `margin_execute` still takes a `venue_account` (the GMTrade build, vanna-credit-layer `main`).
+    # The fork runs `feature/phoenix-titan` since 2026-10-06, which removed it: sending it shifts every later account and
+    # the program fails with IncompletePositionAccounts (6024). False = the fork's current program; set true if the fork
+    # goes back to a build with `venue_account`.
+    margin_execute_venue_account: bool = False
+
     # Health-factor threshold — informational only. The actual on-chain rule
     # is BALANCE_TO_BORROW_THRESHOLD_WAD, a hardcoded 1.10 program constant
     # (TOOLS_CATALOGUE.md §2.4); this field must never be read as if it could

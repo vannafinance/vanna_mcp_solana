@@ -77,6 +77,17 @@ class MarginTradeContract:
     def margin_address(self, authority: Pubkey) -> Pubkey:
         return margin_pda(authority, self._client.program_id)[0]
 
+    async def _envelope(self, *args, **kwargs) -> WriteEnvelope:
+        """Every margin transaction loads the protocol-wide keys from the protocol lookup table.
+
+        A borrow or withdrawal names every position's config, mint, token program and oracle accounts for the health
+        check, so an account holding several assets (a Token-2022 xStock adds the most) overflowed Solana's 1232-byte
+        packet: a borrow against GOOGLx measured 1276 bytes. Margin history is found by the margin account's own
+        address, which is per-user and never in the table, so it is unaffected; Earn transactions (reserve.py) keep
+        building without the table, because Earn history finds deposits by the reserve address.
+        """
+        return await self._client.build_write_envelope(*args, use_protocol_lookup_tables=True, **kwargs)
+
     # -- account lifecycle ----------------------------------------------------
 
     async def create_margin(self, authority: Pubkey) -> WriteEnvelope:
@@ -88,7 +99,7 @@ class MarginTradeContract:
             AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
         ]
         ix = self._client.build_instruction(DISC_CREATE_MARGIN, b"", accounts)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [ix], authority, purpose="user_create_margin",
             summary={"action": "create_margin", "margin_account": str(margin)},
         )
@@ -100,7 +111,7 @@ class MarginTradeContract:
             AccountMeta(margin, is_signer=False, is_writable=True),
         ]
         ix = self._client.build_instruction(DISC_CLOSE_MARGIN, b"", accounts)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [ix], authority, purpose="user_close_margin", summary={"action": "close_margin"}
         )
 
@@ -144,7 +155,7 @@ class MarginTradeContract:
         asset = registry.by_symbol(asset_symbol)
         margin = self.margin_address(authority)
         instructions = self._deposit_collateral_instructions(authority, margin, asset, amount_ui)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             instructions, authority, purpose="user_deposit_collateral",
             summary={"action": "deposit_collateral", "asset": asset.symbol, "amount": str(amount_ui)},
         )
@@ -197,7 +208,7 @@ class MarginTradeContract:
         # a withdrawal to a wallet that has never held this mint needs its
         # destination ATA created first.
         prep = wallet_prep_instructions(payer=authority, owner=authority, mint=mint, token_program=token_program)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [*prep, ix], authority, purpose="user_withdraw_collateral", compute_unit_limit=600_000,
             summary={"action": "withdraw_collateral", "asset": asset.symbol, "amount": str(amount_ui)},
         )
@@ -217,7 +228,7 @@ class MarginTradeContract:
         debt_position, _ = debt_position_pda(margin, Pubkey.from_string(asset.reserve), self._client.program_id)
         ix = self._reclaim_rent_instruction(authority, margin, asset, mint, token_program, margin_vault, debt_position, vault, debt)
         what = "+".join(w for w, on in (("collateral_vault", vault), ("debt_position", debt)) if on)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [ix], authority, purpose="user_reclaim_rent", summary={"action": f"reclaim_rent:{what}", "asset": asset.symbol},
         )
 
@@ -256,7 +267,7 @@ class MarginTradeContract:
         instructions = await self._borrow_instructions(
             authority, margin, asset, amount_ui, registry, margin_decoded, max_debt_shares=max_debt_shares,
         )
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             instructions, authority, purpose="user_borrow", compute_unit_limit=600_000,
             summary={"action": "borrow", "asset": asset.symbol, "amount": str(amount_ui)},
         )
@@ -353,7 +364,7 @@ class MarginTradeContract:
             max_debt_shares=max_debt_shares,
         )
 
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [*deposit_ixs, *borrow_ixs], authority, purpose="deposit_and_borrow", compute_unit_limit=600_000,
             summary={
                 "action": "deposit_and_borrow", "deposit_asset": deposit_asset.symbol,
@@ -473,7 +484,7 @@ class MarginTradeContract:
                 ]
                 args = _u64(0) + bytes([1])  # max_assets=0 (unused when repay_all), repay_all=True
                 instructions.append(self._client.build_instruction(DISC_REPAY_FROM_MARGIN, args, accounts))
-            return await self._client.build_write_envelope(
+            return await self._envelope(
                 instructions, authority, purpose="close_position:repay_all",
                 summary={"action": "close_position", "next_step": "repay", "assets": [r["symbol"] for r in payable_rows]},
             )
@@ -548,7 +559,7 @@ class MarginTradeContract:
         ]
         args = _u64(max_assets) + bytes([1 if repay_all else 0])
         ix = self._client.build_instruction(DISC_REPAY_FROM_MARGIN, args, accounts)
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             [ix], authority, purpose="user_repay_from_margin",
             summary={"action": "repay", "asset": asset.symbol, "repay_all": repay_all, "max_assets": str(max_assets_ui)},
         )
@@ -609,7 +620,7 @@ class MarginTradeContract:
         if repays_everything:
             # The debt position is now empty and inactive: reclaim its rent in the same transaction.
             instructions.append(self._reclaim_rent_instruction(payer, margin, asset, mint, token_program, margin_vault, debt_position, False, True))
-        return await self._client.build_write_envelope(
+        return await self._envelope(
             instructions, payer, purpose="repay_from_wallet", compute_unit_limit=600_000,
             summary={
                 "action": "repay_from_wallet", "asset": asset.symbol, "repay_all": repays_everything,

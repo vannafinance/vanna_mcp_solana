@@ -312,8 +312,8 @@ class SolanaClient:
 
         alt_accounts = list(address_lookup_tables or [])
         # Opt-in per build, not global: an account loaded from a lookup table is not indexed by the fork's
-        # getSignaturesForAddress, and Earn history finds deposits by the reserve address. Only builds that
-        # need the room (margin swaps) load protocol keys; every other transaction is unchanged.
+        # getSignaturesForAddress, and Earn history finds deposits by the reserve address. Margin builds (swaps,
+        # farm, deposit / withdraw / borrow / repay) load protocol keys; Earn transactions do not.
         if use_protocol_lookup_tables and self._settings.protocol_lookup_tables:
             from vanna_core.protocol_alt import load_protocol_tables
 

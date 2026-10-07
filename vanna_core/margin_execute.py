@@ -4,7 +4,8 @@ and health-checked by the oracle agent's prices afterwards. A port of the app's 
 (`lib/solana/exec.ts`) and of `instructions/account_manager/exec.rs` at layer origin/main `465f21a`.
 
 Named accounts: authority, protocol_config, margin_account, integration ["integration", target], target_program,
-validator, venue_asset (null), venue_account (null). Args: `data` (the outside instruction's data),
+validator, venue_asset (null), and venue_account (null) only for the program build that still has it
+(`VannaSettings.margin_execute_venue_account`; the fork's current build, feature/phoenix-titan, removed it). Args: `data` (the outside instruction's data),
 `call_account_count`, `new_assets` (u8: tokens received for the first time).
 
 remaining_accounts, in order:
@@ -101,8 +102,10 @@ async def build_margin_execute_instructions(
         _ro(target_program),
         _ro(validator),
         _ro(client.program_id),  # venue_asset: None (optional account encoded as the program id)
-        _ro(client.program_id),  # venue_account: None
     ]
+    # venue_account exists only in the GMTrade build of the program (see VannaSettings.margin_execute_venue_account).
+    if client.settings.margin_execute_venue_account:
+        named_accounts.append(_ro(client.program_id))  # venue_account: None
     ix_data = MARGIN_EXECUTE_DISC + _borsh_vec_bytes(data) + len(cpi_accounts).to_bytes(2, "little") + bytes([1 if is_new else 0])
     margin_execute = Instruction(
         program_id=client.program_id,
