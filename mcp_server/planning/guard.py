@@ -45,7 +45,8 @@ def step_from_call(tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
     if tool == "vanna_swap" and action in ("margin_swap", "wallet_swap"):
         return {"kind": "write", "op": "swap", "asset": args.get("from_asset"), "amount": args.get("amount"),
                 "slots": {"to_asset": args.get("to_asset"), "slippage_bps": args.get("slippage_bps", risk.DEFAULT_SLIPPAGE_BPS),
-                          "mode": "margin" if action == "margin_swap" else "wallet"}}
+                          "mode": "margin" if action == "margin_swap" else "wallet",
+                          **({"provider": args["provider"]} if args.get("provider") else {})}}
     if tool == "vanna_farm_kamino" and action in ("deposit", "redeem"):
         return {"kind": "write", "op": f"farm_{action}", "asset": args.get("underlying"), "amount": args.get("amount"), "slots": {}}
     return None
@@ -64,6 +65,19 @@ def describe_call(tool: str, args: dict[str, Any]) -> str:
                 f"{args.get('borrow_amount')} {args.get('borrow_asset')} in one transaction")
     if tool == "vanna_margin_trade" and action == "close_position":
         return "Close your margin position (the next step of the unwind)"
+    if tool == "vanna_perps":
+        market = str(args.get("market") or "").upper().removesuffix("-PERP")
+        if action == "register":
+            return "Create your Phoenix trading account (first perps trade only)"
+        if action == "open":
+            usdc = str(args.get("collateral_usdc") or "0")
+            funds = "your Phoenix balance" if usdc in ("0", "0.0") else f"{usdc} USDC from your margin account"
+            return f"Open a {args.get('leverage')}x {args.get('side')} on {market}-PERP with {funds} (Phoenix)"
+        if action == "close":
+            part = "all of" if args.get("fraction") in (None, 1, 1.0) and not args.get("size_usd") else "part of"
+            return f"Close {part} your {market}-PERP position (Phoenix)"
+        if action == "withdraw":
+            return f"Move {args.get('amount_usdc') or 'all your'} USDC from Phoenix back to your margin account"
     return f"{tool.replace('vanna_', '').replace('_', ' ')}: {action}"
 
 

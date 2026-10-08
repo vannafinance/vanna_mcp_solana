@@ -113,6 +113,12 @@ class VannaSettings(BaseSettings):
     # Unauthenticated on the app side today; the secret is sent as a Bearer
     # token once the app hardens it.
     price_keeper_url: str = "https://test.solana.vanna.finance"
+    # Fork only: the app that serves the Phoenix helpers a perps trade needs on a fork (POST /api/perps/phoenix-book to
+    # re-copy a market's book from mainnet and get its live mark; POST /api/perps/phoenix-access to stand in for Phoenix's
+    # onboarding after a trader is registered). Empty = price_keeper_url. Never called off a fork.
+    perps_helper_url: str = ""
+    # Optional USD cap on a perps order's size (collateral x leverage); 0 = none, as in the app.
+    perps_max_action_usd: float = 0.0
     price_keeper_secret: str = ""
     # `cheatcode` refresh source only: Kamino's Scope `OraclePrices` account is copied
     # from mainnet onto the fork - the public RPC is rate limited; set your own for reliability.
@@ -127,6 +133,18 @@ class VannaSettings(BaseSettings):
     # the legacy `quote-api.jup.ag/v6` host.
     jupiter_api_key: str = ""
     jupiter_fork_dexes: str = "Raydium,Raydium CLMM,Raydium CP,Orca V2,Meteora DLMM,Whirlpool"
+
+    # Titan swap API (second swap provider beside Jupiter; vanna-credit-backend lib/solana/server/titan-api.ts).
+    # Without a key every swap is quoted and built on Jupiter only, as on the app's Spot page.
+    titan_api_key: str = ""
+    # Titan's portal (with titan_api_key), or a QuickNode Solana endpoint with the Titan Swap add-on (its token is in
+    # the URL, so no key). Either one being set turns Titan on. "/api/v1" is appended when missing.
+    titan_api_url: str = ""
+    # The fork's frozen clones only serve pool AMMs; prop AMMs (AlphaQ, HumidiFi, SolFi, ...) need state their keepers
+    # update every slot. Same list as the Jupiter routes (and the app's TITAN_FORK_DEXES).
+    titan_fork_dexes: str = "Raydium,Raydium CLMM,Raydium CP,Orca V2,Meteora DLMM,Whirlpool"
+    # Titan's own router only for margin routes: the Vanna validator allows its swap_route_v3 alone.
+    titan_providers: str = "Titan"
 
     # Address lookup table(s) holding the protocol-wide accounts every margin build names (comma-separated).
     # Created and frozen once with scripts/create_protocol_lookup_table.py. Lets large margin swaps fit in
@@ -156,7 +174,7 @@ class VannaSettings(BaseSettings):
     # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
     # after the oracle / whole-account-liquidation program update. The MCP refuses
     # to start if the loaded IDL differs (a pinned-contract safety rule).
-    pinned_idl_sha256: str = "c57af1f19e8fe8ce73535160457ed4116713fd62b4e5a5a6b0f25432c4964a2d"
+    pinned_idl_sha256: str = "0c495e4b037ed928b8575a25747ea2988d5ad0b236598321e7c2cc0a3686df17"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.
     read_cache_ttl_seconds: int = 30

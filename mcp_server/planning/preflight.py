@@ -79,6 +79,7 @@ def humanize(exc_or_text: Any) -> str:
         (("insufficient funds", "insufficientfunds"),"The wallet does not hold enough of that asset (or enough SOL for fees) for this action."),
         (("stalepri", "0x178b", "stale_price", "price_unavailable"), "A price feed is stale right now, so the program refuses to use it. Try again in a minute."),
         (("slippagetoleranceexceeded", "0x1771", "6001"), "The swap price moved past the allowed slippage. Try again for a fresh quote."),
+        (("spendlimitexceeded", "0x17ab"), "The external call would spend more from the margin account than it was allowed to. Try again for a fresh quote."),
         (("would breach", "healthfactor", "0x1790", "unhealthy"), "The action would push the account below the protocol's health limit."),
         (("account_not_found", "accountnotinitialized", "3012"), "There is no margin account yet."),
         (("transaction_too_large", "size limit", "exceeds solana", "too large for one"), "That swap route is too large for one Solana transaction. Try a different pair, or swap in the wallet instead of inside the margin account."),
@@ -361,15 +362,23 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
                 amount = risk.floor_decimals(spend, risk.token_decimals(asset))
         usd = float(amount) * price.usd
         swap_args = {"from_asset": asset, "to_asset": to_asset, "amount": amount, "slippage_bps": slippage}
+        # The provider the user chose (Jupiter or Titan); without one the build takes the better quote.
+        provider = str(slots.get("provider") or "") or None
+        build_args = {**swap_args, **({"provider": provider} if provider else {})}
         try:
-            quote = await internal.call("vanna_swap", action="quote", **swap_args)
-            if risk.num(quote.get("out_amount")) is not None:
-                notes.append(f"Quote: about {quote['out_amount']} {to_asset} (minimum {quote.get('min_out_amount')}).")
+            quote = await internal.call(
+                "vanna_swap", action="quote", authority=wallet, mode="margin" if is_margin_swap else "wallet", **swap_args
+            )
+            chosen = next((p for p in quote.get("providers") or [] if p.get("provider") == provider), None) if provider else None
+            shown = chosen or quote
+            if risk.num(shown.get("out_amount")) is not None:
+                via = f" via {(provider or quote.get('provider') or 'jupiter').capitalize()}"
+                notes.append(f"Quote{via}: about {shown['out_amount']} {to_asset} (minimum {shown.get('min_out_amount')}).")
         except ToolError:
             pass  # the build below is the authoritative route check
         if is_margin_swap:
             try:
-                can = facts.read_can(await internal.call("vanna_swap", action="can_swap", authority=wallet, **swap_args))
+                can = facts.read_can(await internal.call("vanna_swap", action="can_swap", authority=wallet, **build_args))
             except ToolError as exc:
                 return _fail("unavailable", humanize(exc))
             if can is None:
@@ -377,9 +386,9 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
             if not can.allowed:
                 return _fail("risk", humanize(can.reason))
             hf_after_value = can.projected_hf
-            tool, args = "vanna_swap", {"action": "margin_swap", "authority": wallet, **swap_args}
+            tool, args = "vanna_swap", {"action": "margin_swap", "authority": wallet, **build_args}
         else:
-            tool, args = "vanna_swap", {"action": "wallet_swap", "authority": wallet, **swap_args}
+            tool, args = "vanna_swap", {"action": "wallet_swap", "authority": wallet, **build_args}
 
     elif op == "farm_deposit":
         row = health.collateral_row(asset) if health else None

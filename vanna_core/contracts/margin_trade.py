@@ -491,8 +491,14 @@ class MarginTradeContract:
 
         # A fully repaid debt is no longer active on the margin (the repay itself removes it), so there is no
         # "close the debt slot" step any more.
-        if collateral_rows:
-            row = collateral_rows[0]
+        token_rows = [r for r in collateral_rows if not r.get("is_venue")]
+        if not token_rows and collateral_rows:
+            raise ValueError(
+                "Only Phoenix perps are left in this margin account. Close the perps positions and withdraw their USDC "
+                "back to the margin account first; then the account can be closed."
+            )
+        if token_rows:
+            row = token_rows[0]
             balance_ui = math_utils.ui_amount(row["raw_balance"], registry.by_symbol(row["symbol"], allow_unoffered=True).decimals)
             envelope = await self.withdraw_collateral(authority, row["symbol"], balance_ui)
             envelope.summary["next_step"] = "withdraw_collateral"

@@ -362,14 +362,14 @@ class MarginContract:
 
         collateral_assets = await self._resolve_slots(margin.collateral_asset_indexes, registry)
         debt_assets = await self._resolve_slots(margin.debt_asset_indexes, registry)
-        from vanna_core.remaining_accounts import refuse_venue
+        tokens = [a for a in collateral_assets if not a.is_venue]
+        view = await self._reader.view([*tokens, *debt_assets, *(e for e in (extra_assets or []) if not e.is_venue)])
 
-        for asset in collateral_assets:
-            refuse_venue(asset)  # a GMTrade perps position is valued from the oracle's market book, which is not read here
-        view = await self._reader.view([*collateral_assets, *debt_assets, *(extra_assets or [])])
-
+        # The Phoenix venue (perps) is one holding, valued as the oracle does (`vanna_core/phoenix.py`).
         collateral_rows, debt_rows = await asyncio.gather(
-            asyncio.gather(*(self._value_collateral(address, a, view) for a in collateral_assets)),
+            asyncio.gather(
+                *(self._value_venue(address, a, view) if a.is_venue else self._value_collateral(address, a, view) for a in collateral_assets)
+            ),
             asyncio.gather(*(self._value_debt(address, a, view) for a in debt_assets)),
         )
         health = math_utils.calculate_health(
@@ -392,6 +392,47 @@ class MarginContract:
             "price": describe_price(price, view.now),
             "usd_value_nano": usd_value,
             "price_status_bits": price.status,
+        }
+
+    async def _value_venue(self, margin_address: Pubkey, asset: DiscoveredAsset, view: OracleView) -> dict:
+        """The Phoenix venue as one collateral row: the trader's collateral + every position's equity, floored at
+        zero (the oracle's `venue_price`). Its positions ride along under `venue`."""
+        from vanna_core.phoenix import load_phoenix_venue
+        from vanna_core.types import UnpricablePositionError
+
+        venue = await load_phoenix_venue(self._client, margin_address, view.now)
+        if venue is None:
+            raise UnpricablePositionError("This margin account holds Phoenix perps, but Vanna's Phoenix market book was not found.")
+        return {
+            "symbol": asset.symbol,
+            "is_venue": True,
+            "raw_balance": 0,
+            "ui_balance": "0",
+            "usd_value": math_utils.usd_value_ui(venue.value_nano),
+            "price": {"source": "phoenix", "usd": None, "fresh": True, "twap_ok": True, "confidence_ok": True},
+            "venue": {
+                "trader": str(venue.trader_address),
+                "collateral_usd": f"{venue.collateral_usd:.2f}",
+                "withdrawable_now_usdc": f"{venue.withdrawable_now / 1e6:.6f}",
+                "positions": [
+                    {
+                        "market": p.name,
+                        "side": "long" if p.is_long else "short",
+                        "size": f"{p.size_tokens:.6f}",
+                        "size_usd": f"{p.size_usd:.2f}",
+                        "entry_price": f"{p.entry_price:.6f}",
+                        "index_price": f"{p.index_price:.6f}",
+                        "mark_price": f"{p.mark_price:.6f}",
+                        "pnl_usd": f"{p.pnl_usd:.2f}",
+                        "funding_usd": f"{p.funding_usd:.2f}",
+                        "close_fee_usd": f"{p.close_fee_usd:.2f}",
+                        "equity_usd": f"{p.equity_usd:.2f}",
+                    }
+                    for p in venue.positions
+                ],
+            },
+            "usd_value_nano": venue.value_nano,
+            "price_status_bits": ALL_CHECKS,
         }
 
     async def _value_debt(self, margin_address: Pubkey, asset: DiscoveredAsset, view: OracleView) -> dict:

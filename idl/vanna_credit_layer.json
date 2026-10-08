@@ -627,28 +627,6 @@
           }
         },
         {
-          "name": "settle_asset",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  115,
-                  115,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "settle_asset.mint",
-                "account": "AssetConfig"
-              }
-            ]
-          }
-        },
-        {
           "name": "oracle"
         },
         {
@@ -1692,11 +1670,6 @@
               }
             ]
           }
-        },
-        {
-          "name": "venue_account",
-          "writable": true,
-          "optional": true
         }
       ],
       "args": [
@@ -1755,9 +1728,84 @@
               }
             ]
           }
+        },
+        {
+          "name": "venue_asset",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "venue_asset.mint",
+                "account": "AssetConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "integration",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  103,
+                  114,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "integration.program_id",
+                "account": "Integration"
+              }
+            ]
+          }
+        },
+        {
+          "name": "target_program",
+          "optional": true
+        },
+        {
+          "name": "validator",
+          "optional": true
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "calls",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "VenueCall"
+              }
+            }
+          }
+        },
+        {
+          "name": "new_assets",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "public_refresh_reserve",
@@ -1799,306 +1847,6 @@
         }
       ],
       "args": []
-    },
-    {
-      "name": "public_venue_settle",
-      "discriminator": [
-        2,
-        249,
-        207,
-        219,
-        167,
-        99,
-        179,
-        111
-      ],
-      "accounts": [
-        {
-          "name": "caller",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "protocol_config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  116,
-                  111,
-                  99,
-                  111,
-                  108
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "margin_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  109,
-                  97,
-                  114,
-                  103,
-                  105,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "margin_account.authority",
-                "account": "MarginAccount"
-              }
-            ]
-          }
-        },
-        {
-          "name": "venue_asset",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  115,
-                  115,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "venue_asset.mint",
-                "account": "AssetConfig"
-              }
-            ]
-          }
-        },
-        {
-          "name": "settle_asset",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  115,
-                  115,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "settle_mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "settle_mint"
-        },
-        {
-          "name": "venue_account",
-          "writable": true
-        },
-        {
-          "name": "idle",
-          "writable": true
-        },
-        {
-          "name": "margin_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "margin_account"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "settle_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "oracle"
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "public_venue_unwind",
-      "discriminator": [
-        87,
-        27,
-        66,
-        84,
-        72,
-        200,
-        163,
-        189
-      ],
-      "accounts": [
-        {
-          "name": "caller",
-          "signer": true
-        },
-        {
-          "name": "margin_account",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  109,
-                  97,
-                  114,
-                  103,
-                  105,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "margin_account.authority",
-                "account": "MarginAccount"
-              }
-            ]
-          }
-        },
-        {
-          "name": "venue_asset",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  115,
-                  115,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "venue_asset.mint",
-                "account": "AssetConfig"
-              }
-            ]
-          }
-        },
-        {
-          "name": "integration",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  116,
-                  101,
-                  103,
-                  114,
-                  97,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "target_program"
-              }
-            ]
-          }
-        },
-        {
-          "name": "target_program"
-        },
-        {
-          "name": "validator",
-          "relations": [
-            "integration"
-          ]
-        }
-      ],
-      "args": [
-        {
-          "name": "data",
-          "type": "bytes"
-        },
-        {
-          "name": "call_account_count",
-          "type": "u16"
-        }
-      ]
     },
     {
       "name": "user_borrow",
@@ -3381,32 +3129,6 @@
         178,
         9
       ]
-    },
-    {
-      "name": "VenueSettled",
-      "discriminator": [
-        200,
-        98,
-        120,
-        97,
-        18,
-        63,
-        203,
-        107
-      ]
-    },
-    {
-      "name": "VenueUnwound",
-      "discriminator": [
-        195,
-        163,
-        6,
-        77,
-        230,
-        43,
-        63,
-        109
-      ]
     }
   ],
   "errors": [
@@ -3678,7 +3400,7 @@
     {
       "code": 6053,
       "name": "VenueAssetNotTransferable",
-      "msg": "A venue asset is held only through the margin's venue account"
+      "msg": "A venue position cannot be deposited or withdrawn as a token"
     },
     {
       "code": 6054,
@@ -3692,23 +3414,23 @@
     },
     {
       "code": 6056,
-      "name": "InvalidVenueAccount",
-      "msg": "Account is not the margin's venue account or its token account"
+      "name": "VenuePositionsOpen",
+      "msg": "The margin still holds an open position or collateral at the venue"
     },
     {
       "code": 6057,
-      "name": "VenuePositionsOpen",
-      "msg": "The venue account still holds an open position or a pending order"
-    },
-    {
-      "code": 6058,
       "name": "NotProtocolConfig",
       "msg": "Account is not Vanna's protocol config"
     },
     {
-      "code": 6059,
+      "code": 6058,
       "name": "NothingToReclaim",
       "msg": "Pass the empty vault or debt position to close"
+    },
+    {
+      "code": 6059,
+      "name": "SpendLimitExceeded",
+      "msg": "External call spent more from a margin vault than its permit allows"
     }
   ],
   "types": [
@@ -3815,10 +3537,6 @@
           },
           {
             "name": "oracle",
-            "type": "pubkey"
-          },
-          {
-            "name": "settle_mint",
             "type": "pubkey"
           },
           {
@@ -4291,6 +4009,10 @@
             "type": "u8"
           },
           {
+            "name": "venue_calls",
+            "type": "u8"
+          },
+          {
             "name": "event_sequence",
             "type": "u64"
           },
@@ -4419,19 +4141,6 @@
           {
             "name": "bump",
             "type": "u8"
-          },
-          {
-            "name": "venue_legs",
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "VenueLegs"
-                  }
-                },
-                6
-              ]
-            }
           },
           {
             "name": "reserved",
@@ -4908,17 +4617,17 @@
       }
     },
     {
-      "name": "VenueLegs",
+      "name": "VenueCall",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "asset_index",
-            "type": "u16"
+            "name": "data",
+            "type": "bytes"
           },
           {
-            "name": "legs",
-            "type": "u64"
+            "name": "account_count",
+            "type": "u16"
           }
         ]
       }
@@ -4939,82 +4648,6 @@
           {
             "name": "asset_index",
             "type": "u16"
-          },
-          {
-            "name": "settle_mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "timestamp",
-            "type": "i64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "VenueSettled",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "margin_account",
-            "type": "pubkey"
-          },
-          {
-            "name": "venue",
-            "type": "pubkey"
-          },
-          {
-            "name": "swept",
-            "type": "u64"
-          },
-          {
-            "name": "lamports_refunded",
-            "type": "u64"
-          },
-          {
-            "name": "open_legs",
-            "type": "u64"
-          },
-          {
-            "name": "closed",
-            "type": "bool"
-          },
-          {
-            "name": "event_sequence",
-            "type": "u64"
-          },
-          {
-            "name": "timestamp",
-            "type": "i64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "VenueUnwound",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "margin_account",
-            "type": "pubkey"
-          },
-          {
-            "name": "venue",
-            "type": "pubkey"
-          },
-          {
-            "name": "caller",
-            "type": "pubkey"
-          },
-          {
-            "name": "program_id",
-            "type": "pubkey"
-          },
-          {
-            "name": "health_factor_wad",
-            "type": "u128"
           },
           {
             "name": "timestamp",

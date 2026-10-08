@@ -48,8 +48,11 @@ TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCX
 MAX_TABLE_ADDRESSES = 256
 
 
-async def protocol_lookup_addresses(program_id: Pubkey, registry: AssetRegistry, settings) -> list[Pubkey]:
-    """Every protocol-wide key a margin build may name, de-duplicated, in a stable order."""
+async def protocol_lookup_addresses(
+    program_id: Pubkey, registry: AssetRegistry, settings, extra: list[Pubkey] | None = None
+) -> list[Pubkey]:
+    """Every protocol-wide key a margin build may name, de-duplicated, in a stable order. `extra` appends the venue
+    and second-swap-provider keys (`phoenix.venue_lookup_addresses`: Phoenix, Ember, Titan)."""
     keys: list[Pubkey] = [
         program_id,
         protocol_config_pda(program_id)[0],
@@ -82,6 +85,7 @@ async def protocol_lookup_addresses(program_id: Pubkey, registry: AssetRegistry,
         keys.extend(Pubkey.from_string(k) for k in asset.oracle.accounts())
     for receipt in KAMINO_RECEIPTS:
         keys += [receipt.reserve_pubkey, Pubkey.from_string(receipt.liquidity_vault), receipt.collateral_mint_pubkey]
+    keys += extra or []
 
     seen: set[Pubkey] = set()
     ordered: list[Pubkey] = []

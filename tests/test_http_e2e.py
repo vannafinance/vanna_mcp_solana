@@ -152,9 +152,9 @@ async def test_health_and_tool_list(server_url, client):
         "vanna_protocol_info", "vanna_oracle", "vanna_earn_market", "vanna_earn_position", "vanna_earn_write",
         "vanna_account", "vanna_margin_status", "vanna_margin_trade", "vanna_wallet", "vanna_history",
         "vanna_farm_overview", "vanna_farm_kamino", "vanna_swap", "vanna_sign",
-        "vanna_plan", "vanna_risk", "vanna_portfolio",
+        "vanna_plan", "vanna_risk", "vanna_portfolio", "vanna_perps",
     }
-    assert tools == expected  # 14 dispatchers + plan/risk/portfolio; the dev-only vanna_fork is off by default
+    assert tools == expected  # 14 dispatchers + plan/risk/portfolio + perps; the dev-only vanna_fork is off by default
 
 
 async def test_unknown_session_is_404_so_the_client_rehandshakes(client):

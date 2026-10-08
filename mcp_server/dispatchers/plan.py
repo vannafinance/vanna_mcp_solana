@@ -46,6 +46,8 @@ async def _normalize_custom(wallet: str, raw_steps: list[dict[str, Any]]) -> tup
         if op == "swap":
             slots = {"to_asset": s.get("to_asset"), "mode": "margin" if s.get("source") == "margin" else "wallet",
                      "slippage_bps": int(s.get("slippage_bps") or risk.DEFAULT_SLIPPAGE_BPS)}
+            if s.get("provider") in ("jupiter", "titan"):
+                slots["provider"] = s["provider"]
         if op == "repay":
             slots = {"source": "margin" if s.get("source") == "margin" else "wallet"}
         if isinstance(amount, str) and amount.strip().lower() in ("all", "max", "maximum"):
@@ -116,7 +118,7 @@ async def vanna_plan(
               covers `receive_amount` of `to_asset`; `source` "margin" swaps collateral inside the margin account,
               "wallet" swaps from the wallet.
             "custom" — a chain you composed (at most 8 steps). `steps` is a list of {op, asset, amount, to_asset?,
-              source?}: op is one of create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap,
+              source?, provider?}: provider ("jupiter" | "titan") picks a swap's route (omitted = the better quote); op is one of create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap,
               farm_deposit, farm_redeem, close_account, report. `amount` is an exact decimal string, "all", a percent
               like "50%", or for swaps "out:100" (receive at least 100). repay `source` is "wallet" or "margin".
             "status" — the plan's state and each step's (pending, built, submitted, confirmed, skipped, failed,

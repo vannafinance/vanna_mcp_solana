@@ -65,7 +65,9 @@ async def main() -> None:
     client = SolanaClient(settings)
     registry = AssetRegistry(client)
     await registry.load()
-    addresses = await protocol_lookup_addresses(client.program_id, registry, settings)
+    from vanna_core.phoenix import venue_lookup_addresses
+
+    addresses = await protocol_lookup_addresses(client.program_id, registry, settings, await venue_lookup_addresses(client))
     print(f"{len(addresses)} protocol addresses")
 
     async with AsyncClient(settings.solana_rpc_url, commitment=Confirmed) as rpc:

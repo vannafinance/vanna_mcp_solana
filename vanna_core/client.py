@@ -228,6 +228,26 @@ class SolanaClient:
                 out[str(address)] = None if value is None else (str(value.owner), bytes(value.data))
         return out
 
+    async def get_multiple_accounts_sliced(
+        self, addresses: list[Pubkey], offset: int, length: int
+    ) -> dict[str, "tuple[str, bytes] | None"]:
+        """Like `get_multiple_accounts_raw`, but only bytes `[offset, offset + length)` of each account: for large
+        accounts (Phoenix orderbooks are ~1.2 MB, the perp asset map ~1.6 MB) of which only a header is needed."""
+        from solana.rpc.types import DataSliceOpts
+
+        out: dict[str, tuple[str, bytes] | None] = {}
+        for i in range(0, len(addresses), 100):
+            chunk = addresses[i : i + 100]
+            resp = await self._rpc.get_multiple_accounts(
+                chunk, encoding="base64", data_slice=DataSliceOpts(offset=offset, length=length)
+            )
+            for address, value in zip(chunk, resp.value, strict=True):
+                out[str(address)] = None if value is None else (str(value.owner), bytes(value.data))
+        return out
+
+    async def get_slot(self) -> int:
+        return (await self._rpc.get_slot()).value
+
     async def account_exists(self, address: Pubkey) -> bool:
         resp = await self._rpc.get_account_info(address, encoding="base64")
         return resp.value is not None

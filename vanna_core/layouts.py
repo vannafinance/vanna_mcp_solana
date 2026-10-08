@@ -58,13 +58,15 @@ OracleConfig = borsh.CStruct(
     "max_confidence_bps" / borsh.U16,
 )
 
-# vanna_credit_layer/src/state/asset_config.rs::AssetConfig (221 bytes incl. the 8-byte discriminator).
-# `kind` is a fieldless enum (u8): 0 = Token, 1 = Venue (GMTrade, held through the margin's venue account).
+# vanna_credit_layer/src/state/asset_config.rs::AssetConfig.
+# `kind` is a fieldless enum (u8): 0 = Token, 1 = Venue (Phoenix perps, held through the margin's Phoenix trader).
 # `oracle` is the PROGRAM ID of the oracle agent that values this asset (not a price config).
+# Two sizes live on chain: the phoenix-titan build dropped `settle_mint` (189 bytes incl. the 8-byte discriminator);
+# accounts created before it keep the GMTrade-era layout (221 bytes). Both decode; `parse_asset_config` picks by size.
 ASSET_KIND_TOKEN = 0
 ASSET_KIND_VENUE = 1
-AssetConfig = borsh.CStruct(
-    "mint" / PUBKEY,  # a token's mint, or a venue's key (GMTrade: its store)
+_ASSET_CONFIG_HEAD = (
+    "mint" / PUBKEY,  # a token's mint, or a venue's key (Phoenix: its exchange)
     "token_program" / PUBKEY,
     "reserve" / PUBKEY,
     "max_collateral_per_margin" / borsh.U64,
@@ -78,11 +80,23 @@ AssetConfig = borsh.CStruct(
     "bump" / borsh.U8,
     "kind" / borsh.U8,
     "oracle" / PUBKEY,
-    "settle_mint" / PUBKEY,  # a venue's settle token (USDC for GMTrade); all-zero for a token
+)
+AssetConfig = borsh.CStruct(*_ASSET_CONFIG_HEAD, "reserved" / borsh.U8[32])
+AssetConfigLegacy = borsh.CStruct(
+    *_ASSET_CONFIG_HEAD,
+    "settle_mint" / PUBKEY,  # GMTrade's settle token; gone from the current build
     "reserved" / borsh.U8[32],
 )
 
-ASSET_CONFIG_ACCOUNT_LEN = 221  # 8-byte discriminator + 213-byte body
+ASSET_CONFIG_ACCOUNT_LEN = 189  # 8-byte discriminator + 181-byte body (current build)
+ASSET_CONFIG_LEGACY_ACCOUNT_LEN = 221  # 8-byte discriminator + 213-byte body (accounts created before phoenix-titan)
+ASSET_CONFIG_ACCOUNT_LENS = (ASSET_CONFIG_ACCOUNT_LEN, ASSET_CONFIG_LEGACY_ACCOUNT_LEN)
+
+
+def parse_asset_config(data: bytes):
+    """Decode an AssetConfig account (discriminator included) of either on-chain size."""
+    layout = AssetConfigLegacy if len(data) == ASSET_CONFIG_LEGACY_ACCOUNT_LEN else AssetConfig
+    return layout.parse(data[8:])
 
 # vanna_oracle/src/tokens.rs: the oracle agent's PriceBook (zero-copy account, seed `price_book`, owned by
 # `vanna_oracle`): discriminator (8) | bump u8 | count u8 | padding [2] | 32 x PriceSource. A PriceSource is

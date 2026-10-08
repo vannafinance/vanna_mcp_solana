@@ -35,7 +35,7 @@ Surfpool fork. (`PORT=8765` to change the port; any value you set in the environ
 claude mcp add --transport http vanna-solana http://127.0.0.1:8000/mcp
 ```
 
-Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 17 tools. Or skip step 1 and let Claude Code start
+Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 18 tools. Or skip step 1 and let Claude Code start
 it for you over stdio (it serves the same pages on `127.0.0.1:8000`):
 
 ```powershell
@@ -104,7 +104,7 @@ With `SAFETY_LAYER=true` (always on in the public connector) every write is pre-
 - **No custody**: only the user's wallet signs; the server verifies the signature and relays.
 
 The model is also given the Copilot's firewall as instructions (domain limits, refusals for liquidation, admin, arbitrary
-programs, perps/shorts, other liquidity, unknown tokens, other wallets, and conditional or standing orders; never invent a
+programs, spot shorts and perps other than Phoenix, other liquidity, unknown tokens, other wallets, and conditional or standing orders; never invent a
 number; never claim success before confirmation). Those refusals about *language* can only be instructions; the ones
 about *money* are enforced above.
 

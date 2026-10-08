@@ -35,9 +35,16 @@ def test_reserve_layout_size_matches_live_account():
 
 
 def test_asset_config_layout_size_matches_live_account():
-    # 221-byte live account (vanna_credit_layer, verified on the fork) = 8-byte discriminator + 213-byte body
-    # (the OracleConfig-based layout; the pre-oracle-rework account was 258 bytes).
-    assert AssetConfig.sizeof() == 221 - 8
+    # The phoenix-titan build dropped `settle_mint`: 189 bytes = 8-byte discriminator + 181-byte body. Accounts created
+    # before it keep the 221-byte layout (verified on the fork, 2026-10-07); both decode by size.
+    from vanna_core.layouts import AssetConfigLegacy, parse_asset_config
+
+    assert AssetConfig.sizeof() == 189 - 8
+    assert AssetConfigLegacy.sizeof() == 221 - 8
+    head = bytes(8) + bytes(32 * 3) + (7).to_bytes(8, "little")
+    for size in (189, 221):
+        data = head + bytes(size - len(head))
+        assert parse_asset_config(data).max_collateral_per_margin == 7
 
 
 def test_margin_account_layout_has_24_slots_each():
@@ -277,7 +284,15 @@ async def test_registry_caches_discovery_and_does_not_retry_get_program_accounts
 def test_product_scope_is_the_apps_tokens_and_their_receipts():
     from types import SimpleNamespace
 
-    from vanna_core.assets import KAMINO_RECEIPTS, PRODUCT_SYMBOLS, VENUE_SYMBOLS, collateral_only_symbols, is_offered, symbol_decimals
+    from vanna_core.assets import (
+        KAMINO_RECEIPTS,
+        NAMED_NOT_OFFERED,
+        PRODUCT_SYMBOLS,
+        VENUE_SYMBOLS,
+        collateral_only_symbols,
+        is_offered,
+        symbol_decimals,
+    )
 
     assert PRODUCT_SYMBOLS == {"SOL", "USDC", "USDT", "JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx", "GOOGLx", "AAPLx"}
     for asset in ASSETS:
@@ -286,7 +301,8 @@ def test_product_scope_is_the_apps_tokens_and_their_receipts():
         assert is_offered(SimpleNamespace(symbol=receipt.symbol, mint=receipt.collateral_mint, is_venue=False))
     for mint, symbol in EXTRA_ASSET_SYMBOLS.items():
         offered = is_offered(SimpleNamespace(symbol=symbol, mint=mint, is_venue=symbol in VENUE_SYMBOLS))
-        assert offered is (symbol not in VENUE_SYMBOLS), symbol
+        # Venues (Phoenix, GMTrade) and phUSD (Phoenix collateral in transit) are named for reads, never offered.
+        assert offered is (symbol not in VENUE_SYMBOLS | NAMED_NOT_OFFERED), symbol
     # A registered asset nobody named is not offered.
     assert not is_offered(SimpleNamespace(symbol="asset#42", mint=Pubkey.new_unique(), is_venue=False))
     assert set(collateral_only_symbols()) == {"JitoSOL", "JupSOL", "JupUSD", "NVDAx", "TSLAx", "GOOGLx", "AAPLx"}

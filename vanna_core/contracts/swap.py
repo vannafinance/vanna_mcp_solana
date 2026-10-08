@@ -1,4 +1,9 @@
-"""Jupiter swaps — margin-account (`margin_execute`) and plain wallet-to-wallet.
+"""Swaps through Jupiter or Titan — margin-account (`margin_execute`) and plain wallet-to-wallet.
+
+Two providers, like the app's Spot page (`lib/solana/aggregator.ts`): `quote` returns both providers' quotes and marks
+the larger output; every build takes `provider` ("jupiter" | "titan"), and with none given uses the larger output.
+Titan is skipped when the server has no TITAN_API_KEY or there is no wallet to build for (Titan builds per address).
+
 Backs `vanna_swap` (TOOLS_CATALOGUE.md §3.11). Verified against
 `vanna-credit-backend/lib/solana/exec.ts::executeMarginSwap` and `swap.ts`'s
 `executeWalletSwap` (2026-09-28) for the exact request shapes, and against
@@ -11,7 +16,10 @@ aren't offered here.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
+from typing import Literal
 
 from solders.compute_budget import set_compute_unit_limit
 from solders.hash import Hash
@@ -24,13 +32,24 @@ from vanna_core import math_utils
 from vanna_core.assets import JUPITER_V6_PROGRAM_ID, AssetRegistry
 from vanna_core.client import SolanaClient
 from vanna_core.contracts.jupiter import ALLOWED_SELECTORS, JupiterClient, decode_jupiter_instruction, fetch_lookup_tables
+from vanna_core.contracts.titan import (
+    TitanClient,
+    TitanQuote,
+    TitanUnavailableError,
+    margin_swap_call,
+    missing_atlas_accounts,
+    to_instruction,
+)
 from vanna_core.envelope import SimulationOutcome, WriteEnvelope
 from vanna_core.fork_heal import MAX_SWAP_HEALS, heal_stale_dex_pools, looks_stale, unsigned_transaction
 from vanna_core.margin_execute import EXEC_COMPUTE_UNITS, build_margin_execute_instructions
 from vanna_core.pdas import find_associated_token_address, margin_pda
+from vanna_core.phoenix import TITAN_PROGRAM_ID
 from vanna_core.types import ContractCallError
 
 DEFAULT_SLIPPAGE_BPS = 100  # 1%, matches the app's own default
+
+logger = logging.getLogger(__name__)
 
 MAX_TX_BYTES = 1232  # Solana packet limit for one serialized transaction
 MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
@@ -40,6 +59,9 @@ MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 # The core program also runs out of heap on long routes next to the position and oracle segments, so the
 # app asks Jupiter for at most 20 accounts (`MARGIN_SWAP_MAX_ACCOUNTS`); this list ends there too.
 MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
+
+Provider = Literal["jupiter", "titan"]
+PROVIDERS: tuple[str, ...] = ("jupiter", "titan")
 
 
 def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute_unit_limit: int | None, program_id: Pubkey | None = None) -> bool:
@@ -65,6 +87,64 @@ class SwapContract:
     def __init__(self, client: SolanaClient) -> None:
         self._client = client
         self._jupiter = JupiterClient(client.settings)
+        self._titan = TitanClient(client.settings)
+
+    @staticmethod
+    def _check_provider(provider: str | None) -> None:
+        if provider is not None and provider not in PROVIDERS:
+            raise ValueError(f"provider must be one of {', '.join(PROVIDERS)} (or omitted for the better quote)")
+
+    async def _quotes(
+        self, from_asset, to_asset, raw_amount: int, slippage_bps: int, user_key: str | None, mode: Literal["wallet", "margin"]
+    ) -> tuple[dict | None, TitanQuote | None, str, Exception | None]:
+        """Jupiter's and Titan's quotes side by side (the app's `bestSwapQuote`). Returns (jupiter, titan, titan_status,
+        jupiter_error); titan_status is quoted | no-route | not-configured | no-wallet."""
+
+        async def titan():
+            if not self._titan.configured:
+                return None, "not-configured"
+            if user_key is None:
+                return None, "no-wallet"
+            try:
+                return await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, user_key, slippage_bps, mode), "quoted"
+            except TitanUnavailableError:
+                return None, "not-configured"
+            except Exception:  # noqa: BLE001 - Titan having no route is not an error: Jupiter still quotes
+                return None, "no-route"
+
+        async def jupiter():
+            try:
+                return await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount, slippage_bps), None
+            except Exception as exc:  # noqa: BLE001
+                return None, exc
+
+        (jq, jerr), (tq, status) = await asyncio.gather(jupiter(), titan())
+        return jq, tq, status, jerr
+
+    async def _pick(
+        self,
+        provider: str | None,
+        from_asset,
+        to_asset,
+        raw_amount: int,
+        slippage_bps: int,
+        user_key: str | None,
+        mode: Literal["wallet", "margin"],
+    ) -> tuple[str, TitanQuote | None]:
+        """Which provider builds: the one asked for, else the larger output (Jupiter when Titan can't quote)."""
+        self._check_provider(provider)
+        if provider == "jupiter":
+            return "jupiter", None
+        if provider == "titan":
+            if user_key is None:
+                raise ValueError("A Titan swap needs the wallet it is built for")
+            return "titan", await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, user_key, slippage_bps, mode)
+        jq, tq, _status, jerr = await self._quotes(from_asset, to_asset, raw_amount, slippage_bps, user_key, mode)
+        if tq is not None and (jq is None or tq.out_amount > int(jq["outAmount"])):
+            return "titan", tq
+        if jq is None:
+            raise jerr or ContractCallError("No route found")
+        return "jupiter", None
 
     async def _pair(self, from_symbol: str, to_symbol: str, registry: AssetRegistry):
         from_asset = registry.by_symbol(from_symbol)
@@ -75,7 +155,18 @@ class SwapContract:
             return None, None, "only plain (non-receipt) assets have a Jupiter market"
         return from_asset, to_asset, None
 
-    async def quote(self, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> dict:
+    async def quote(
+        self,
+        from_symbol: str,
+        to_symbol: str,
+        amount_ui,
+        slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+        authority: Pubkey | None = None,
+        mode: Literal["wallet", "margin"] = "wallet",
+    ) -> dict:
+        """Exact-in quotes from Jupiter and (with a key and a wallet) Titan. The top-level fields are the better quote's;
+        `providers` lists every provider that quoted, best first. Titan builds for an address, so it needs `authority`
+        (the wallet; for `mode="margin"` its margin account)."""
         registry = AssetRegistry(self._client)
         await registry.load()
         from_asset, to_asset, error = await self._pair(from_symbol, to_symbol, registry)
@@ -83,21 +174,51 @@ class SwapContract:
             return {"error": "invalid_input", "message": error}
 
         raw_amount = math_utils.base_units(amount_ui, from_asset.decimals)
-        quote = await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount, slippage_bps)
-        out_raw = int(quote["outAmount"])
-        min_out_raw = int(quote.get("otherAmountThreshold", quote["outAmount"]))
+        user_key = None
+        if authority is not None:
+            user_key = str(margin_pda(authority, self._client.program_id)[0]) if mode == "margin" else str(authority)
+        jq, tq, titan_status, jerr = await self._quotes(from_asset, to_asset, raw_amount, slippage_bps, user_key, mode)
+        providers: list[dict] = []
+        if jq is not None:
+            providers.append({
+                "provider": "jupiter",
+                "out_raw": int(jq["outAmount"]),
+                "out_amount": math_utils.ui_amount(int(jq["outAmount"]), to_asset.decimals),
+                "min_out_amount": math_utils.ui_amount(int(jq.get("otherAmountThreshold", jq["outAmount"])), to_asset.decimals),
+                "price_impact_pct": jq.get("priceImpactPct"),
+                "route": [leg.get("swapInfo", {}).get("label") for leg in jq.get("routePlan", [])],
+            })
+        if tq is not None:
+            providers.append({
+                "provider": "titan",
+                "out_raw": tq.out_amount,
+                "out_amount": math_utils.ui_amount(tq.out_amount, to_asset.decimals),
+                "min_out_amount": math_utils.ui_amount(tq.min_out, to_asset.decimals),
+                "price_impact_pct": None,
+                "route": tq.labels or ["Titan"],
+            })
+        if not providers:
+            raise jerr or ContractCallError("No route found")
+        providers.sort(key=lambda p: p["out_raw"], reverse=True)
+        for i, p in enumerate(providers):
+            p.pop("out_raw")
+            p["best"] = i == 0
+        best = providers[0]
         return {
             "from": from_asset.symbol,
             "to": to_asset.symbol,
             "in_amount": math_utils.ui_amount(raw_amount, from_asset.decimals),
-            "out_amount": math_utils.ui_amount(out_raw, to_asset.decimals),
-            "min_out_amount": math_utils.ui_amount(min_out_raw, to_asset.decimals),
-            "price_impact_pct": quote.get("priceImpactPct"),
-            "route": [leg.get("swapInfo", {}).get("label") for leg in quote.get("routePlan", [])],
+            "provider": best["provider"],
+            "out_amount": best["out_amount"],
+            "min_out_amount": best["min_out_amount"],
+            "price_impact_pct": best["price_impact_pct"],
+            "route": best["route"],
             "slippage_bps": slippage_bps,
+            "providers": providers,
+            "titan_status": titan_status,
         }
 
-    async def can_swap(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui) -> dict:
+    async def can_swap(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, provider: str | None = None) -> dict:
         from vanna_core.contracts.margin import MarginContract
 
         margin_contract = MarginContract(self._client)
@@ -118,8 +239,15 @@ class SwapContract:
         if raw_amount > from_row["raw_balance"]:
             return {"allowed": False, "reason": "amount exceeds vault balance"}
 
-        quote = await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount)
-        min_out_raw = int(quote.get("otherAmountThreshold", quote["outAmount"]))
+        chosen, titan_quote = await self._pick(
+            provider, from_asset, to_asset, raw_amount, DEFAULT_SLIPPAGE_BPS,
+            str(margin_pda(authority, self._client.program_id)[0]), "margin",
+        )
+        if titan_quote is not None:
+            min_out_raw = titan_quote.min_out
+        else:
+            quote = await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount)
+            min_out_raw = int(quote.get("otherAmountThreshold", quote["outAmount"]))
 
         from vanna_core import math_utils as mu
 
@@ -160,13 +288,22 @@ class SwapContract:
             "current_health_factor": current.health_factor_str,
             "projected_health_factor": projected.health_factor_str,
             "quoted_min_out": math_utils.ui_amount(min_out_raw, to_asset.decimals),
+            "provider": chosen,
         }
 
-    async def margin_swap(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> WriteEnvelope:
-        return await self._healing(lambda: self._margin_swap_once(authority, from_symbol, to_symbol, amount_ui, slippage_bps))
+    async def margin_swap(
+        self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui,
+        slippage_bps: int = DEFAULT_SLIPPAGE_BPS, provider: str | None = None,
+    ) -> WriteEnvelope:
+        self._check_provider(provider)
+        return await self._healing(lambda: self._margin_swap_once(authority, from_symbol, to_symbol, amount_ui, slippage_bps, provider))
 
-    async def wallet_swap(self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> WriteEnvelope:
-        return await self._healing(lambda: self._wallet_swap_once(owner, from_symbol, to_symbol, amount_ui, slippage_bps))
+    async def wallet_swap(
+        self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui,
+        slippage_bps: int = DEFAULT_SLIPPAGE_BPS, provider: str | None = None,
+    ) -> WriteEnvelope:
+        self._check_provider(provider)
+        return await self._healing(lambda: self._wallet_swap_once(owner, from_symbol, to_symbol, amount_ui, slippage_bps, provider))
 
     async def _healing(self, build) -> WriteEnvelope:
         """Build; on the fork, if the simulation failed because a DEX pool's clone is stale, re-clone the pools the
@@ -184,7 +321,9 @@ class SwapContract:
             envelope = await build()
         return envelope
 
-    async def _margin_swap_once(self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int) -> WriteEnvelope:
+    async def _margin_swap_once(
+        self, authority: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int, provider: str | None = None
+    ) -> WriteEnvelope:
         from vanna_core.contracts.oracle_refresh import maybe_refresh_prices
 
         await maybe_refresh_prices(self._client, self._client.settings)
@@ -196,6 +335,16 @@ class SwapContract:
 
         margin = margin_pda(authority, self._client.program_id)[0]
         raw_amount = math_utils.base_units(amount_ui, from_asset.decimals)
+        chosen, titan_quote = await self._pick(provider, from_asset, to_asset, raw_amount, slippage_bps, str(margin), "margin")
+        if chosen == "titan" and titan_quote is not None:
+            try:
+                return await self._margin_titan(authority, margin, from_asset, to_asset, raw_amount, amount_ui, registry, titan_quote)
+            except ContractCallError as exc:
+                # Titan was only the better quote, not the caller's choice: a route the margin can't run (wrong shape,
+                # or too large for one transaction) falls back to Jupiter. A caller who named Titan gets the error.
+                if provider == "titan":
+                    raise
+                logger.info("Titan margin route unusable (%s); building with Jupiter", exc)
 
         # Jupiter's unconstrained route plus the margin instruction's own accounts (every collateral and debt
         # asset's oracle and vault) can overflow Solana's packet limit - always for routes into liquid-staking
@@ -246,10 +395,46 @@ class SwapContract:
         return await self._client.build_write_envelope(
             instructions, authority, purpose="margin_execute:jupiter_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
             address_lookup_tables=lookup_tables, use_protocol_lookup_tables=True,
-            summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui)},
+            summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui), "provider": "jupiter"},
         )
 
-    async def _wallet_swap_once(self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int) -> WriteEnvelope:
+    async def _margin_titan(
+        self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, raw_amount: int, amount_ui, registry, quote: TitanQuote
+    ) -> WriteEnvelope:
+        """Titan's `swap_route_v3` through `margin_execute` (the app's `executeMarginTitanSwap`): the wallet creates any
+        missing atlas token accounts first, then the margin calls Titan; Titan's own minimum out bounds the price."""
+        from vanna_core.protocol_alt import load_protocol_tables
+
+        data, accounts = margin_swap_call(quote, margin)
+        atlas = await missing_atlas_accounts(self._client, authority, accounts, data[20])
+        instructions = await build_margin_execute_instructions(
+            self._client, authority, margin,
+            target_program=TITAN_PROGRAM_ID, spent=from_asset, received=to_asset,
+            cpi_accounts=accounts, data=data, registry=registry,
+        )
+        lookup_tables = await fetch_lookup_tables(self._client, quote.address_lookup_tables)
+        protocol_tables = await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables)
+        route_keys = {t.key for t in lookup_tables}
+        all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
+        full = [*atlas, *instructions]
+        if not fits_one_transaction(full, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS, self._client.program_id):
+            raise ContractCallError(
+                f"Transaction too large: Titan margin swap {from_asset.symbol}->{to_asset.symbol} exceeds {MAX_TX_BYTES} bytes. "
+                "Try Jupiter, or a smaller amount."
+            )
+        return await self._client.build_write_envelope(
+            full, authority, purpose="margin_execute:titan_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
+            address_lookup_tables=lookup_tables, use_protocol_lookup_tables=True,
+            summary={
+                "action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui),
+                "provider": "titan", "quoted_out": math_utils.ui_amount(quote.out_amount, to_asset.decimals),
+                "min_out": math_utils.ui_amount(quote.min_out, to_asset.decimals),
+            },
+        )
+
+    async def _wallet_swap_once(
+        self, owner: Pubkey, from_symbol: str, to_symbol: str, amount_ui, slippage_bps: int, provider: str | None = None
+    ) -> WriteEnvelope:
         registry = AssetRegistry(self._client)
         await registry.load()
         from_asset, to_asset, error = await self._pair(from_symbol, to_symbol, registry)
@@ -257,6 +442,9 @@ class SwapContract:
             raise ValueError(error)
 
         raw_amount = math_utils.base_units(amount_ui, from_asset.decimals)
+        chosen, titan_quote = await self._pick(provider, from_asset, to_asset, raw_amount, slippage_bps, str(owner), "wallet")
+        if chosen == "titan" and titan_quote is not None:
+            return await self._wallet_titan(owner, from_asset, to_asset, amount_ui, titan_quote)
         quote = await self._jupiter.get_quote(from_asset.mint, to_asset.mint, raw_amount, slippage_bps)
         swap_response = await self._jupiter.get_swap_transaction(quote, str(owner))
 
@@ -298,5 +486,40 @@ class SwapContract:
             last_valid_block_height=last_valid_block_height,
             required_signers=[str(owner)],
             simulation=simulation,
-            summary={"action": "wallet_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui)},
+            summary={"action": "wallet_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui), "provider": "jupiter"},
+        )
+
+    async def _wallet_titan(self, owner: Pubkey, from_asset, to_asset, amount_ui, quote: TitanQuote) -> WriteEnvelope:
+        """Titan's instructions as the wallet signs them (the app's `executeWalletTitanSwap`), with this fork's
+        blockhash and Titan's lookup tables."""
+        tables = await fetch_lookup_tables(self._client, quote.address_lookup_tables)
+        blockhash, last_valid_block_height = await self._client.get_latest_blockhash()
+        message = MessageV0.try_compile(owner, [to_instruction(ix) for ix in quote.instructions], tables, blockhash)
+        unsigned_tx = VersionedTransaction.populate(message, [Signature.default()] * message.header.num_required_signatures)
+        sim = await self._client.simulate_versioned_transaction(unsigned_tx)
+        success = sim.value.err is None
+        error_str = None if success else f"{sim.value.err}\n" + "\n".join((sim.value.logs or [])[-6:])
+        simulation = SimulationOutcome(
+            status="success" if success else "failed",
+            err=error_str,
+            logs=list(sim.value.logs or []),
+            units_consumed=sim.value.units_consumed,
+            context_slot=sim.context.slot if sim.context else None,
+        )
+        return WriteEnvelope.from_single_transaction(
+            cluster=self._client.settings.solana_cluster_label,
+            program_id=str(TITAN_PROGRAM_ID),
+            fee_payer=str(owner),
+            purpose="titan_wallet_swap",
+            unsigned_tx_b64=base64.b64encode(bytes(unsigned_tx)).decode(),
+            blockhash=str(blockhash),
+            last_valid_block_height=last_valid_block_height,
+            required_signers=[str(owner)],
+            simulation=simulation,
+            address_lookup_tables=[str(t.key) for t in tables],
+            summary={
+                "action": "wallet_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui),
+                "provider": "titan", "quoted_out": math_utils.ui_amount(quote.out_amount, to_asset.decimals),
+                "min_out": math_utils.ui_amount(quote.min_out, to_asset.decimals),
+            },
         )

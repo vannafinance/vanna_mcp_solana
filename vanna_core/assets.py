@@ -155,9 +155,13 @@ KAMINO_RECEIPTS: tuple[KaminoReceiptInfo, ...] = (
     ),
 )
 
-# GMTrade (perps) venue: its AssetConfig is keyed by the venue's store, not a mint (`lib/solana/perps-accounts.ts`).
+# GMTrade (perps) venue of the previous program build: its AssetConfig is keyed by the venue's store, not a mint.
 GMTRADE_PROGRAM_ID = Pubkey.from_string("Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6MDucLo")
 GMTRADE_STORE = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
+# Phoenix (perps) venue of the current build: its AssetConfig is keyed by the Phoenix exchange (`vanna_core/phoenix.py`),
+# and phUSD (Phoenix's canonical USDC) is registered as collateral in transit through the margin, outside the token list.
+PHOENIX_EXCHANGE_KEY = "2zskx2iyCvb6Stg7RBZkt1f6MrF4dpYtMG3yMvKwqtUZ"
+PHUSD_MINT_KEY = "PhUsd11YkbjSaWjFncfAAmatntsjx3MgDR9B6g1ks3A"
 
 # Assets the program registers on-chain beyond the catalogue above - display names only (decimals, token program,
 # oracle and lend/borrow capability always come from the AssetConfig and the chain). JupUSD and the Token-2022 xStocks
@@ -165,13 +169,18 @@ GMTRADE_STORE = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
 # what makes it a product asset (see `is_offered`). A venue (GMTrade) is named but never offered as a token.
 EXTRA_ASSET_SYMBOLS: dict[str, str] = {
     GMTRADE_STORE: "GMTrade",
+    PHOENIX_EXCHANGE_KEY: "Phoenix",
+    PHUSD_MINT_KEY: "phUSD",
     "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD": "JupUSD",
     "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": "NVDAx",
     "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB": "TSLAx",
     "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN": "GOOGLx",
     "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": "AAPLx",
 }
-VENUE_SYMBOLS = frozenset({"GMTrade"})
+VENUE_SYMBOLS = frozenset({"GMTrade", "Phoenix"})
+# Named so positions read well, but not product assets: the app registers phUSD outside its token list (it only passes
+# through the margin on the way into or out of Phoenix), so it is never offered for actions.
+NAMED_NOT_OFFERED = frozenset({"phUSD"})
 # Decimals of the named on-chain assets, for the planning maths that runs before the registry is read (the registry's
 # AssetConfig stays the authority for every build). Same values as the app's registry.
 EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8}
@@ -253,7 +262,7 @@ class DiscoveredAsset:
     liquidation_bonus_bps: int
     kind: int = 0  # 0 = Token, 1 = Venue (layouts.ASSET_KIND_*)
     oracle_program: str = ""  # the oracle agent program that values this asset
-    settle_mint: str = ""  # a venue's settle token (USDC for GMTrade)
+    settle_mint: str = ""  # GMTrade-era accounts only; the current build has no settle mint
     in_price_book: bool = True  # False for a token the oracle has no source for (it cannot be priced)
 
     @property
@@ -302,8 +311,7 @@ class AssetRegistry:
 
     async def load(self) -> None:
         from vanna_core.anchor_codec import account_discriminator
-        from vanna_core.layouts import ASSET_CONFIG_ACCOUNT_LEN
-        from vanna_core.layouts import AssetConfig as AssetConfigLayout
+        from vanna_core.layouts import ASSET_CONFIG_ACCOUNT_LENS, parse_asset_config
 
         discriminator = account_discriminator("AssetConfig")
         key = f"{self._client.settings.solana_rpc_url}|{self._client.program_id}"
@@ -315,23 +323,27 @@ class AssetRegistry:
             found = None
             if _gpa_blocked_until.get(key, 0.0) <= now:
                 try:
-                    found = await self._client.get_program_accounts(
-                        self._client.program_id,
-                        data_size=ASSET_CONFIG_ACCOUNT_LEN,
-                        discriminator=discriminator,
-                    )
+                    # Both on-chain sizes: accounts created before the phoenix-titan build keep the longer layout.
+                    scanned: list = []
+                    for size in ASSET_CONFIG_ACCOUNT_LENS:
+                        scanned += await self._client.get_program_accounts(
+                            self._client.program_id,
+                            data_size=size,
+                            discriminator=discriminator,
+                        )
+                    found = scanned
                     self.discovery_mode = "program_accounts"
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("getProgramAccounts unavailable (%s); falling back to known mints", exc)
                     _gpa_blocked_until[key] = now + _GPA_RETRY_AFTER_SECS
             if found is None:
-                found = await self._load_known_mints(ASSET_CONFIG_ACCOUNT_LEN, discriminator)
+                found = await self._load_known_mints(ASSET_CONFIG_ACCOUNT_LENS, discriminator)
                 self.discovery_mode = "known_mints"
             book = await self._load_price_book()
             _registry_cache[key] = (now + _REGISTRY_CACHE_TTL_SECS, self.discovery_mode, found, book)
         sources = parse_price_book(book)
         discovered = [
-            _decode_asset_config(address, AssetConfigLayout.parse(data[8:]), sources) for address, data in found
+            _decode_asset_config(address, parse_asset_config(data), sources) for address, data in found
         ]
         # Stable, product-first ordering: catalogue assets, then receipts, then the rest by index.
         rank = {a.mint: i for i, a in enumerate(ASSETS)}
@@ -355,7 +367,7 @@ class AssetRegistry:
             return None
         return entry[1]
 
-    async def _load_known_mints(self, data_len: int, discriminator: bytes) -> list[tuple[Pubkey, bytes]]:
+    async def _load_known_mints(self, data_len: int | tuple[int, ...], discriminator: bytes) -> list[tuple[Pubkey, bytes]]:
         """Fallback discovery when the RPC rejects `getProgramAccounts`: derive the
         AssetConfig PDA of every mint this module knows and validate what exists. Assets
         registered on-chain outside this list are invisible in this mode, so an active
@@ -363,6 +375,7 @@ class AssetRegistry:
         from vanna_core.pdas import asset_config_pda
 
         program_id = self._client.program_id
+        sizes = (data_len,) if isinstance(data_len, int) else tuple(data_len)
         addresses = [asset_config_pda(Pubkey.from_string(mint), program_id)[0] for mint in known_mints()]
         raw = await self._client.get_multiple_accounts_raw(addresses)
         found: list[tuple[Pubkey, bytes]] = []
@@ -371,7 +384,7 @@ class AssetRegistry:
             if entry is None:
                 continue
             owner, data = entry
-            if owner != str(program_id) or len(data) != data_len or data[:8] != discriminator:
+            if owner != str(program_id) or len(data) not in sizes or data[:8] != discriminator:
                 logger.warning("skipping %s: not a valid AssetConfig (owner=%s, len=%d)", address, owner, len(data))
                 continue
             found.append((address, data))
@@ -447,30 +460,35 @@ def parse_price_book(data: bytes | None) -> dict[str, OracleSpec]:
     if not data or len(data) < PRICE_BOOK_HEADER_LEN:
         return sources
     count = min(data[9], PRICE_BOOK_MAX_SOURCES)
-
-    def key(raw: object) -> str:
-        text = pubkey_bytes_to_base58(raw)
-        return "" if text == ZERO_PUBKEY else text
-
     for i in range(count):
         start = PRICE_BOOK_HEADER_LEN + PRICE_SOURCE_LEN * i
         if len(data) < start + PRICE_SOURCE_LEN:
             break
         entry = PriceSource.parse(data[start : start + PRICE_SOURCE_LEN])
-        o = entry.config
-        sources[pubkey_bytes_to_base58(entry.mint)] = OracleSpec(
-            scope_prices=key(o.scope_prices),
-            scope_chain=tuple(int(x) for x in o.scope_chain),
-            scope_twap_chain=tuple(int(x) for x in o.scope_twap_chain),
-            pyth_price=key(o.pyth_price),
-            pyth_factor=key(o.pyth_factor),
-            klend_reserve=key(o.klend_reserve),
-            klend_program=key(o.klend_program),
-            max_age_secs=o.max_age_secs,
-            max_twap_divergence_bps=o.max_twap_divergence_bps,
-            max_confidence_bps=o.max_confidence_bps,
-        )
+        sources[pubkey_bytes_to_base58(entry.mint)] = oracle_spec_from_config(entry.config)
     return sources
+
+
+def oracle_spec_from_config(o) -> OracleSpec:
+    """An `OracleSpec` from a decoded `layouts.OracleConfig` (price book entries, the Phoenix market book)."""
+    from vanna_core.layouts import pubkey_bytes_to_base58
+
+    def key(raw: object) -> str:
+        text = pubkey_bytes_to_base58(raw)
+        return "" if text == ZERO_PUBKEY else text
+
+    return OracleSpec(
+        scope_prices=key(o.scope_prices),
+        scope_chain=tuple(int(x) for x in o.scope_chain),
+        scope_twap_chain=tuple(int(x) for x in o.scope_twap_chain),
+        pyth_price=key(o.pyth_price),
+        pyth_factor=key(o.pyth_factor),
+        klend_reserve=key(o.klend_reserve),
+        klend_program=key(o.klend_program),
+        max_age_secs=o.max_age_secs,
+        max_twap_divergence_bps=o.max_twap_divergence_bps,
+        max_confidence_bps=o.max_confidence_bps,
+    )
 
 
 _EMPTY_ORACLE = OracleSpec(
@@ -503,7 +521,7 @@ def _decode_asset_config(config_address: Pubkey, decoded: object, sources: dict[
         liquidation_bonus_bps=decoded.liquidation_bonus_bps,
         kind=int(decoded.kind),
         oracle_program=pubkey_bytes_to_base58(decoded.oracle),
-        settle_mint=key(decoded.settle_mint),
+        settle_mint=key(decoded.settle_mint) if "settle_mint" in decoded else "",
         in_price_book=book_entry is not None or int(decoded.kind) == 1,
     )
 
@@ -512,7 +530,9 @@ def _decode_asset_config(config_address: Pubkey, decoded: object, sources: dict[
 # assets above (JupUSD, NVDAx, TSLAx, GOOGLx, AAPLx) - plus the Kamino receipts farming produces. A registered asset with
 # no name here is not offered: hidden from listings and refused for actions (`asset_not_offered`); positions in it still
 # count in health reads (resolved by index), and withdraw/close stay allowed so nobody is stuck. A venue is never a token.
-PRODUCT_SYMBOLS = frozenset([a.symbol for a in ASSETS] + [s for s in EXTRA_ASSET_SYMBOLS.values() if s not in VENUE_SYMBOLS])
+PRODUCT_SYMBOLS = frozenset(
+    [a.symbol for a in ASSETS] + [s for s in EXTRA_ASSET_SYMBOLS.values() if s not in VENUE_SYMBOLS | NAMED_NOT_OFFERED]
+)
 
 
 def is_offered(asset: "DiscoveredAsset") -> bool:

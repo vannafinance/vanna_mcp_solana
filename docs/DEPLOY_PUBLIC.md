@@ -100,4 +100,7 @@ Use `/mcp` in Claude Code to start the login; the browser opens the Vanna connec
 - Revoking a login: the client's own `/revoke`, or delete the family's documents (see `mcp_server/oauth/provider.py` for the key names); an access token lapses by itself after 15 minutes.
 - Roll back by routing traffic to the previous revision; the state format is the same across revisions.
 - A fork reset deletes the protocol lookup table: re-run `scripts/create_protocol_lookup_table.py` and update
-  `PROTOCOL_LOOKUP_TABLES` in the env file and on the service.
+  `PROTOCOL_LOOKUP_TABLES` in the env file and on the service. The current table is
+  `5gCxkk3VFCE96Ueej8sc6bm3wjJahBPvgw4ewaknSF74` (includes the Phoenix and Titan accounts).
+- Titan swaps need the `TITAN_API_KEY` secret (Secret Manager `titan-api-key`, mounted as the env var on both services).
+  Without it the server still runs and quotes Jupiter only.

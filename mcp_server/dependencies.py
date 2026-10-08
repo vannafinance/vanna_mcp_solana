@@ -156,6 +156,14 @@ class VannaContext:
         return self._swap
 
     @property
+    def perps(self):
+        from vanna_core.contracts.perps import PerpsContract
+
+        if getattr(self, "_perps", None) is None:
+            self._perps = PerpsContract(self.client)
+        return self._perps
+
+    @property
     def fork(self) -> ForkContract:
         if self._fork is None:
             self._fork = ForkContract(self._settings)
