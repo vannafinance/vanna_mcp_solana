@@ -29,6 +29,7 @@ async def vanna_perps(
     fraction: float | None = None,
     size_usd: str | None = None,
     amount_usdc: str | None = None,
+    funded: bool = False,
 ) -> dict[str, Any]:
     """Phoenix perps on Vanna: markets, positions, order previews, and opening / closing positions.
 
@@ -46,7 +47,9 @@ async def vanna_perps(
             "register" — the first Phoenix trade's extra step: creates the margin's Phoenix trading account (needed when
             preview says needs_trader_registration). "open" — open or add to a long / short: moves `collateral_usdc`
             of margin USDC into Phoenix and places an immediate-or-cancel market order of collateral x leverage, in one
-            transaction. "close" — close the whole position in `market`, or part of it (`fraction` 0-1, or
+            transaction; on an account holding many assets that is too much for one transaction, and open returns only
+            the funding transaction (summary.prerequisite_kind "phoenix_fund"): once it lands, call open again with the
+            same arguments and funded=true. "close" — close the whole position in `market`, or part of it (`fraction` 0-1, or
             `size_usd`), with a reduce-only order. "withdraw" — move USDC from Phoenix back to the margin account (all,
             or `amount_usdc`), only what Phoenix pays now. Writes return an unsigned transaction for the wallet.
         authority: Base58 wallet address (the margin owner); required for every action but "markets".
@@ -55,6 +58,8 @@ async def vanna_perps(
         collateral_usdc: For "preview" / "open": USDC moved from the margin account into Phoenix for this order; "0"
             uses the Phoenix balance already there.
         leverage: For "preview" / "open": 1 up to the market's max leverage.
+        funded: For "preview" / "open": true when an earlier "phoenix_fund" transaction of this same open already moved
+            `collateral_usdc` into Phoenix; the order is sized from it and nothing more moves.
         slippage_bps: For "preview" / "open" / "close": worst-price protection; default 100 (1%), 200 for TSLA and META.
         fraction: For "close": the share of the position to close (0-1]; omitted = all of it.
         size_usd: For "close": close this USD size instead of a fraction.
@@ -79,7 +84,7 @@ async def vanna_perps(
         missing = [n for n, v in (("market", market), ("side", side), ("collateral_usdc", collateral_usdc), ("leverage", leverage)) if v is None]
         if missing:
             return {"error": "invalid_input", "message": f"{', '.join(repr(m) for m in missing)} required for action=preview"}
-        return await perps.preview(owner, market, side, collateral_usdc, float(leverage), slippage_bps)
+        return await perps.preview(owner, market, side, collateral_usdc, float(leverage), slippage_bps, funded=funded)
 
     if action == "register":
         return (await perps.register(owner)).to_dict()
@@ -88,7 +93,7 @@ async def vanna_perps(
         missing = [n for n, v in (("market", market), ("side", side), ("collateral_usdc", collateral_usdc), ("leverage", leverage)) if v is None]
         if missing:
             return {"error": "invalid_input", "message": f"{', '.join(repr(m) for m in missing)} required for action=open"}
-        return (await perps.open(owner, market, side, collateral_usdc, float(leverage), slippage_bps)).to_dict()
+        return (await perps.open(owner, market, side, collateral_usdc, float(leverage), slippage_bps, funded=funded)).to_dict()
 
     if action == "close":
         if market is None:

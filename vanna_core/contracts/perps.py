@@ -11,6 +11,8 @@ means none.
 
 from __future__ import annotations
 
+import logging
+
 from solders.pubkey import Pubkey
 
 from vanna_core import math_utils
@@ -24,6 +26,8 @@ from vanna_core.phoenix import (
     lots_to_tokens,
 )
 from vanna_core.types import AccountNotFoundError
+
+logger = logging.getLogger(__name__)
 
 # Default worst-price protection for market orders, bps: 1% on crypto, 2% on the stock markets (thinner books).
 DEFAULT_SLIPPAGE_BPS = 100
@@ -69,6 +73,18 @@ def ref_price(m: ListedMarket, live_mark: float | None = None) -> float:
     if m.mark_usd > 0:
         return m.mark_usd
     return m.index_usd or 0.0
+
+
+def _out_of_compute(envelope) -> bool:
+    """A simulation that failed because the transaction ran out of compute (not because the program refused it)."""
+    for tx in envelope.transactions:
+        sim = tx.simulation
+        if sim.status == "success":
+            continue
+        text = "\n".join([sim.err or "", *sim.logs])
+        if "exceeded CUs meter" in text or "ComputationalBudgetExceeded" in text:
+            return True
+    return False
 
 
 class PerpsContract:
@@ -156,20 +172,23 @@ class PerpsContract:
         collateral_usdc: str,
         leverage: float,
         slippage_bps: int | None = None,
+        funded: bool = False,
     ) -> dict:
         """What opening (or adding to) a position would do, with the app's own checks and sizing (`openPerp`):
         `collateral_usdc` of margin USDC moves into Phoenix ("0" = use the Phoenix balance already there) and a market
         order of collateral x leverage USD is sized at the limit price, kept inside the market's leverage cap together
-        with the other markets' exposure. Nothing is built."""
+        with the other markets' exposure. Nothing is built. `funded`: the USDC is already in Phoenix (see `open`)."""
         snap, venue = await self._account(authority)
-        sized = self._size(snap, venue, market, side, collateral_usdc, leverage, slippage_bps)
+        sized = self._size(snap, venue, market, side, collateral_usdc, leverage, slippage_bps, funded=funded)
         return {k: v for k, v in sized.items() if not k.startswith("_")}
 
     def _size(
         self, snap, venue: PhoenixVenue, market: str, side: str, collateral_usdc: str, leverage: float,
-        slippage_bps: int | None, live_mark: float | None = None,
+        slippage_bps: int | None, live_mark: float | None = None, funded: bool = False,
     ) -> dict:
-        """The app's `openPerp` checks and sizing. Keys starting with "_" carry what the build needs."""
+        """The app's `openPerp` checks and sizing. Keys starting with "_" carry what the build needs.
+        `funded`: `collateral_usdc` is already in Phoenix (an earlier funding transaction of this same open moved it):
+        the order is sized from it and nothing more moves."""
         side = side.strip().lower()
         if side not in ("long", "short"):
             return {"allowed": False, "reason": "side must be long or short"}
@@ -199,11 +218,18 @@ class PerpsContract:
             amount = 0 if requested == 0 else math_utils.base_units(collateral_usdc, 6)
         except Exception:  # noqa: BLE001 - more decimals than USDC has, etc.
             return {**base, "allowed": False, "reason": "collateral_usdc must be a decimal amount of USDC with at most 6 decimals"}
-        usdc_row = next((r for r in snap.collateral_rows if r["symbol"] == "USDC"), None)
-        margin_usdc = usdc_row["raw_balance"] if usdc_row else 0
-        if amount > margin_usdc:
-            return {**base, "allowed": False, "reason": f"Not enough USDC in the margin account ({margin_usdc / 1e6:g} available)"}
-        trader_collateral = (venue.trader.collateral if venue.trader else 0) + amount
+        in_phoenix = venue.trader.collateral if venue.trader else 0
+        if funded:
+            if amount > in_phoenix:
+                return {**base, "allowed": False, "reason": f"Only {in_phoenix / 1e6:g} USDC is in Phoenix, less than the {amount / 1e6:g} this order was funded with"}
+            deposit = 0
+        else:
+            usdc_row = next((r for r in snap.collateral_rows if r["symbol"] == "USDC"), None)
+            margin_usdc = usdc_row["raw_balance"] if usdc_row else 0
+            if amount > margin_usdc:
+                return {**base, "allowed": False, "reason": f"Not enough USDC in the margin account ({margin_usdc / 1e6:g} available)"}
+            deposit = amount
+        trader_collateral = in_phoenix + deposit
         if trader_collateral <= 0:
             return {**base, "allowed": False, "reason": "Add USDC to trade on Phoenix"}
 
@@ -245,7 +271,7 @@ class PerpsContract:
         net_lots = current + (lots if is_long else -lots)
         net_tokens = abs(lots_to_tokens(net_lots, m.market.lot_decimals))
         net_long = net_lots > 0
-        venue_after = venue.value_nano / _NANO + amount / 1e6 - fee_usd
+        venue_after = venue.value_nano / _NANO + deposit / 1e6 - fee_usd
         index = m.index_usd if m.index_usd is not None else ref
         liq = None
         if debt > 0 and net_tokens > 0:
@@ -261,7 +287,7 @@ class PerpsContract:
             "allowed": True,
             "reason": None,
             "collateral_usdc": math_utils.ui_amount(amount, 6),
-            "uses_existing_phoenix_balance": amount == 0,
+            "uses_existing_phoenix_balance": deposit == 0,
             "leverage": leverage,
             "size": _num(size_tokens, 6),
             "size_usd": _num(order_usd, 2),
@@ -280,7 +306,7 @@ class PerpsContract:
             "_market": m,
             "_lots": lots,
             "_limit": limit,
-            "_amount": amount,
+            "_amount": deposit,
             "_is_long": is_long,
         }
 
@@ -370,10 +396,19 @@ class PerpsContract:
         await self._helper("/api/perps/phoenix-access", {"owner": str(authority)})
         return True
 
-    async def open(self, authority: Pubkey, market: str, side: str, collateral_usdc: str, leverage: float, slippage_bps: int | None = None):
+    async def open(
+        self, authority: Pubkey, market: str, side: str, collateral_usdc: str, leverage: float,
+        slippage_bps: int | None = None, funded: bool = False,
+    ):
         """Open or add to a long / short (the app's `openPerp`): Ember wraps `collateral_usdc` of margin USDC into phUSD,
         `deposit_funds` moves it into the margin's Phoenix trader, then an immediate-or-cancel market order of
-        collateral x leverage USD - all in one transaction. "0" uses the Phoenix balance already there."""
+        collateral x leverage USD - all in one transaction. "0" uses the Phoenix balance already there.
+
+        Each of those three calls re-checks the margin's health, pricing every asset it holds. On an account holding
+        many assets the three no longer fit one transaction's compute budget; then only the funding (wrap + deposit) is
+        returned, as a prerequisite (`summary.prerequisite_kind = "phoenix_fund"`). Once it lands, call open again with
+        the same `collateral_usdc` and `funded=True`: the order is sized from that USDC, now in Phoenix, and nothing
+        more moves."""
         from vanna_core.contracts.oracle_refresh import maybe_refresh_prices
         from vanna_core.margin_execute import build_chained_margin_execute
         from vanna_core.pdas import margin_pda
@@ -389,7 +424,7 @@ class PerpsContract:
             snap, venue, registry, model = await self._context(authority)
             if venue.trader is None or (venue.trader.capabilities & FULL_TRADER_CAPABILITIES) != FULL_TRADER_CAPABILITIES:
                 raise ValueError("The Phoenix trading account isn't enabled for deposits yet; try again in a moment")
-        sized = self._size(snap, venue, market, side, collateral_usdc, leverage, slippage_bps, live_mark)
+        sized = self._size(snap, venue, market, side, collateral_usdc, leverage, slippage_bps, live_mark, funded=funded)
         if not sized.get("allowed"):
             raise ValueError(sized.get("reason") or "This order was refused")
         cap = self._client.settings.perps_max_action_usd
@@ -401,16 +436,16 @@ class PerpsContract:
         m, lots, amount = sized["_market"], sized["_lots"], sized["_amount"]
         # The validator prices the order's market and every open position (backend `dd46264`).
         open_ids = list(venue.open_asset_ids)
-        ixs: list = []
+        fund: list = []
         if amount > 0:
-            ixs += await build_chained_margin_execute(
+            fund += await build_chained_margin_execute(
                 self._client, authority, margin, model, registry,
                 target_program=EMBER_PROGRAM_ID, data=amount_data(EMBER_DEPOSIT, amount),
                 cpi_accounts=ember_accounts(venue.exchange, margin, Pubkey.from_string(usdc.mint)),
                 spent=usdc, received=phusd, expected_spent=amount, expected_received=amount,
                 venue=venue,  # a margin already holding Phoenix hands the oracle its accounts on this call too
             )
-            ixs += await build_chained_margin_execute(
+            fund += await build_chained_margin_execute(
                 self._client, authority, margin, model, registry,
                 target_program=PHOENIX_PROGRAM_ID, data=amount_data(DEPOSIT_FUNDS, amount),
                 cpi_accounts=deposit_accounts(venue.exchange, margin),
@@ -418,7 +453,7 @@ class PerpsContract:
                 venue_asset=venue_asset, venue=venue, target_asset_ids=(), opens=True,
                 validator_accounts=validator_accounts(venue.book, open_ids),
             )
-        ixs += await build_chained_margin_execute(
+        ixs = fund + await build_chained_margin_execute(
             self._client, authority, margin, model, registry,
             target_program=PHOENIX_PROGRAM_ID,
             data=market_order_data(BID if sized["_is_long"] else ASK, usd_to_ticks(m.market, sized["_limit"]), lots, False),
@@ -426,10 +461,20 @@ class PerpsContract:
             venue_asset=venue_asset, venue=venue, target_asset_ids=(m.entry.asset_id,), opens=True,
             validator_accounts=validator_accounts(venue.book, [m.entry.asset_id, *open_ids]),
         )
-        return await self._envelope(authority, ixs, "margin_execute:phoenix_open", {
+        summary = {
             "action": "perps_open", "market": m.meta.key, "side": sized["side"], "leverage": leverage,
             "collateral_usdc": sized["collateral_usdc"], "size": sized["size"], "size_usd": sized["size_usd"],
             "limit_price": sized["limit_price"],
+        }
+        envelope = await self._envelope(authority, ixs, "margin_execute:phoenix_open", summary)
+        if not fund or not _out_of_compute(envelope):
+            return envelope
+        # Too many health checks for one transaction: move the USDC into Phoenix first; the order follows.
+        logger.info("perps open over the compute budget; returning the funding transaction first")
+        return await self._envelope(authority, fund, "margin_execute:phoenix_fund", {
+            **summary, "action": "perps_fund", "prerequisite": True, "prerequisite_kind": "phoenix_fund", "then": "perps_open",
+            "note": f"Your account holds enough assets that the order doesn't fit in the same transaction: this one moves "
+                    f"{sized['collateral_usdc']} USDC into Phoenix, then the order is built (open again with funded=true).",
         })
 
     async def close(self, authority: Pubkey, market: str, fraction: float | None = None, size_usd: str | None = None, slippage_bps: int | None = None):

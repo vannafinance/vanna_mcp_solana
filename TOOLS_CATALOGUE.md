@@ -523,6 +523,12 @@ without it a drawn plan is a preview (`executable: false`).
 
 Perps never borrow from Vanna. Mirrors `lib/solana/perps.ts`.
 
+Each of an open's three `margin_execute` calls (Ember wrap, Phoenix deposit, order) re-checks the margin's health, pricing
+every asset it holds. On an account holding many assets they exceed one transaction's 1.4M compute units; then `open`
+returns only the funding transaction (wrap + deposit) with `summary.prerequisite_kind = "phoenix_fund"`, and once it
+lands the caller opens again with the same arguments and `funded=true`: the order is sized from that USDC, now in
+Phoenix, and nothing more moves. The app's `openPerp` still builds the single transaction.
+
 ### 3.20 `vanna_vaults` — Basis and Perena vaults (2026-10-09)
 
 | Action | Purpose |

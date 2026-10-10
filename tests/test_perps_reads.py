@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vanna_core.contracts.perps import PerpsContract, default_slippage_bps, market_key
+from vanna_core.contracts.perps import PerpsContract, _out_of_compute, default_slippage_bps, market_key
 from vanna_core.phoenix import FULL_TRADER_CAPABILITIES, PhoenixPosition, PhoenixTrader
 
 NANO = 1_000_000_000
@@ -91,6 +91,40 @@ async def test_liquidation_price_needs_debt_and_must_be_reachable():
     assert 0 < liq < 100  # a long is liquidated below the price
     no_debt = await _contract().preview(None, "SOL", "long", "50", 4)
     assert no_debt["liquidation_price_after"] is None
+
+
+def _trader(collateral_raw: int) -> PhoenixTrader:
+    return PhoenixTrader(collateral=collateral_raw, capabilities=FULL_TRADER_CAPABILITIES, hot=False, withdraw_queued=False, positions=())
+
+
+async def test_funded_open_sizes_from_usdc_already_in_phoenix_and_moves_nothing():
+    # The funding transaction moved 10 USDC into Phoenix; the margin's own USDC no longer needs to cover it.
+    c = _contract(usdc_raw=0, trader=_trader(10_000_000))
+    snap, venue = await c._account(None)
+    r = c._size(snap, venue, "SOL", "long", "10", 3, None, funded=True)
+    assert r["allowed"] and r["_amount"] == 0 and r["uses_existing_phoenix_balance"]
+    assert r["size"] == "0.290000"  # the same $30 order as an unfunded open of 10 USDC
+    unfunded = c._size(snap, venue, "SOL", "long", "10", 3, None)
+    assert unfunded["allowed"] is False and "Not enough USDC" in unfunded["reason"]
+
+
+async def test_funded_open_refuses_when_the_usdc_is_not_in_phoenix():
+    c = _contract(trader=_trader(4_000_000))
+    snap, venue = await c._account(None)
+    r = c._size(snap, venue, "SOL", "long", "10", 3, None, funded=True)
+    assert r["allowed"] is False and "Only 4 USDC is in Phoenix" in r["reason"]
+
+
+def _env(status, err=None, logs=()):
+    sim = SimpleNamespace(status=status, err=err, logs=list(logs))
+    return SimpleNamespace(transactions=[SimpleNamespace(simulation=sim)])
+
+
+def test_out_of_compute_is_told_apart_from_a_program_refusal():
+    assert _out_of_compute(_env("failed", "InstructionError((5, ProgramFailedToComplete))", ["Program FXY5 failed: exceeded CUs meter at BPF instruction"]))
+    assert _out_of_compute(_env("failed", "ComputationalBudgetExceeded"))
+    assert not _out_of_compute(_env("failed", "custom program error: 0x1771", ["Program log: insufficient funds"]))
+    assert not _out_of_compute(_env("success"))
 
 
 def test_margin_model_tracks_slots_like_the_program():
