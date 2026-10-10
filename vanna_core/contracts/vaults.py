@@ -40,7 +40,7 @@ from vanna_core.contracts.jupiter import JupiterClient, fetch_lookup_tables
 from vanna_core.envelope import WriteEnvelope
 from vanna_core.margin_state import load_margin_state
 from vanna_core.pdas import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, find_associated_token_address, integration_pda, margin_pda
-from vanna_core.phoenix import EMBER_PROGRAM_ID, PHOENIX_EXCHANGE, PHOENIX_LOG_AUTHORITY, PHOENIX_PROGRAM_ID, PhoenixExchange, _read_exchange
+from vanna_core.phoenix import EMBER_PROGRAM_ID, PHOENIX_EXCHANGE, PHOENIX_LOG_AUTHORITY, PHOENIX_PROGRAM_ID, PhoenixExchange, _read_exchange, decode_perp_asset_map
 from vanna_core.types import AccountNotFoundError, ContractCallError
 from vanna_core.vault_pricing import VIEW_PAYER
 from vanna_core.vaults import BASIS_PROGRAM, PERENA_PROGRAM, SHARE_DECIMALS, VAULTS, VaultInfo
@@ -145,6 +145,24 @@ class BasisVault:
     usdc_mint: Pubkey
     phoenix_mint: Pubkey
     paused: bool
+    # False: the vault refuses deposits while its Phoenix market is after hours (stock markets outside their session).
+    after_hours_deposits: bool = True
+
+
+# The app's wording (backend lib/solana/vault-errors.ts MARKET_SESSION_MESSAGE).
+MARKET_SESSION_MESSAGE = (
+    "Deposits are closed while this market is outside its trading session or reopening. Try again when the session "
+    "is open. Withdrawals remain subject to available liquidity."
+)
+
+
+async def market_after_hours(client: SolanaClient, ex: PhoenixExchange, asset_id: int) -> bool | None:
+    """Whether the vault's Phoenix market is outside its session (the app's `vault-actions.ts` check before a Basis
+    deposit). None when the market isn't in the perp asset map."""
+    raw = await client.get_multiple_accounts_raw([ex.perp_asset_map])
+    entry = raw.get(str(ex.perp_asset_map))
+    market = next((m for m in decode_perp_asset_map(entry[1]) if m.asset_id == asset_id), None) if entry else None
+    return None if market is None else market.after_hours
 
 
 def basis_config_address() -> Pubkey:
@@ -170,7 +188,7 @@ async def load_basis_vault(client: SolanaClient, info: VaultInfo) -> BasisVault:
         base_lot_decimals=int(d.base_lot_decimals), tick_size=int(d.tick_size), max_position_usd=int(d.max_position_usd),
         max_deposit_usd=int(d.max_deposit_usd), target_margin_bps=int(d.target_margin_bps),
         deposits_open=bool(d.deposits_open), usdc_mint=_pk(cfg.usdc_mint), phoenix_mint=_pk(cfg.phoenix_mint),
-        paused=bool(cfg.paused),
+        paused=bool(cfg.paused), after_hours_deposits=bool(d.after_hours_deposits),
     )
     if str(vault.share_mint) != info.mint:
         raise ContractCallError(f"{info.name}: share mint mismatch")
@@ -369,12 +387,19 @@ class Route:
     out_amount: int
 
 
-async def jupiter_route(jupiter: JupiterClient, vault: BasisVault, sell: str, amount: int, dexes: str) -> Route:
+# Jupiter's route account caps for a Basis vault swap, loosest first (the app's is 30). A larger swap can cross more of a
+# pool's price ranges and need more accounts; when the transaction then passes 1232 bytes it is rebuilt with the next cap.
+ROUTE_ACCOUNT_CAPS = (30, 22, 16)
+
+
+async def jupiter_route(
+    jupiter: JupiterClient, vault: BasisVault, sell: str, amount: int, dexes: str, max_accounts: int = ROUTE_ACCOUNT_CAPS[0],
+) -> Route:
     """A route selling `amount` of USDC (`sell="usdc"`) or of the vault's asset for the other side, for the vault
     authority, paying into the vault's own token account. Only the swap instruction: the vault signs as its authority."""
     asset, usdc = (vault.asset_mint, vault.asset_token_program), (vault.usdc_mint, TOKEN_PROGRAM_ID)
     (in_mint, _), (out_mint, out_program) = (usdc, asset) if sell == "usdc" else (asset, usdc)
-    quote = await jupiter.get_quote(str(in_mint), str(out_mint), amount, 100, max_accounts=30, dexes=dexes)
+    quote = await jupiter.get_quote(str(in_mint), str(out_mint), amount, 100, max_accounts=max_accounts, dexes=dexes)
     destination = find_associated_token_address(vault.authority, out_mint, out_program)
     body = await jupiter.get_swap_instructions(
         quote, str(vault.authority), wrap_and_unwrap_sol=False, use_shared_accounts=True,
@@ -640,6 +665,11 @@ class VaultContract:
                     max_deposit_usd=f"{vault.max_deposit_usd / 1e6:.2f}" if vault.max_deposit_usd > 0 else None,
                     deposits_open=vault.deposits_open and not vault.paused, paused=vault.paused, available=True,
                 )
+                if not vault.after_hours_deposits and ex is not None:
+                    after_hours = await market_after_hours(self._client, ex, vault.asset_id)
+                    row["market_after_hours"] = after_hours
+                    if after_hours:
+                        row.update(deposits_open=False, deposit_blocked_reason=MARKET_SESSION_MESSAGE)
         except Exception as exc:  # noqa: BLE001 - one vault failing must not hide the others (the app's per-row error)
             row["error"] = str(exc)[:200]
         return row
@@ -774,7 +804,7 @@ class VaultContract:
             await PerpsContract(self._client).refresh_vault_book(info.asset)
 
     async def _prepare(self, authority: Pubkey, info: VaultInfo, call: str, amount, *, preview_only: bool = False,
-                       attempt: int = 0, no_route: bool = False):
+                       attempt: int = 0, no_route: bool = False, route_accounts: int = ROUTE_ACCOUNT_CAPS[0]):
         from vanna_core import wallet_alt
         from vanna_core.margin_execute import build_margin_execute_instructions
         from vanna_core.protocol_alt import load_protocol_tables
@@ -815,6 +845,14 @@ class VaultContract:
         else:
             vault = await load_basis_vault(self._client, info)
             ex = await _read_exchange(self._client)
+            if call == "deposit" and not vault.after_hours_deposits:
+                # Checked before building, like the app: otherwise the program's MarketAfterHours surfaces as a bare
+                # simulation failure.
+                after_hours = await market_after_hours(self._client, ex, vault.asset_id)
+                if after_hours is None:
+                    raise ContractCallError("Market session status is unavailable. Please retry shortly.")
+                if after_hours:
+                    raise ContractCallError(MARKET_SESSION_MESSAGE)
             if call == "deposit" and (vault.paused or not vault.deposits_open):
                 raise ContractCallError("Vault deposits are paused")
             if call == "deposit" and vault.max_deposit_usd > 0 and units > vault.max_deposit_usd:
@@ -826,7 +864,7 @@ class VaultContract:
                 sold = withdraw_swap_estimate(vault.spot, units, vs.supply, vs.asset_units, vs.nav, vs.token_price, vault.asset_decimals)
             dexes = "Raydium CLMM" if info.asset in ("TSLA", "META") else "Whirlpool"
             if sold > 0 and not no_route:
-                route = await jupiter_route(self._jupiter, vault, "usdc" if call == "deposit" else "asset", sold, dexes)
+                route = await jupiter_route(self._jupiter, vault, "usdc" if call == "deposit" else "asset", sold, dexes, route_accounts)
                 table_keys += route.lookup_tables
             if not vault.spot and call == "withdraw":
                 setup.append(create_idempotent_associated_token_account(authority, vault.authority, NATIVE_MINT, TOKEN_PROGRAM_ID))
@@ -876,7 +914,14 @@ class VaultContract:
         message = MessageV0.try_compile(authority, full, tables, blockhash)
         tx = VersionedTransaction.populate(message, [Signature.default()] * message.header.num_required_signatures)
         if len(bytes(tx)) > 1232:
-            raise ContractCallError(f"Vault transaction too large: {len(bytes(tx))} bytes")
+            tighter = [c for c in ROUTE_ACCOUNT_CAPS if c < route_accounts]
+            if route is not None and tighter:
+                return await self._prepare(authority, info, call, amount, preview_only=preview_only, attempt=attempt,
+                                           no_route=no_route, route_accounts=tighter[0])
+            raise ContractCallError(
+                f"This {call} needs a larger swap route than fits in one Solana transaction ({len(bytes(tx))} bytes; the "
+                f"limit is 1232). A smaller amount needs a smaller route: try a smaller {call}, or split it into two."
+            )
         sim = await _simulate_raw(self._client, tx, addresses=[str(share_account), str(cash_account)])
         logs = sim.get("logs") or []
         if sim.get("err") is not None and attempt < 2:
@@ -885,7 +930,8 @@ class VaultContract:
             from vanna_core.fork_heal import heal_stale_dex_pools
 
             if route is not None and await heal_stale_dex_pools(self._client, tx) > 0:
-                return await self._prepare(authority, info, call, amount, preview_only=preview_only, attempt=attempt + 1, no_route=no_route)
+                return await self._prepare(authority, info, call, amount, preview_only=preview_only, attempt=attempt + 1, no_route=no_route,
+                                           route_accounts=route_accounts)
         if sim.get("err") is not None:
             detail = " ".join(line for line in logs if any(k in line for k in ("Error Message:", "failed:", "Error:")))[-600:]
             raise ContractCallError(f"Vault preview failed: {sim.get('err')}. {detail}")

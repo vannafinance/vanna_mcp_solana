@@ -139,6 +139,8 @@ class PhoenixMarket:
     mark_ticks: int
     cumulative_funding: int
     isolated_only: bool
+    # Outside its trading session or reopening (a stock market after hours): Basis vaults refuse deposits then.
+    after_hours: bool = False
 
 
 def decode_perp_asset_map(data: bytes) -> list[PhoenixMarket]:
@@ -161,6 +163,7 @@ def decode_perp_asset_map(data: bytes) -> list[PhoenixMarket]:
                 mark_ticks=_u64(data, meta + 24),
                 cumulative_funding=_i64(data, meta + 1312),
                 isolated_only=data[meta + 1208] != 0,
+                after_hours=(data[base + 1472] & 0b110) != 0,  # the app's `decodePerpAssetMap` (backend 44aba70)
             )
         )
     return markets

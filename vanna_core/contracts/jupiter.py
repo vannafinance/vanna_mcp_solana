@@ -8,6 +8,7 @@ same fork-safe DEX allowlist.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import httpx
@@ -36,17 +37,44 @@ def _safe_json(resp: httpx.Response, what: str) -> dict:
         raise ContractCallError(f"{what}: HTTP {resp.status_code}, non-JSON response ({exc})") from exc
 
 
+# A rate-limited (429) or briefly unavailable answer is retried once after this pause.
+_RETRY_STATUSES = {429, 502, 503}
+_RETRY_AFTER_SECS = 1.5
+
+
 class JupiterClient:
     def __init__(self, settings: VannaSettings) -> None:
         self._settings = settings
 
     @property
-    def _base_url(self) -> str:
-        return _KEYED_BASE if self._settings.jupiter_api_key else _KEYLESS_BASE
+    def _proxy(self) -> str | None:
+        """The app's Jupiter proxy, when calls go through it (no key of our own)."""
+        s = self._settings
+        if s.jupiter_api_key:
+            return None
+        if s.jupiter_proxy_url:
+            return s.jupiter_proxy_url.rstrip("/")
+        app = s.perps_helper_url or s.price_keeper_url
+        return f"{app.rstrip('/')}/api/jupiter" if s.is_fork and app else None
+
+    def _url(self, endpoint: str) -> str:
+        proxy = self._proxy
+        if proxy:
+            return f"{proxy}/{endpoint}"
+        return f"{_KEYED_BASE if self._settings.jupiter_api_key else _KEYLESS_BASE}/swap/v1/{endpoint}"
 
     @property
     def _headers(self) -> dict[str, str]:
         return {"x-api-key": self._settings.jupiter_api_key} if self._settings.jupiter_api_key else {}
+
+    async def _send(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            for attempt in range(2):
+                resp = await http.request(method, self._url(endpoint), **kwargs)
+                if resp.status_code not in _RETRY_STATUSES or attempt == 1:
+                    return resp
+                await asyncio.sleep(_RETRY_AFTER_SECS)
+        return resp
 
     async def get_quote(
         self,
@@ -73,8 +101,7 @@ class JupiterClient:
             params["maxAccounts"] = str(max_accounts)
         if restrict_intermediate_tokens:
             params["restrictIntermediateTokens"] = "true"
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.get(f"{self._base_url}/swap/v1/quote", params=params, headers={**self._headers, "Accept": "application/json"})
+        resp = await self._send("GET", "quote", params=params, headers={**self._headers, "Accept": "application/json"})
         body = _safe_json(resp, "Jupiter quote failed")
         if resp.status_code != 200 or "error" in body:
             raise ContractCallError(f"Jupiter quote failed: {body.get('error', body)}")
@@ -95,12 +122,10 @@ class JupiterClient:
             payload["destinationTokenAccount"] = destination_token_account
         if skip_user_accounts_rpc_calls:
             payload["skipUserAccountsRpcCalls"] = True
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                f"{self._base_url}/swap/v1/swap-instructions",
-                json=payload,
-                headers={**self._headers, "Content-Type": "application/json", "Accept": "application/json"},
-            )
+        resp = await self._send(
+            "POST", "swap-instructions", json=payload,
+            headers={**self._headers, "Content-Type": "application/json", "Accept": "application/json"},
+        )
         body = _safe_json(resp, "Jupiter swap-instructions failed")
         if resp.status_code != 200 or "error" in body or "swapInstruction" not in body:
             raise ContractCallError(f"Jupiter swap-instructions failed: {body.get('error', body)}")
@@ -108,12 +133,10 @@ class JupiterClient:
 
     async def get_swap_transaction(self, quote: dict, user_pubkey: str) -> dict:
         payload = {"quoteResponse": quote, "userPublicKey": user_pubkey}
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                f"{self._base_url}/swap/v1/swap",
-                json=payload,
-                headers={**self._headers, "Content-Type": "application/json", "Accept": "application/json"},
-            )
+        resp = await self._send(
+            "POST", "swap", json=payload,
+            headers={**self._headers, "Content-Type": "application/json", "Accept": "application/json"},
+        )
         body = _safe_json(resp, "Jupiter swap failed")
         if resp.status_code != 200 or "error" in body or "swapTransaction" not in body:
             raise ContractCallError(f"Jupiter swap failed: {body.get('error', body)}")

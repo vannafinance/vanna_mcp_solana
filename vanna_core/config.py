@@ -134,6 +134,11 @@ class VannaSettings(BaseSettings):
     # `/swap/v1/quote` and `/swap/v1/swap-instructions` under this base, not
     # the legacy `quote-api.jup.ag/v6` host.
     jupiter_api_key: str = ""
+    # Without a key, Jupiter calls go through the app's own proxy routes (`{url}/quote`, `/swap-instructions`,
+    # `/swap`; backend app/api/jupiter/*), which call the keyed endpoint with the app's server key - the same way
+    # the app's vault actions reach Jupiter. Empty on a fork = `{perps_helper_url or price_keeper_url}/api/jupiter`.
+    # Off a fork with no key, the keyless endpoint is used.
+    jupiter_proxy_url: str = ""
     jupiter_fork_dexes: str = "Raydium,Raydium CLMM,Raydium CP,Orca V2,Meteora DLMM,Whirlpool"
 
     # Titan swap API (second swap provider beside Jupiter; vanna-credit-backend lib/solana/server/titan-api.ts).

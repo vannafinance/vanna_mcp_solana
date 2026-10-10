@@ -541,6 +541,15 @@ Phoenix, and nothing more moves. The app's `openPerp` still builds the single tr
 
 Mirrors `lib/solana/vault-actions.ts`, `vault-state.ts`, `perena.ts` and `@vanna/phoenix-vault-client` 0.1.0.
 
+- **Market session.** A Basis vault whose `after_hours_deposits` is off (TSLA, META) refuses deposits while its Phoenix
+  market is after hours (the perp asset map's session bits, backend `44aba70`). `deposit` checks it before building and
+  answers with the app's wording; `list` shows `market_after_hours`, `deposits_open: false` and `deposit_blocked_reason`.
+- **Route size.** A Basis deposit or withdrawal swaps through Jupiter inside the vault call. A larger amount can need a
+  larger route; when the transaction passes 1232 bytes it is rebuilt with a tighter route cap (30, then 22, then 16
+  accounts), and if it still doesn't fit the error says to use a smaller amount or split it.
+- **Jupiter access.** Without a key of its own the MCP calls Jupiter through the app's `/api/jupiter` proxy (as the
+  app's vault actions do), and retries a rate-limited (429) answer once.
+
 A Basis share is priced by simulating the oracle; when that read fails (a transient RPC error), the last good price from
 the past hour is used, flagged not fresh, like the app (backend `039a46b`), so the shares don't drop to $0 in a health
 reading. A health-checked write still refuses a price that isn't fresh (`oracle_reader._LAST_BASIS_PRICE`).
