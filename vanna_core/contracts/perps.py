@@ -15,6 +15,7 @@ from solders.pubkey import Pubkey
 
 from vanna_core import math_utils
 from vanna_core.client import SolanaClient
+from vanna_core.risk import LIQUIDATION_HF
 from vanna_core.phoenix import (
     FULL_TRADER_CAPABILITIES,
     ListedMarket,
@@ -104,7 +105,7 @@ class PerpsContract:
         debt = snap.health.total_debt_value / _NANO
         venue_value = venue.value_nano / _NANO
         exposure = sum(p.size_usd for p in venue.positions)
-        liq_hf = self._client.settings.liquidation_health_factor
+        liq_hf = LIQUIDATION_HF
         usdc_row = next((r for r in snap.collateral_rows if r["symbol"] == "USDC"), None)
         rows = []
         for p in venue.positions:
@@ -249,7 +250,7 @@ class PerpsContract:
         liq = None
         if debt > 0 and net_tokens > 0:
             zero_equity = index - venue_after / net_tokens if net_long else index + venue_after / net_tokens
-            room = (holdings_after - self._client.settings.liquidation_health_factor * debt) / net_tokens
+            room = (holdings_after - LIQUIDATION_HF * debt) / net_tokens
             candidate = index - room if net_long else index + room
             reachable = candidate > zero_equity if net_long else candidate < zero_equity
             liq = candidate if reachable and candidate > 0 else None
@@ -300,6 +301,11 @@ class PerpsContract:
             return resp.json() if resp.status_code == 200 else None
         except Exception:  # noqa: BLE001 - a missing helper leaves the fork's own state; the simulation decides
             return None
+
+    async def refresh_vault_book(self, market: str) -> None:
+        """Fork: before a Basis vault call, re-copy the market's book and asset map from mainnet (the app's
+        `phoenix-book` route with `vault: true`); Basis enforces its price band against the fork's mark."""
+        await self._helper("/api/perps/phoenix-book", {"market": market_key(market), "vault": True})
 
     async def _refresh_book(self, market: str) -> float | None:
         """Fork: re-copy the market's book from mainnet before trading; returns mainnet Phoenix's mark for it."""
@@ -393,7 +399,8 @@ class PerpsContract:
         margin = margin_pda(authority, self._client.program_id)[0]
         venue_asset, usdc, phusd = self._assets(registry, venue)
         m, lots, amount = sized["_market"], sized["_lots"], sized["_amount"]
-        book_validator = validator_accounts(venue.book)
+        # The validator prices the order's market and every open position (backend `dd46264`).
+        open_ids = list(venue.open_asset_ids)
         ixs: list = []
         if amount > 0:
             ixs += await build_chained_margin_execute(
@@ -408,14 +415,16 @@ class PerpsContract:
                 target_program=PHOENIX_PROGRAM_ID, data=amount_data(DEPOSIT_FUNDS, amount),
                 cpi_accounts=deposit_accounts(venue.exchange, margin),
                 spent=phusd, expected_spent=amount,
-                venue_asset=venue_asset, venue=venue, target_asset_ids=(), opens=True, validator_accounts=book_validator,
+                venue_asset=venue_asset, venue=venue, target_asset_ids=(), opens=True,
+                validator_accounts=validator_accounts(venue.book, open_ids),
             )
         ixs += await build_chained_margin_execute(
             self._client, authority, margin, model, registry,
             target_program=PHOENIX_PROGRAM_ID,
             data=market_order_data(BID if sized["_is_long"] else ASK, usd_to_ticks(m.market, sized["_limit"]), lots, False),
             cpi_accounts=order_accounts(venue.exchange, margin, m.market),
-            venue_asset=venue_asset, venue=venue, target_asset_ids=(m.entry.asset_id,), opens=True, validator_accounts=book_validator,
+            venue_asset=venue_asset, venue=venue, target_asset_ids=(m.entry.asset_id,), opens=True,
+            validator_accounts=validator_accounts(venue.book, [m.entry.asset_id, *open_ids]),
         )
         return await self._envelope(authority, ixs, "margin_execute:phoenix_open", {
             "action": "perps_open", "market": m.meta.key, "side": sized["side"], "leverage": leverage,
@@ -464,7 +473,7 @@ class PerpsContract:
             data=market_order_data(ASK if is_long else BID, usd_to_ticks(m.market, limit), lots, True),
             cpi_accounts=order_accounts(venue.exchange, margin, m.market),
             venue_asset=venue_asset, venue=venue, target_asset_ids=(m.entry.asset_id,), opens=False,
-            validator_accounts=validator_accounts(venue.book),
+            validator_accounts=validator_accounts(venue.book, [m.entry.asset_id, *venue.open_asset_ids]),
         )
         return await self._envelope(authority, ixs, "margin_execute:phoenix_close", {
             "action": "perps_close", "market": m.meta.key, "side": "long" if is_long else "short",
@@ -504,7 +513,7 @@ class PerpsContract:
             cpi_accounts=withdraw_accounts(venue.exchange, margin),
             received=phusd, expected_received=amount,
             venue_asset=venue_asset, venue=venue, target_asset_ids=(), opens=False, closes=empties,
-            validator_accounts=validator_accounts(venue.book),
+            validator_accounts=validator_accounts(venue.book, venue.open_asset_ids),
         )
         ixs += await build_chained_margin_execute(
             self._client, authority, margin, model, registry,

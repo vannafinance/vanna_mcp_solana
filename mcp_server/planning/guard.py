@@ -65,6 +65,19 @@ def describe_call(tool: str, args: dict[str, Any]) -> str:
                 f"{args.get('borrow_amount')} {args.get('borrow_asset')} in one transaction")
     if tool == "vanna_margin_trade" and action == "close_position":
         return "Close your margin position (the next step of the unwind)"
+    if tool == "vanna_vaults":
+        from vanna_core.contracts.vaults import VaultContract
+
+        try:
+            name = VaultContract.find(str(args.get("vault") or "")).name
+        except ValueError:
+            name = str(args.get("vault") or "the vault")
+        if action == "deposit":
+            return f"Deposit {args.get('amount')} USDC into {name}"
+        if action == "withdraw":
+            return f"Withdraw {args.get('amount')} {name} shares to USDC"
+        if action == "move_shares":
+            return f"Move your {name} shares from the wallet into your margin account"
     if tool == "vanna_perps":
         market = str(args.get("market") or "").upper().removesuffix("-PERP")
         if action == "register":
@@ -111,10 +124,12 @@ async def guard_direct_write(wallet: str, tool: str, args: dict[str, Any], *, co
     if step is None and tool == "vanna_margin_trade" and args.get("action") == "deposit_and_borrow":
         return await _guard_deposit_and_borrow(wallet, args)
     if step is None:
-        spend = await get_safety().check_spend(wallet, 0.0)
+        # A vault deposit spends its USDC amount (USDC is valued at $1 here: the deposit token is always USDC).
+        usd = float(args["amount"]) if tool == "vanna_vaults" and args.get("action") == "deposit" and args.get("amount") else 0.0
+        spend = await get_safety().check_spend(wallet, usd)
         if not spend.ok:
             return Preflight(False, code="limit", message=spend.message)
-        return Preflight(True, prepared=Prepared(0.0, tool, args, risk.RiskResult("allow"), None, None, []))
+        return Preflight(True, prepared=Prepared(usd, tool, args, risk.RiskResult("allow"), None, None, []))
     result = await preflight_step(wallet, step)
     if result.ok and result.prepared is not None:
         # Build exactly what the caller asked for: pre-flight resolved "all"/percent figures only to check them.

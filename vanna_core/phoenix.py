@@ -15,12 +15,15 @@ health-checked instruction must hand the oracle the Phoenix accounts listed by `
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import asyncio
 import time
 from dataclasses import dataclass, field
 
 from solders.pubkey import Pubkey
 
+from vanna_core import constants
 from vanna_core.client import SolanaClient
 from vanna_core.layouts import OracleConfig
 from vanna_core.pricing import AccountData, OracleSpec, PriceUnavailableError, get_price
@@ -28,10 +31,10 @@ from vanna_core.pricing import AccountData, OracleSpec, PriceUnavailableError, g
 PHOENIX_PROGRAM_ID = Pubkey.from_string("EtrnLzgbS7nMMy5fbD42kXiUzGg8XQzJ972Xtk1cjWih")
 EMBER_PROGRAM_ID = Pubkey.from_string("EMBERpYNE6ehWmXymZZS2skiFmCa9V5dp14e1iduM5qy")
 # Phoenix's global config: the venue key (its AssetConfig and the oracle's market book are keyed by it).
-PHOENIX_EXCHANGE = Pubkey.from_string("2zskx2iyCvb6Stg7RBZkt1f6MrF4dpYtMG3yMvKwqtUZ")
+PHOENIX_EXCHANGE = Pubkey.from_string(constants.PHOENIX_EXCHANGE)
 PHOENIX_LOG_AUTHORITY = Pubkey.from_string("GdxfTLSsdSY37G6fZoYtdGDSfgFnbT2EmRpuePZxWShS")
 # phUSD: Phoenix's canonical USDC (Ember-wrapped 1:1); a collateral-only Vanna asset priced as USDC.
-PHUSD_MINT = Pubkey.from_string("PhUsd11YkbjSaWjFncfAAmatntsjx3MgDR9B6g1ks3A")
+PHUSD_MINT = Pubkey.from_string(constants.PHUSD_MINT)
 
 # A trader entry key at or above this is an extension (native SOL), not a perp position.
 _EXTENSION_KEY = 0xFF000000
@@ -733,6 +736,14 @@ def register_trader_ix(payer: Pubkey, margin: Pubkey):
     )
 
 
-def validator_accounts(book: MarketBook) -> list[Pubkey]:
-    """The validator segment's accounts for a Phoenix call (after the validator program): market book, exchange."""
-    return [book.address, PHOENIX_EXCHANGE]
+def validator_accounts(book: MarketBook, asset_ids: Iterable[int] = ()) -> list[Pubkey]:
+    """The validator segment's accounts for a Phoenix call (after the validator program): market book, exchange, then for
+    each market the validator prices - the order's and every open position's - its orderbook and index price accounts
+    (the app's `phoenixValidatorAccounts`, backend `dd46264`). Without them the validator fails with InvalidPriceSource."""
+    keys: list[Pubkey] = [book.address, PHOENIX_EXCHANGE]
+    for asset_id in dict.fromkeys(asset_ids):
+        entry = next((m for m in book.markets if m.asset_id == asset_id), None)
+        if entry is None:
+            raise PriceUnavailableError(f"Phoenix market {asset_id} is not in Vanna's market book")
+        keys += [entry.market, *(Pubkey.from_string(k) for k in entry.index_price.accounts())]
+    return keys

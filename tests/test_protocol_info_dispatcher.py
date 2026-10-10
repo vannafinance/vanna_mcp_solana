@@ -13,7 +13,10 @@ async def test_config(ctx):
     result = await vanna_protocol_info(action="config")
     assert "error" not in result
     assert result["operating_mode"] in ("Normal", "BorrowPaused", "WithdrawOnly", "Halted")
-    assert result["max_assets_per_margin"] == 24
+    # 2026-10-09: a 32-position scan budget, at most 3 debts and 2 venues; token collateral is the allowed list.
+    assert result["max_assets_per_margin"] == 32
+    assert (result["max_debts_per_margin"], result["max_venues_per_margin"]) == (3, 2)
+    assert len(result["allowed_token_indexes"]) >= 16
     assert result["next_asset_index"] >= 10  # at least the 5+5 registry assets
 
 

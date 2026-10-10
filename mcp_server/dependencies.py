@@ -7,6 +7,8 @@ never construct clients or contracts themselves.
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 
 from solders.pubkey import Pubkey
@@ -62,8 +64,22 @@ class VannaContext:
             )
         self._client = SolanaClient(self._settings)
         logger.info("VannaContext started: %r", self._settings)
+        # Load the asset registry in the background so the first request finds it cached instead of paying the
+        # discovery reads (~10 s on the fork). Best-effort: a failure here only means the first request loads it.
+        self._warm_up = asyncio.create_task(self._warm_registry())
+
+    async def _warm_registry(self) -> None:
+        from vanna_core.assets import AssetRegistry
+
+        try:
+            await AssetRegistry(self._client).load()
+        except Exception:  # noqa: BLE001
+            logger.warning("registry warm-up failed (the first request loads it instead)", exc_info=True)
 
     async def shutdown(self) -> None:
+        warm = getattr(self, "_warm_up", None)
+        if warm is not None and not warm.done():
+            warm.cancel()
         if self._client is not None:
             await self._client.close()
 
@@ -162,6 +178,14 @@ class VannaContext:
         if getattr(self, "_perps", None) is None:
             self._perps = PerpsContract(self.client)
         return self._perps
+
+    @property
+    def vaults(self):
+        from vanna_core.contracts.vaults import VaultContract
+
+        if getattr(self, "_vaults", None) is None:
+            self._vaults = VaultContract(self.client)
+        return self._vaults
 
     @property
     def fork(self) -> ForkContract:

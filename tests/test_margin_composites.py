@@ -15,7 +15,7 @@ from solders.keypair import Keypair
 
 from mcp_server.dispatchers.account import vanna_account
 from mcp_server.dispatchers.margin_trade import vanna_margin_trade
-from tests._live_helpers import build_with_retry, fund_token, sign_and_submit
+from tests._live_helpers import build_action, build_with_retry, fund_token, sign_and_submit
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,11 +55,12 @@ async def test_deposit_and_borrow_atomic_live(ctx):
     assert created["simulation_success"], created.get("reason")
     await sign_and_submit(settings.solana_rpc_url, created, kp)
 
-    envelope = await build_with_retry(
+    envelope = await build_action(
         lambda: vanna_margin_trade(
             action="deposit_and_borrow", authority=authority,
             deposit_asset="SOL", deposit_amount="1", borrow_asset="USDC", borrow_amount="1",
-        )
+        ),
+        settings.solana_rpc_url, kp,
     )
     assert envelope["simulation_success"], envelope.get("reason")
     # One atomic transaction, not two.

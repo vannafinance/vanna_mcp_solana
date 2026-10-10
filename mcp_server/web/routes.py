@@ -108,13 +108,19 @@ async def _approve(request: Request) -> dict[str, Any]:
     return await _engine().approve(request.path_params["plan_id"], str(body.get("wallet", "")), str(body.get("signature", "")))
 
 
+def _run_token(request: Request) -> str:
+    """The run token the approval returned to this page. Always a string, so the engine always checks it."""
+    return request.headers.get("x-plan-token", "")[:128]
+
+
 async def _next(request: Request) -> dict[str, Any]:
-    return await _engine().build_next(request.path_params["plan_id"])
+    return await _engine().build_next(request.path_params["plan_id"], _run_token(request))
 
 
 async def _submit(request: Request) -> dict[str, Any]:
     body = await _body(request)
-    return await _engine().submit(request.path_params["plan_id"], str(body.get("tx_id", "")), str(body.get("signed", "")))
+    return await _engine().submit(request.path_params["plan_id"], str(body.get("tx_id", "")), str(body.get("signed", "")),
+                                  _run_token(request))
 
 
 async def _cancel(request: Request) -> dict[str, Any]:
@@ -156,5 +162,6 @@ def build_web_routes() -> list[Route]:
 
 
 def is_web_public_path(path: str) -> bool:
-    """Paths served without a bearer: the pages are capability URLs and the wallet signature is the authority."""
+    """Paths served without a bearer: the link lets its holder read or cancel a plan; approving takes the wallet's
+    signature, and preparing or submitting a step the run token that approval returned to the page."""
     return path in ("/connect",) or path.startswith(("/plan/", "/sign/", "/static/", "/api/plan/"))

@@ -24,14 +24,13 @@ from dataclasses import dataclass, field
 
 from solders.pubkey import Pubkey
 
+from vanna_core import constants
+from vanna_core.constants import EMPTY_ASSET_INDEX  # noqa: F401 - re-exported
 from vanna_core.pricing import OracleSpec
 
 logger = logging.getLogger(__name__)
 
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-
-# EMPTY_INDEX sentinel used for unused collateral/debt asset-index slots.
-EMPTY_ASSET_INDEX = 65_535
 
 
 @dataclass(frozen=True)
@@ -73,19 +72,19 @@ class KaminoReceiptInfo:
 
 
 # Kamino Lend main market (verified, `lib/solana/kamino.ts`).
-KLEND_PROGRAM_ID = Pubkey.from_string("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
+KLEND_PROGRAM_ID = Pubkey.from_string(constants.KLEND_PROGRAM)
 KAMINO_MAIN_MARKET = Pubkey.from_string("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF")
 KAMINO_MAIN_MARKET_AUTHORITY = Pubkey.from_string("9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo")
 KAMINO_INSTRUCTIONS_SYSVAR = Pubkey.from_string("Sysvar1nstructions1111111111111111111111111")
 
 # Jupiter v6 (verified, `lib/solana/config.ts`).
-JUPITER_V6_PROGRAM_ID = Pubkey.from_string("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
+JUPITER_V6_PROGRAM_ID = Pubkey.from_string(constants.JUPITER_V6_PROGRAM)
 
 # Pyth (verified, `lib/solana/config.ts`).
 PYTH_RECEIVER_PROGRAM_ID = Pubkey.from_string("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ")
 PYTH_PUSH_ORACLE_PROGRAM_ID = Pubkey.from_string("pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT")
 
-WSOL_MINT = "So11111111111111111111111111111111111111112"
+WSOL_MINT = constants.WSOL_MINT
 
 # The real, live registry — verified against `lib/solana/tokens.ts:32-88`.
 ASSETS: tuple[AssetInfo, ...] = (
@@ -97,12 +96,12 @@ ASSETS: tuple[AssetInfo, ...] = (
     ),
     AssetInfo(
         symbol="USDC",
-        mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        mint=constants.USDC_MINT,
         decimals=6,
     ),
     AssetInfo(
         symbol="USDT",
-        mint="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        mint=constants.USDT_MINT,
         decimals=6,
     ),
     AssetInfo(
@@ -112,7 +111,7 @@ ASSETS: tuple[AssetInfo, ...] = (
     ),
     AssetInfo(
         symbol="JupSOL",
-        mint="jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v",
+        mint=constants.JUPSOL_MINT,
         decimals=9,
     ),
 )
@@ -160,8 +159,8 @@ GMTRADE_PROGRAM_ID = Pubkey.from_string("Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6M
 GMTRADE_STORE = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
 # Phoenix (perps) venue of the current build: its AssetConfig is keyed by the Phoenix exchange (`vanna_core/phoenix.py`),
 # and phUSD (Phoenix's canonical USDC) is registered as collateral in transit through the margin, outside the token list.
-PHOENIX_EXCHANGE_KEY = "2zskx2iyCvb6Stg7RBZkt1f6MrF4dpYtMG3yMvKwqtUZ"
-PHUSD_MINT_KEY = "PhUsd11YkbjSaWjFncfAAmatntsjx3MgDR9B6g1ks3A"
+PHOENIX_EXCHANGE_KEY = constants.PHOENIX_EXCHANGE
+PHUSD_MINT_KEY = constants.PHUSD_MINT
 
 # Assets the program registers on-chain beyond the catalogue above - display names only (decimals, token program,
 # oracle and lend/borrow capability always come from the AssetConfig and the chain). JupUSD and the Token-2022 xStocks
@@ -171,19 +170,25 @@ EXTRA_ASSET_SYMBOLS: dict[str, str] = {
     GMTRADE_STORE: "GMTrade",
     PHOENIX_EXCHANGE_KEY: "Phoenix",
     PHUSD_MINT_KEY: "phUSD",
-    "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD": "JupUSD",
+    constants.JUPUSD_MINT: "JupUSD",
     "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": "NVDAx",
-    "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB": "TSLAx",
+    constants.TSLAX_MINT: "TSLAx",
     "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN": "GOOGLx",
     "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": "AAPLx",
 }
+# Basis and Perena vault share tokens (allowed collateral since 2026-10-09): named so positions and health lists read
+# well. They are entered and left through their vaults, never deposited, withdrawn or swapped as plain tokens here.
+from vanna_core.vaults import VAULTS as _VAULTS  # noqa: E402 - data-only module
+
+EXTRA_ASSET_SYMBOLS.update({v.mint: v.symbol for v in _VAULTS})
+EXTRA_ASSET_DECIMALS_VAULTS = {v.symbol: 6 for v in _VAULTS}
 VENUE_SYMBOLS = frozenset({"GMTrade", "Phoenix"})
 # Named so positions read well, but not product assets: the app registers phUSD outside its token list (it only passes
-# through the margin on the way into or out of Phoenix), so it is never offered for actions.
-NAMED_NOT_OFFERED = frozenset({"phUSD"})
+# through the margin on the way into or out of Phoenix), so it is never offered for actions; the vault shares likewise.
+NAMED_NOT_OFFERED = frozenset({"phUSD", *(v.symbol for v in _VAULTS)})
 # Decimals of the named on-chain assets, for the planning maths that runs before the registry is read (the registry's
 # AssetConfig stays the authority for every build). Same values as the app's registry.
-EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8}
+EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8, **EXTRA_ASSET_DECIMALS_VAULTS}
 
 _BY_SYMBOL: dict[str, AssetInfo] = {a.symbol.upper(): a for a in ASSETS}
 _RECEIPT_BY_SYMBOL: dict[str, KaminoReceiptInfo] = {r.symbol.upper(): r for r in KAMINO_RECEIPTS}
@@ -286,7 +291,7 @@ class DiscoveredAsset:
 # tool call builds its own registry, so cache the raw accounts per (rpc, program) for a short TTL and
 # remember when the RPC rejects getProgramAccounts (the hosted fork does) so it is not retried per call.
 _REGISTRY_CACHE_TTL_SECS = 60.0
-_GPA_RETRY_AFTER_SECS = 600.0
+_GPA_RETRY_AFTER_SECS = 3600.0  # an RPC that refused the scan (the fork does) is asked again hourly; one that serves it never waits
 _registry_cache: dict[str, tuple[float, str, list, bytes | None]] = {}
 _gpa_blocked_until: dict[str, float] = {}
 
@@ -326,10 +331,14 @@ class AssetRegistry:
                     # Both on-chain sizes: accounts created before the phoenix-titan build keep the longer layout.
                     scanned: list = []
                     for size in ASSET_CONFIG_ACCOUNT_LENS:
+                        # One attempt: the hosted fork's RPC answers this query with "Internal error" every time,
+                        # and the known-mints discovery below is exact for the product's assets. Retrying with
+                        # backoff only held every cold build ~20 s before reaching it.
                         scanned += await self._client.get_program_accounts(
                             self._client.program_id,
                             data_size=size,
                             discriminator=discriminator,
+                            retry=False,
                         )
                     found = scanned
                     self.discovery_mode = "program_accounts"

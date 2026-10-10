@@ -57,6 +57,7 @@ class JupiterClient:
         *,
         max_accounts: int | None = None,
         restrict_intermediate_tokens: bool = False,
+        dexes: str | None = None,
     ) -> dict:
         """`max_accounts` caps the accounts Jupiter's route may use and `restrict_intermediate_tokens`
         keeps multi-hop routes on liquid intermediate tokens; both shrink the route so it fits in one
@@ -66,7 +67,7 @@ class JupiterClient:
             "outputMint": output_mint,
             "amount": str(amount_raw),
             "slippageBps": str(slippage_bps),
-            "dexes": self._settings.jupiter_fork_dexes,
+            "dexes": dexes or self._settings.jupiter_fork_dexes,
         }
         if max_accounts is not None:
             params["maxAccounts"] = str(max_accounts)
@@ -80,7 +81,8 @@ class JupiterClient:
         return body
 
     async def get_swap_instructions(
-        self, quote: dict, user_pubkey: str, *, wrap_and_unwrap_sol: bool, use_shared_accounts: bool
+        self, quote: dict, user_pubkey: str, *, wrap_and_unwrap_sol: bool, use_shared_accounts: bool,
+        destination_token_account: str | None = None, skip_user_accounts_rpc_calls: bool = False,
     ) -> dict:
         payload = {
             "quoteResponse": quote,
@@ -88,6 +90,11 @@ class JupiterClient:
             "wrapAndUnwrapSol": wrap_and_unwrap_sol,
             "useSharedAccounts": use_shared_accounts,
         }
+        # A vault's route (`vaults.py`): built for the vault authority, paying into the vault's own token account.
+        if destination_token_account:
+            payload["destinationTokenAccount"] = destination_token_account
+        if skip_user_accounts_rpc_calls:
+            payload["skipUserAccountsRpcCalls"] = True
         async with httpx.AsyncClient(timeout=15.0) as http:
             resp = await http.post(
                 f"{self._base_url}/swap/v1/swap-instructions",

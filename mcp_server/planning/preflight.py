@@ -20,6 +20,7 @@ from mcp_server.planning.facts import HealthRead
 from mcp_server.safety import get_safety
 from vanna_core import risk
 from vanna_core.config import get_settings
+from vanna_core.program_errors import markers
 
 OUT_PREFIX = "out:"
 EXACT_OUT_ROUNDS = 4
@@ -77,14 +78,14 @@ def humanize(exc_or_text: Any) -> str:
         return "The action could not be prepared."
     patterns = (
         (("insufficient funds", "insufficientfunds"),"The wallet does not hold enough of that asset (or enough SOL for fees) for this action."),
-        (("stalepri", "0x178b", "stale_price", "price_unavailable"), "A price feed is stale right now, so the program refuses to use it. Try again in a minute."),
+        (("stalepri", "stale_price", "price_unavailable", *markers("StalePrice")), "A price feed is stale right now, so the program refuses to use it. Try again in a minute."),
         (("slippagetoleranceexceeded", "0x1771", "6001"), "The swap price moved past the allowed slippage. Try again for a fresh quote."),
-        (("spendlimitexceeded", "0x17ab"), "The external call would spend more from the margin account than it was allowed to. Try again for a fresh quote."),
-        (("would breach", "healthfactor", "0x1790", "unhealthy"), "The action would push the account below the protocol's health limit."),
+        (markers("SpendLimitExceeded"), "The external call would spend more from the margin account than it was allowed to. Try again for a fresh quote."),
+        (("would breach", "healthfactor", "unhealthy", *markers("HealthFactorTooLow")), "The action would push the account below the protocol's health limit."),
         (("account_not_found", "accountnotinitialized", "3012"), "There is no margin account yet."),
         (("transaction_too_large", "size limit", "exceeds solana", "too large for one"), "That swap route is too large for one Solana transaction. Try a different pair, or swap in the wallet instead of inside the margin account."),
         (("insufficient pool liquidity",), "The pool does not have enough available liquidity for that."),
-        (("borrow_cap", "supply_cap", "cap exceeded"), "That would exceed the pool's cap."),
+        (("borrow_cap", "supply_cap", "cap exceeded", *markers("SupplyCapExceeded", "BorrowCapExceeded")), "That would exceed the pool's cap."),
     )
     low = text.lower()
     for needles, sentence in patterns:

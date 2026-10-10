@@ -107,6 +107,11 @@ server instead (`POST /mcp`, plus `/healthz`). For a hosted deployment set
 (and `FIRST_PARTY_CLIENT_IDS` for the Copilot); callers without write scope
 only see and use read actions. The `Dockerfile` runs exactly this.
 
+At startup the asset registry is loaded in the background, so the first request doesn't pay for it. Asset discovery
+tries `getProgramAccounts` once, with no retry backoff. An RPC that refuses it (the hosted fork does) gets the exact
+known-mints discovery straight away and is asked again hourly. On the fork this took a cold margin build from ~34 s
+to ~6 s.
+
 ## Using it from Claude, Cursor or any MCP client
 
 The MCP client's model replaces the Copilot's Gemini (understanding, planning, wording); this server does everything that
@@ -179,6 +184,17 @@ shared (Firestore) state store, and the public Cloud Run service. Operator setti
   Create that table once per cluster with `python scripts/create_protocol_lookup_table.py` (a fork reset
   deletes it; builds then skip it). Only margin swaps use it: accounts loaded from a lookup table are not
   indexed by the fork's `getSignaturesForAddress`, which Earn history relies on.
+- **Program upgrade of 2026-10-09** (vanna-credit-backend `2462473`, the fork's core rebuilt from
+  `feature/phoenix-titan`): token collateral is the protocol's `ProtocolConfig.allowed_tokens` list (23 tokens), scanned
+  for every margin; a margin keeps only its venues. `vanna_core/margin_state.py` joins the two the way the program does,
+  and every health-checked write names a group for each allowed token, then venues, then debts. Those 23 per-wallet
+  vault keys don't fit next to a big instruction, so a wallet gets its own lookup table (`vanna_core/wallet_alt.py`):
+  a write that doesn't fit returns a one-time setup transaction first (`summary.prerequisite`), then the action. Events
+  are CPI events now (`client.get_transaction_event_payloads`). Error codes are read from the IDL by name
+  (`vanna_core/program_errors.py`).
+- **Vaults:** `vanna_vaults` (Basis delta-neutral SOL/ETH/BTC/TSLA/META, Perena USD* / USD* Junior) ports the app's
+  `vault-actions.ts` / `vault-state.ts` / `perena.ts`; vault shares are priced like the program does
+  (`vanna_core/vault_pricing.py`).
 - **Before a deploy, test the image itself:**
 
   ```bash

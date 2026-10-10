@@ -35,7 +35,7 @@ Surfpool fork. (`PORT=8765` to change the port; any value you set in the environ
 claude mcp add --transport http vanna-solana http://127.0.0.1:8000/mcp
 ```
 
-Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 18 tools. Or skip step 1 and let Claude Code start
+Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 19 tools. Or skip step 1 and let Claude Code start
 it for you over stdio (it serves the same pages on `127.0.0.1:8000`):
 
 ```powershell
@@ -71,6 +71,11 @@ worst-case health factor, each step) → you connect your wallet and sign an app
 digest → for each step the server re-checks live data, builds and simulates it, and your wallet shows the real
 transaction to sign → the server checks that what you signed is byte-identical to what it built, relays it, and watches
 the confirmation. Claude then reports it from `vanna_plan action=status`.
+
+The link itself only lets its holder see the plan (and cancel it). Approving returns a run token to that browser tab; the
+page's prepare and submit calls carry it (`X-Plan-Token`), so a copied link cannot drive the plan. Opening an approved
+plan in another browser asks the wallet to sign a short "continue here" message, which issues a new token and retires
+the old one. Logs name a plan by a hash (`plan_ref`), never by the id that makes up the link.
 
 **Phantom on a fork:** the page only asks your wallet to *sign*; the server broadcasts to the fork. Phantom may warn that it
 cannot simulate the transaction or that it targets an unknown network; that is expected for a fork. Make sure the wallet

@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from vanna_core.math_utils import BALANCE_TO_BORROW_THRESHOLD_WAD, WAD
+
 logger = logging.getLogger(__name__)
 
 
@@ -152,18 +154,8 @@ class VannaSettings(BaseSettings):
     protocol_lookup_tables: str = ""
 
     # Whether the program's `margin_execute` still takes a `venue_account` (the GMTrade build, vanna-credit-layer `main`).
-    # The fork runs `feature/phoenix-titan` since 2026-10-06, which removed it: sending it shifts every later account and
-    # the program fails with IncompletePositionAccounts (6024). False = the fork's current program; set true if the fork
-    # goes back to a build with `venue_account`.
-    margin_execute_venue_account: bool = False
-
-    # Health-factor threshold — informational only. The actual on-chain rule
-    # is BALANCE_TO_BORROW_THRESHOLD_WAD, a hardcoded 1.10 program constant
-    # (TOOLS_CATALOGUE.md §2.4); this field must never be read as if it could
-    # relax that. `safe_health_factor` mirrors the app's own UI policy floor
-    # (lib/solana/config.ts SAFE_HEALTH_FACTOR) that pre-flight tools target.
-    liquidation_health_factor: float = 1.10
-    safe_health_factor: float = 1.15
+    # The liquidation line is the program's BALANCE_TO_BORROW_THRESHOLD_WAD (1.10, `math_utils`; `risk.LIQUIDATION_HF`),
+    # never a setting. The product's stricter floor is `min_health_factor` below.
 
     # Feature gates — both default OFF; flipping them on is a deliberate,
     # reviewed decision, never a side effect of another setting.
@@ -174,7 +166,7 @@ class VannaSettings(BaseSettings):
     # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
     # after the oracle / whole-account-liquidation program update. The MCP refuses
     # to start if the loaded IDL differs (a pinned-contract safety rule).
-    pinned_idl_sha256: str = "0c495e4b037ed928b8575a25747ea2988d5ad0b236598321e7c2cc0a3686df17"
+    pinned_idl_sha256: str = "1d019a86781c7e60651a1e49f38d0ad54b6f095d50c07041d47d955fdc3e8445"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.
     read_cache_ttl_seconds: int = 30
@@ -247,7 +239,7 @@ class VannaSettings(BaseSettings):
     # ---------------------------------------------------------------------------
     safety_layer: bool = False
     # The product's health-factor floor (the program liquidates at 1.10; actions that lower health are held at 1.15).
-    min_health_factor: float = Field(default=1.15, gt=1.10)
+    min_health_factor: float = Field(default=1.15, gt=BALANCE_TO_BORROW_THRESHOLD_WAD / WAD)
     # USD value of one write / of a UTC day's writes (per wallet).
     max_action_usd: float = Field(default=5_000, gt=0)
     max_daily_usd: float = Field(default=25_000, gt=0)

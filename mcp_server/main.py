@@ -493,6 +493,7 @@ def main() -> None:
             host=settings.mcp_http_host,
             port=settings.mcp_http_port,
             log_level=settings.log_level.lower(),
+            access_log=False,  # an access line would print each plan link (/plan/<id>); the engine logs a plan_ref instead
         )
 
 

@@ -21,8 +21,7 @@ from vanna_core import math_utils
 from vanna_core.assets import KAMINO_MAIN_MARKET, KLEND_PROGRAM_ID, AssetRegistry, DiscoveredAsset, find_receipt
 from vanna_core.client import SolanaClient
 from vanna_core.contracts.kamino import KaminoContract
-from vanna_core.layouts import EMPTY_ASSET_INDEX
-from vanna_core.layouts import MarginAccount as MarginAccountLayout
+from vanna_core.margin_state import load_margin_state
 from vanna_core.pdas import find_associated_token_address, margin_pda
 
 logger = logging.getLogger(__name__)
@@ -97,11 +96,11 @@ class FarmContract:
 
     async def get_positions(self, authority: Pubkey) -> dict:
         margin_address = margin_pda(authority, self._client.program_id)[0]
-        margin = await self._client.fetch_program_account(margin_address, "MarginAccount", MarginAccountLayout)
         registry = AssetRegistry(self._client)
         await registry.load()
+        margin = await load_margin_state(self._client, margin_address, registry)
 
-        active = [i for i in margin.collateral_asset_indexes if i != EMPTY_ASSET_INDEX]
+        active = margin.held_collateral_indexes
         assets = await asyncio.gather(*(registry.by_index(i) for i in active))
         receipts = [a for a in assets if a.price_source == "KaminoReceipt"]
 

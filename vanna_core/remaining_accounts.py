@@ -2,14 +2,16 @@
 `risk_engine.rs::{split_positions, collect_holdings}` and `interface.rs::AgentAccounts` read
 (verified against `vanna-credit-layer` origin/main `465f21a`, and the app's `buildHealthRemainingAccounts`):
 
-1. Position groups, one per active position of the margin account EXCEPT the named ones
-   the instruction values itself, in the margin's stored slot order:
-   collateral group = `[asset_config, margin_vault]`,
-   debt group       = `[asset_config, reserve, debt_position]`.
+1. Position groups EXCEPT the named ones the instruction values itself (since the 2026-10-09 upgrade, the app's
+   `buildHealthRemainingAccounts` at backend `2462473`): one `[asset_config, margin_vault]` group for EVERY token on
+   the protocol's allowed list, in that order and zero balances included; then one `[venue asset_config, margin]`
+   group per venue the margin holds; then one `[asset_config, reserve, debt_position]` group per debt.
+   `margin_state.MarginState.collateral_asset_indexes` is exactly that list (allowed tokens + venues).
    Any missing, substituted, reordered or extra account fails the transaction closed with
    `IncompletePositionAccounts`, so no position can be hidden.
-2. (`margin_execute` only) one `[asset_config, margin_vault]` group per token received for the first time.
-3. Then the ORACLE segment `[vanna_oracle, price_book, <price accounts>]`. The core program no longer prices
+   The program skips pricing a zero balance, so the oracle segment prices only tokens actually held (and the
+   instruction's own): all 23 allowed tokens' price accounts would not fit in a transaction.
+2. Then the ORACLE segment `[vanna_oracle, price_book, <price accounts>]`. The core program no longer prices
    anything: it asks the oracle agent (a CPI) for every holding's value, handing it exactly this segment. So the
    segment names the price accounts (Scope / Pyth / Pyth factor / a receipt's klend reserve) of EVERY active
    asset - the instruction's own and any excluded from the position groups included - each once. Unlike the old
@@ -72,7 +74,7 @@ def oracle_program_of(client: SolanaClient, assets: Iterable[DiscoveredAsset]) -
 
 
 def oracle_segment(
-    client: SolanaClient, assets: Iterable[DiscoveredAsset], venue_keys: Iterable[str] = ()
+    client: SolanaClient, assets: Iterable[DiscoveredAsset], venue_keys: Iterable[str] = (), extra_keys: Iterable[str] = ()
 ) -> list[AccountMeta]:
     """`[vanna_oracle, price_book, ...price accounts]` for every involved token, then the venue's accounts
     (`venue_keys`, when the margin holds or a call targets the Phoenix venue), each account once."""
@@ -82,7 +84,8 @@ def oracle_segment(
             raise UnpricablePositionError(f"{asset.symbol} has no price source in the oracle's price book, so it cannot be valued.")
     program = oracle_program_of(client, tokens)
     head = [str(program), str(price_book_pda(program)[0])]
-    keys = list(dict.fromkeys([*head, *(m.pubkey.__str__() for m in oracle_account_metas(tokens)), *venue_keys]))
+    # `extra_keys`: the accounts a held Basis vault share is valued from (`vault_pricing.vault_oracle_keys`).
+    keys = list(dict.fromkeys([*head, *(m.pubkey.__str__() for m in oracle_account_metas(tokens)), *extra_keys, *venue_keys]))
     return [_ro(Pubkey.from_string(k)) for k in keys]
 
 
@@ -129,10 +132,16 @@ async def position_groups(
     return accounts
 
 
+def held_collateral(margin_decoded) -> list[int]:
+    """The collateral that is priced: tokens with a balance and venues (`MarginState`, `MarginModel`). A plain
+    projection without balances falls back to every listed index."""
+    held = getattr(margin_decoded, "held_collateral_indexes", None)
+    return list(held) if held is not None else [i for i in margin_decoded.collateral_asset_indexes if i != EMPTY_ASSET_INDEX]
+
+
 async def active_assets(margin_decoded, registry: AssetRegistry) -> list[DiscoveredAsset]:
-    indexes = [
-        i for i in (*margin_decoded.collateral_asset_indexes, *margin_decoded.debt_asset_indexes) if i != EMPTY_ASSET_INDEX
-    ]
+    """Everything the oracle segment must price: held collateral and every debt."""
+    indexes = [i for i in (*held_collateral(margin_decoded), *margin_decoded.debt_asset_indexes) if i != EMPTY_ASSET_INDEX]
     return [await registry.by_index(i) for i in dict.fromkeys(indexes)]
 
 
@@ -177,8 +186,8 @@ async def build_health_accounts(
     extra_assets: Iterable[DiscoveredAsset] = (),
     extra_groups: Iterable[AccountMeta] = (),
 ) -> list[AccountMeta]:
-    """Position groups, then `extra_groups` (`margin_execute`'s new-asset groups), then the oracle segment of every
-    active asset plus `extra_assets` (the assets the instruction names itself, which may not be active yet), ending
+    """Position groups, then `extra_groups` (none since the 2026-10-09 upgrade), then the oracle segment of every
+    held asset plus `extra_assets` (the assets the instruction names itself, which may not be active yet), ending
     with the Phoenix venue's accounts when the margin holds perps."""
     groups = await position_groups(
         client, margin_address, margin_decoded, registry, exclude_collateral_indexes, exclude_debt_index
@@ -186,4 +195,7 @@ async def build_health_accounts(
     involved = [*await active_assets(margin_decoded, registry), *extra_assets]
     unique = list(dict.fromkeys(involved))
     venue = await venue_keys_for(client, margin_address, margin_decoded, registry)
-    return [*groups, *extra_groups, *oracle_segment(client, unique, venue)]
+    from vanna_core.vault_pricing import vault_oracle_keys
+
+    vault_keys = await vault_oracle_keys(client, unique)
+    return [*groups, *extra_groups, *oracle_segment(client, unique, venue, vault_keys)]

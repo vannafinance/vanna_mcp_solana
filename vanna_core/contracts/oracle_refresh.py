@@ -38,6 +38,7 @@ from dataclasses import dataclass
 import httpx
 from solders.pubkey import Pubkey
 
+from vanna_core import constants
 from vanna_core.assets import PYTH_PUSH_ORACLE_PROGRAM_ID, PYTH_RECEIVER_PROGRAM_ID, WSOL_MINT, AssetRegistry, DiscoveredAsset
 from vanna_core.client import SolanaClient
 from vanna_core.config import VannaSettings
@@ -71,10 +72,10 @@ _MIN_PRICE_ACCOUNT_SIZE = 134
 _PRICE_EXPONENT = -8
 
 _JUPITER_PRICE_URL = "https://lite-api.jup.ag/price/v3"
-_JUPUSD_MINT = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD"
-_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-_JUPSOL_MINT = "jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v"
+_JUPUSD_MINT = constants.JUPUSD_MINT
+_USDC_MINT = constants.USDC_MINT
+_USDT_MINT = constants.USDT_MINT
+_JUPSOL_MINT = constants.JUPSOL_MINT
 
 
 @dataclass(frozen=True)

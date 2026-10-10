@@ -67,6 +67,24 @@ async def build_with_retry(
     return envelope
 
 
+def is_prerequisite(envelope: dict) -> bool:
+    return bool((envelope.get("summary") or {}).get("prerequisite"))
+
+
+async def build_action(build_fn: Callable[[], Awaitable[dict]], rpc_url: str, keypair: Keypair, *, max_setups: int = 3) -> dict:
+    """`build_with_retry`, signing any one-time prerequisite first (the wallet's lookup-table setup, returned in place
+    of the action) and then building the action again - what the plan engine and a wallet user do."""
+    envelope = await build_with_retry(build_fn)
+    for _ in range(max_setups):
+        if not is_prerequisite(envelope):
+            return envelope
+        assert envelope.get("simulation_success"), envelope.get("reason")
+        await sign_and_submit(rpc_url, envelope, keypair)
+        await asyncio.sleep(1.0)  # a lookup table is usable from the slot after its extension
+        envelope = await build_with_retry(build_fn)
+    return envelope
+
+
 async def sign_and_submit(rpc_url: str, envelope: dict, keypair: Keypair, extra_signers: list[Keypair] | None = None) -> str:
     """Sign and submit a schema-v1 write envelope's single transaction with a
     disposable local keypair, purely to create fixture state for read tests.

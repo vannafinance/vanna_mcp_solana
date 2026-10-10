@@ -31,6 +31,7 @@ from solders.transaction import VersionedTransaction
 from vanna_core import math_utils
 from vanna_core.assets import JUPITER_V6_PROGRAM_ID, AssetRegistry
 from vanna_core.client import SolanaClient
+from vanna_core.constants import MAX_TX_BYTES
 from vanna_core.contracts.jupiter import ALLOWED_SELECTORS, JupiterClient, decode_jupiter_instruction, fetch_lookup_tables
 from vanna_core.contracts.titan import (
     TitanClient,
@@ -51,7 +52,6 @@ DEFAULT_SLIPPAGE_BPS = 100  # 1%, matches the app's own default
 
 logger = logging.getLogger(__name__)
 
-MAX_TX_BYTES = 1232  # Solana packet limit for one serialized transaction
 MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 # Jupiter route account caps for a margin swap, tried in order until the transaction fits. None = Jupiter's
 # default (unconstrained) route, which most pairs fit; the tighter caps cost a little price, not safety
@@ -84,6 +84,15 @@ def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute
 
 
 class SwapContract:
+    async def _margin_tables(self, authority: Pubkey) -> list:
+        """The protocol tables plus the wallet's own table (it carries the margin's vaults since 2026-10-09)."""
+        from vanna_core import wallet_alt
+        from vanna_core.protocol_alt import load_protocol_tables
+
+        tables = list(await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables))
+        wallet_table = await wallet_alt.load_wallet_table(self._client, authority)
+        return [*tables, wallet_table] if wallet_table is not None else tables
+
     def __init__(self, client: SolanaClient) -> None:
         self._client = client
         self._jupiter = JupiterClient(client.settings)
@@ -231,6 +240,8 @@ class SwapContract:
             return {"allowed": False, "reason": f"{to_asset.symbol} is not collateral_enabled"}
 
         address, margin, collateral_rows, debt_rows, current = await margin_contract.snapshot(authority)
+        if not margin.is_allowed(to_asset.asset_index):
+            return {"allowed": False, "reason": f"{to_asset.symbol} is not on the protocol's allowed collateral list"}
         from_row = next((r for r in collateral_rows if r["symbol"] == from_asset.symbol), None)
         if from_row is None:
             return {"allowed": False, "reason": f"no active {from_asset.symbol} collateral position"}
@@ -335,6 +346,20 @@ class SwapContract:
 
         margin = margin_pda(authority, self._client.program_id)[0]
         raw_amount = math_utils.base_units(amount_ui, from_asset.decimals)
+        # The wallet's own lookup table must hold its vaults before any margin swap can fit (`wallet_alt.py`): set it
+        # up first, before spending a quote.
+        from vanna_core import wallet_alt
+        from vanna_core.types import AccountNotFoundError
+
+        if not await self._client.account_exists(margin):
+            raise AccountNotFoundError(f"No margin account for {authority}: create one first")
+        try:
+            setup = await wallet_alt.setup_envelope_if_needed(self._client, authority, registry)
+        except wallet_alt.WalletTableNotReady as exc:
+            raise ContractCallError(str(exc)) from exc
+        if setup is not None:
+            setup.summary["then"] = "margin_swap"
+            return setup
         chosen, titan_quote = await self._pick(provider, from_asset, to_asset, raw_amount, slippage_bps, str(margin), "margin")
         if chosen == "titan" and titan_quote is not None:
             try:
@@ -351,7 +376,7 @@ class SwapContract:
         # tokens such as JupSOL/JitoSOL. Re-quote with a tighter account cap until the transaction fits.
         from vanna_core.protocol_alt import load_protocol_tables
 
-        protocol_tables = await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables)
+        protocol_tables = await self._margin_tables(authority)
         last_error: Exception | None = None
         for cap in MARGIN_ROUTE_ACCOUNT_CAPS:
             try:
@@ -413,7 +438,7 @@ class SwapContract:
             cpi_accounts=accounts, data=data, registry=registry,
         )
         lookup_tables = await fetch_lookup_tables(self._client, quote.address_lookup_tables)
-        protocol_tables = await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables)
+        protocol_tables = await self._margin_tables(authority)
         route_keys = {t.key for t in lookup_tables}
         all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
         full = [*atlas, *instructions]

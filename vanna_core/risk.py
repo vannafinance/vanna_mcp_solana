@@ -17,7 +17,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-LIQUIDATION_HF = 1.10
+from vanna_core.math_utils import BALANCE_TO_BORROW_THRESHOLD_WAD, WAD
+
+# The program's liquidation line (BALANCE_TO_BORROW_THRESHOLD_WAD, 1.10): derived, never a second copy.
+LIQUIDATION_HF = BALANCE_TO_BORROW_THRESHOLD_WAD / WAD
 # Ratio above the floor that is still flagged as thin.
 THIN_BUFFER = 0.10
 # Slippage a lever plan assumes its swap may cost (matches the MCP's default `slippage_bps`).

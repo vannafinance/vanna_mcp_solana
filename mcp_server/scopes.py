@@ -23,6 +23,7 @@ WRITE_ACTIONS: dict[str, frozenset[str]] = {
     "vanna_farm_kamino": frozenset({"deposit", "redeem"}),
     "vanna_swap": frozenset({"margin_swap", "wallet_swap"}),
     "vanna_perps": frozenset({"register", "open", "close", "withdraw"}),
+    "vanna_vaults": frozenset({"deposit", "withdraw", "move_shares"}),
     "vanna_wallet": frozenset({"faucet"}),
     # Drawing a plan creates an executable path (the user still approves it with their wallet), so a read-only login
     # does not get it; `status` is a read.
@@ -43,6 +44,7 @@ WRITE_ONLY_TOOLS: frozenset[str] = frozenset({
 # Reads that fan out to many accounts / RPC calls (rate-limit cost 5, not 1).
 EXPENSIVE_READ_TOOLS: frozenset[str] = frozenset({
     "vanna_perps",
+    "vanna_vaults",
     "vanna_farm_overview",
     "vanna_history",
     "vanna_margin_status",

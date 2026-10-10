@@ -238,12 +238,19 @@ Validation on every read (both modes): owner = receiver, discriminator/layout, v
 
 **Policy floor (not a protocol rule)**
 
-- `SAFE_HEALTH_FACTOR = 1.15` is the app's UI policy. Tools report values at both 1.15 (policy) and 1.10 (protocol).
+- The 1.15 floor is the app's UI policy (`MIN_HEALTH_FACTOR`). Tools report values at both 1.15 (policy) and 1.10 (protocol, `risk.LIQUIDATION_HF`, derived from `BALANCE_TO_BORROW_THRESHOLD_WAD`).
 - max borrow `B ≤ (C − h·D)/(h − 1)` (or `C/h − D` if the borrowed asset isn't collateral-enabled); max withdraw `W ≤ C − h·D`; max leverage on fresh equity `h/(h − 1)`.
 
 **Failure behaviour.** Fail closed on missing accounts, unsupported price source, stale price, confidence breach, decode or RPC error. An approximate UI summary is never used as a borrow-authorisation engine; simulation is the final check.
 
 ### 2.5 Health-check `remaining_accounts` (authority: `risk_engine.rs::scan_and_validate_positions`)
+
+> **Since the 2026-10-09 program upgrade** (implemented in `vanna_core/remaining_accounts.py` and
+> `margin_state.py`): the collateral groups are one `[asset_config, margin_vault]` per token on the protocol's
+> `ProtocolConfig.allowed_tokens` list (in that order, zero balances included), then one `[venue asset_config, margin]`
+> per venue the margin holds, then the debt groups; the oracle segment prices only tokens held (and the
+> instruction's own). `margin_execute` lost `new_assets` and gained `event_authority` + `program`. The text below is the
+> earlier per-margin-slot layout, kept for history.
 
 Walk **all 24 slots** of each array in stored order, skipping 65535 (the arrays are sparse):
 
@@ -504,6 +511,33 @@ without it a drawn plan is a preview (`executable: false`).
 | Action | Purpose |
 |---|---|
 | `overview` | wallet tokens with USD, margin account (collateral, debt, equity, leverage = gross collateral / equity, LTV, HF), Earn deposits with interest and APR, Kamino positions, net worth (receipts not double-counted) |
+
+### 3.19 `vanna_perps` — Phoenix perps (2026-10-08)
+
+| Action | Purpose |
+|---|---|
+| `markets` | SOL, ETH, BTC, TSLA, META: index / mark price, max leverage, open, taker fee |
+| `positions` | the margin's Phoenix balance, withdrawable now, each position with PnL and liquidation prices |
+| `preview` | an order's size, limit price, fee, HF and liquidation price after (nothing built) |
+| `register` / `open` / `close` / `withdraw` | the first-trade trader account; open (margin USDC -> Phoenix, IOC order); reduce-only close; USDC back |
+
+Perps never borrow from Vanna. Mirrors `lib/solana/perps.ts`.
+
+### 3.20 `vanna_vaults` — Basis and Perena vaults (2026-10-09)
+
+| Action | Purpose |
+|---|---|
+| `list` | each vault's NAV, share price, deposits open, deposit limit, hedge (Basis); the app's APY with its source (`apy_*_source`: `history`, or `deposit_event_estimate` with `apy_*_baseline`, an approximate figure from past deposits since backend `fa6d2f6`) and `apy_history_status`; Perena's published APY; Phoenix funding for Basis |
+| `positions` | the wallet's vault shares in its margin account (and SOL Basis shares still in the wallet) with collateral value |
+| `preview` | a simulated deposit (USDC) or withdrawal (shares): output, minimum, HF after (nothing built) |
+| `deposit` / `withdraw` | `margin_execute` into Perena or the Basis vault program (Basis runs its own Jupiter route; min out = simulated - 0.5%) |
+| `move_shares` | SOL Basis: deposit the shares its wallet-funded deposit minted into the margin account |
+
+Mirrors `lib/solana/vault-actions.ts`, `vault-state.ts`, `perena.ts` and `@vanna/phoenix-vault-client` 0.1.0.
+
+A Basis share is priced by simulating the oracle; when that read fails (a transient RPC error), the last good price from
+the past hour is used, flagged not fresh, like the app (backend `039a46b`), so the shares don't drop to $0 in a health
+reading. A health-checked write still refuses a price that isn't fresh (`oracle_reader._LAST_BASIS_PRICE`).
 
 ### Extensions to existing dispatchers (2026-10-04)
 

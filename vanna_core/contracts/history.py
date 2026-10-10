@@ -1,16 +1,15 @@
-"""Event history — decoded from Anchor's `emit!` log lines, no indexer.
+"""Event history — decoded from Anchor events, no indexer.
 Backs the `vanna_history` dispatcher (TOOLS_CATALOGUE.md §3.12).
 
-`getSignaturesForAddress` -> one `getTransaction` per signature -> parse each
-"Program data: <base64>" log line, matching its leading 8-byte discriminator
-against `vanna_core.layouts.EVENT_LAYOUTS`. No batched JSON-RPC (the fork
+`getSignaturesForAddress` -> one `getTransaction` per signature -> every event payload it carries: "Program data:
+<base64>" log lines (`emit!`) and, since the 2026-10-09 upgrade, CPI events (`emit_cpi!`: inner instructions to the
+program, as the app's history reads them), each matched by its leading 8-byte discriminator against
+`vanna_core.layouts.EVENT_LAYOUTS`. No batched JSON-RPC (the fork
 rejects it, per `Vanna-Solana-Copilot-Answers.pdf`) — each transaction is
 fetched with its own call.
 """
 
 from __future__ import annotations
-
-import base64
 
 from solders.pubkey import Pubkey
 
@@ -37,16 +36,10 @@ class HistoryContract:
         signatures = await self._client.get_signatures_for_address(address, limit=limit)
         events: list[dict] = []
         for entry in signatures:
-            logs = await self._client.get_transaction_logs(entry.signature)
-            if logs is None:
+            payloads = await self._client.get_transaction_event_payloads(entry.signature)
+            if payloads is None:
                 continue
-            for log in logs:
-                if not log.startswith("Program data: "):
-                    continue
-                try:
-                    raw = base64.b64decode(log.removeprefix("Program data: "))
-                except Exception:  # noqa: BLE001
-                    continue
+            for raw in payloads:
                 if len(raw) < 8:
                     continue
                 name = _DISCRIMINATOR_TO_NAME.get(raw[:8])
@@ -124,8 +117,13 @@ class HistoryContract:
             elif e["event"] == "Liquidated":
                 # Whole-account liquidation: every debt repaid, every collateral seized.
                 row["liquidator"] = pubkey_bytes_to_base58(f.liquidator)
-                row["collaterals_seized"] = f.collaterals_seized
-                row["debts_repaid"] = f.debts_repaid
+                decimals_of = {a.mint: a.decimals for a in every}
+                debt_mint, collateral_mint = pubkey_bytes_to_base58(f.debt_mint), pubkey_bytes_to_base58(f.collateral_mint)
+                row["debt_asset"] = mint_to_symbol.get(debt_mint, debt_mint)
+                row["repaid"] = math_utils.ui_amount(f.repaid, decimals_of.get(debt_mint, 0))
+                row["collateral_asset"] = mint_to_symbol.get(collateral_mint, collateral_mint)
+                row["seized"] = math_utils.ui_amount(f.seized, decimals_of.get(collateral_mint, 0))
+                row["venue_calls"] = f.venue_calls
                 row["collateral_value_usd"] = math_utils.usd_value_ui(f.collateral_value)
                 row["debt_value_usd"] = math_utils.usd_value_ui(f.debt_value)
                 row["health_factor"] = str(f.health_factor_wad / math_utils.WAD)

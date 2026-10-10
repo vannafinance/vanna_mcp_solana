@@ -38,6 +38,7 @@ from vanna_core.assets import (
     PYTH_RECEIVER_PROGRAM_ID,
     AssetRegistry,
 )
+from vanna_core.constants import MAX_TABLE_ADDRESSES
 from vanna_core.pdas import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, integration_pda, price_book_pda, protocol_config_pda
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,6 @@ logger = logging.getLogger(__name__)
 LOOKUP_TABLE_PROGRAM_ID = Pubkey.from_string("AddressLookupTab1e1111111111111111111111111")
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-MAX_TABLE_ADDRESSES = 256
 
 
 async def protocol_lookup_addresses(

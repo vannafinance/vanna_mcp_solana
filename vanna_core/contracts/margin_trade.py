@@ -31,8 +31,7 @@ from vanna_core.anchor_codec import instruction_discriminator
 from vanna_core.assets import AssetRegistry, DiscoveredAsset, assert_lend_borrow_offered
 from vanna_core.client import SolanaClient
 from vanna_core.envelope import WriteEnvelope
-from vanna_core.layouts import EMPTY_ASSET_INDEX
-from vanna_core.layouts import MarginAccount as MarginAccountLayout
+from vanna_core.margin_state import allowed_tokens_of, load_margin_state, load_protocol_config
 from vanna_core.pdas import (
     ASSOCIATED_TOKEN_PROGRAM_ID,
     debt_position_pda,
@@ -149,10 +148,17 @@ class MarginTradeContract:
         ix = self._client.build_instruction(DISC_DEPOSIT_COLLATERAL, _u64(raw), accounts)
         return [*prep, ix]
 
+    async def _require_allowed(self, asset: DiscoveredAsset) -> None:
+        """Token collateral is the protocol's allowed list since 2026-10-09: a token outside it can't be held."""
+        allowed = allowed_tokens_of(await load_protocol_config(self._client))
+        if asset.asset_index not in allowed:
+            raise ValueError(f"{asset.symbol} is not on the protocol's allowed collateral list, so the margin account can't hold it")
+
     async def deposit_collateral(self, authority: Pubkey, asset_symbol: str, amount_ui) -> WriteEnvelope:
         registry = AssetRegistry(self._client)
         await registry.load()
         asset = registry.by_symbol(asset_symbol)
+        await self._require_allowed(asset)
         margin = self.margin_address(authority)
         instructions = self._deposit_collateral_instructions(authority, margin, asset, amount_ui)
         return await self._envelope(
@@ -174,7 +180,7 @@ class MarginTradeContract:
         token_program = Pubkey.from_string(asset.token_program)
         raw = math_utils.base_units(amount_ui, asset.decimals)
 
-        margin_decoded = await self._client.fetch_program_account(margin, "MarginAccount", MarginAccountLayout)
+        margin_decoded = await load_margin_state(self._client, margin, registry)
         # With no debt the program allows any withdrawal and reads no prices, so it needs no
         # health accounts at all; with debt it needs every other position plus every oracle.
         if margin_decoded.debt_count == 0:
@@ -263,7 +269,7 @@ class MarginTradeContract:
         await registry.load()
         asset = registry.by_symbol(asset_symbol)
         margin = self.margin_address(authority)
-        margin_decoded = await self._client.fetch_program_account(margin, "MarginAccount", MarginAccountLayout)
+        margin_decoded = await load_margin_state(self._client, margin, registry)
         instructions = await self._borrow_instructions(
             authority, margin, asset, amount_ui, registry, margin_decoded, max_debt_shares=max_debt_shares,
         )
@@ -343,20 +349,15 @@ class MarginTradeContract:
         deposit_asset = registry.by_symbol(deposit_asset_symbol)
         borrow_asset = registry.by_symbol(borrow_asset_symbol)
         margin = self.margin_address(authority)
-        margin_decoded = await self._client.fetch_program_account(margin, "MarginAccount", MarginAccountLayout)
+        margin_decoded = await load_margin_state(self._client, margin, registry)
 
         deposit_ixs = self._deposit_collateral_instructions(authority, margin, deposit_asset, deposit_amount_ui)
 
-        was_active = deposit_asset.asset_index in margin_decoded.collateral_asset_indexes
-        projected_indexes = list(margin_decoded.collateral_asset_indexes)
-        if not was_active:
-            for i, slot in enumerate(projected_indexes):
-                if slot == EMPTY_ASSET_INDEX:
-                    projected_indexes[i] = deposit_asset.asset_index
-                    break
-        projected_margin = _ProjectedMarginAccount(
-            collateral_asset_indexes=projected_indexes,
-            debt_asset_indexes=list(margin_decoded.debt_asset_indexes),
+        # The deposit lands first in the same transaction: the borrow's health check sees it as held (priced).
+        if not margin_decoded.is_allowed(deposit_asset.asset_index):
+            raise ValueError(f"{deposit_asset.symbol} is not on the protocol's allowed collateral list, so the margin account can't hold it")
+        projected_margin = margin_decoded.with_vault(
+            deposit_asset.asset_index, math_utils.base_units(deposit_amount_ui, deposit_asset.decimals)
         )
 
         borrow_ixs = await self._borrow_instructions(
@@ -671,17 +672,3 @@ class MarginTradeContract:
 
 def _pk(raw: bytes) -> Pubkey:
     return Pubkey(bytes(raw))
-
-
-class _ProjectedMarginAccount:
-    """A locally-projected `MarginAccount` view — same two fields
-    `build_health_accounts` reads, standing in for the real decoded
-    account when a preceding instruction in the same transaction (e.g. a
-    composite's own `deposit_collateral`) will have changed the active-slot
-    arrays before the instruction being built actually executes on-chain."""
-
-    __slots__ = ("collateral_asset_indexes", "debt_asset_indexes")
-
-    def __init__(self, collateral_asset_indexes: list[int], debt_asset_indexes: list[int]) -> None:
-        self.collateral_asset_indexes = collateral_asset_indexes
-        self.debt_asset_indexes = debt_asset_indexes

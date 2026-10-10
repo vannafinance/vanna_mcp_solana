@@ -30,6 +30,7 @@ from mcp_server.dispatchers.risk_advisor import vanna_risk
 from mcp_server.dispatchers.protocol_info import vanna_protocol_info
 from mcp_server.dispatchers.sign import vanna_sign
 from mcp_server.dispatchers.swap import vanna_swap
+from mcp_server.dispatchers.vaults import vanna_vaults
 from mcp_server.dispatchers.wallet import vanna_wallet
 
 ALL_DISPATCHERS = [
@@ -51,6 +52,7 @@ ALL_DISPATCHERS = [
     vanna_portfolio,
     vanna_plan,
     vanna_perps,
+    vanna_vaults,
 ]
 
 # Dev-only — registered by main.py only when ENABLE_FORK_TOOLS=true. Never

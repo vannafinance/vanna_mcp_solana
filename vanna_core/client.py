@@ -54,6 +54,19 @@ from vanna_core.types import AccountNotFoundError, ContractCallError
 
 logger = logging.getLogger(__name__)
 
+# Anchor `emit_cpi!`: an event travels as an inner instruction to the program itself, tagged with these 8 bytes.
+EVENT_IX_TAG = bytes.fromhex("e445a52e51cb9a1d")
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58decode(text: str) -> bytes:
+    """Base58 (Bitcoin alphabet) to bytes: inner-instruction data in a `json`-encoded transaction."""
+    n = 0
+    for ch in text:
+        n = n * 58 + _B58.index(ch)
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    return bytes(len(text) - len(text.lstrip("1"))) + body
+
 _TRANSIENT_MARKERS = ("internal error", "bad gateway", "gateway", "timed out", "timeout", "temporarily", "unavailable", "502", "503", "504")
 _RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 
@@ -207,11 +220,14 @@ class SolanaClient:
                 f"Failed to decode {struct_name} at {address}: {exc}"
             ) from exc
 
-    async def get_program_accounts(self, program_id: Pubkey, *, data_size: int, discriminator: bytes) -> list[tuple[Pubkey, bytes]]:
+    async def get_program_accounts(self, program_id: Pubkey, *, data_size: int, discriminator: bytes,
+                                   retry: bool = True) -> list[tuple[Pubkey, bytes]]:
         """Every account of `program_id` with exactly `data_size` bytes and this 8-byte
-        Anchor discriminator — used to discover the registered assets on-chain."""
+        Anchor discriminator — used to discover the registered assets on-chain. `retry=False` makes one attempt:
+        for a caller with its own fallback, the transient-error backoff only delays it."""
         from solana.rpc.types import MemcmpOpts
-        resp = await self._rpc.get_program_accounts(
+        rpc = self._rpc if retry else self._rpc._inner
+        resp = await rpc.get_program_accounts(
             program_id, encoding="base64",
             filters=[data_size, MemcmpOpts(offset=0, bytes=_b58encode(discriminator))],
         )
@@ -271,6 +287,14 @@ class SolanaClient:
         resp = await self._rpc.get_signatures_for_address(address, limit=limit)
         return resp.value
 
+    async def get_transaction_fee_payer(self, signature) -> str | None:
+        """Who paid for (and so signed) one confirmed transaction: its first account key. None if it can't be fetched."""
+        resp = await self._rpc.get_transaction(signature, encoding="json", max_supported_transaction_version=0)
+        if resp.value is None:
+            return None
+        keys = resp.value.transaction.transaction.message.account_keys
+        return str(keys[0]) if keys else None
+
     async def get_transaction_logs(self, signature) -> list[str] | None:
         """The log messages for one confirmed transaction, or None if it
         can't be fetched/decoded (never batched — some RPC nodes, including
@@ -281,6 +305,44 @@ class SolanaClient:
         if resp.value is None or resp.value.transaction.meta is None:
             return None
         return resp.value.transaction.meta.log_messages or []
+
+    async def get_transaction_event_payloads(self, signature) -> list[bytes] | None:
+        """Every event payload (8-byte event discriminator + fields) one confirmed transaction emitted: Anchor log
+        events (`Program data: <base64>`) and, since the 2026-10-09 upgrade, CPI events - an inner instruction from
+        the program to itself whose data is the 8-byte `EVENT_IX_TAG` followed by the payload. None if the
+        transaction can't be fetched."""
+        import base64
+
+        resp = await self._rpc.get_transaction(signature, encoding="json", max_supported_transaction_version=0)
+        if resp.value is None or resp.value.transaction.meta is None:
+            return None
+        meta = resp.value.transaction.meta
+        payloads: list[bytes] = []
+        for log in meta.log_messages or []:
+            if log.startswith("Program data: "):
+                try:
+                    payloads.append(base64.b64decode(log.removeprefix("Program data: ")))
+                except Exception:  # noqa: BLE001
+                    continue
+        inner = meta.inner_instructions or []
+        if inner:
+            message = resp.value.transaction.transaction.message
+            keys = [str(k) for k in message.account_keys]
+            loaded = meta.loaded_addresses
+            if loaded is not None:
+                keys += [str(k) for k in loaded.writable] + [str(k) for k in loaded.readonly]
+            program = str(self.program_id)
+            for group in inner:
+                for ix in group.instructions:
+                    if ix.program_id_index >= len(keys) or keys[ix.program_id_index] != program:
+                        continue
+                    try:
+                        data = b58decode(ix.data)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if data[:8] == EVENT_IX_TAG:
+                        payloads.append(data[8:])
+        return payloads
 
     async def get_chain_clock_unix_timestamp(self) -> int:
         """Read the Clock sysvar's unix_timestamp — the chain-time basis
@@ -339,9 +401,34 @@ class SolanaClient:
 
             given = {a.key for a in alt_accounts}
             alt_accounts += [t for t in await load_protocol_tables(self, self._settings.protocol_lookup_tables) if t.key not in given]
+        wallet_alt = None
+        if use_protocol_lookup_tables:
+            # Since the 2026-10-09 upgrade a health-checked margin transaction names every allowed token's vault: the
+            # wallet's own lookup table (`wallet_alt.py`) carries those per-wallet keys.
+            from vanna_core import wallet_alt
+
+            try:
+                wallet_table = await wallet_alt.load_wallet_table(self, fee_payer)
+            except wallet_alt.WalletTableNotReady as exc:
+                raise ContractCallError(str(exc)) from exc
+            if wallet_table is not None and wallet_table.key not in {a.key for a in alt_accounts}:
+                alt_accounts.append(wallet_table)
         message = MessageV0.try_compile(fee_payer, full_instructions, alt_accounts, blockhash)
         placeholder_sigs = [Signature.default() for _ in range(message.header.num_required_signatures)]
         tx = VersionedTransaction.populate(message, placeholder_sigs)
+        if wallet_alt is not None and len(bytes(tx)) > wallet_alt.MAX_TX_BYTES:
+            # Too large even with the tables: the one-time setup of the wallet's table goes first (the same action is
+            # built again after it lands). The margin account stays out of it (margin history is found by it).
+            from vanna_core.pdas import margin_pda
+
+            extra = wallet_alt.wanted_keys(full_instructions, fee_payer, alt_accounts, {margin_pda(fee_payer, self.program_id)[0]})
+            try:
+                setup = await wallet_alt.setup_envelope_if_needed(self, fee_payer, extra=extra)
+            except wallet_alt.WalletTableNotReady as exc:
+                raise ContractCallError(str(exc)) from exc
+            if setup is not None:
+                setup.summary["then"] = purpose
+                return setup
 
         sim = await self._rpc.simulate_transaction(tx, sig_verify=False)
         success = sim.value.err is None

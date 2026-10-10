@@ -15,6 +15,9 @@ which strategy, how to explain it); everything that has to be right is here:
     blockhash expired is marked `expired` and rebuilt).
   * The server never signs. It checks that what the wallet signed is byte-identical to what it built, then relays
     it and watches the confirmation.
+  * The plan link only lets its holder read the plan. Approving returns a run token (kept by the page that approved,
+    stored here only as a hash) that the page's prepare and submit calls must carry. Cancelling needs only the link.
+    Logs name a plan by `plan_ref`, never by its id (the id is the link).
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -40,6 +44,7 @@ from mcp_server.planning.preflight import Preflight, humanize, preflight_step, v
 from mcp_server.planning.strategies import label_for
 from mcp_server.safety import Safety
 from vanna_core.config import get_settings
+from vanna_core.program_errors import markers
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +55,8 @@ FINAL_STEP_STATES = frozenset({"confirmed", "skipped", "failed", "uncertain"})
 FINAL_PLAN_STATES = frozenset({"completed", "failed", "cancelled", "expired"})
 # Simulation failures that a fresh build can clear: a swap quote that moved past its slippage, a stale price feed, the
 # fork momentarily missing an account or blockhash. Anything else (health, funds, caps) would fail the same way again.
-_TRANSIENT_SIMULATION_MARKERS = ("slippagetoleranceexceeded", "0x1771", "custom(6001)", "stalepri", "0x178b",
+# 0x1771 / 6001 is the swap program's own slippage error (Jupiter, Titan), not Vanna's.
+_TRANSIENT_SIMULATION_MARKERS = ("slippagetoleranceexceeded", "0x1771", "custom(6001)", "stalepri", *markers("StalePrice"),
                                  "transactionerrorfieldless.accountnotfound", "blockhashnotfound")
 
 
@@ -79,6 +85,26 @@ def plan_digest(wallet: str, hf_floor: float, steps: list[dict[str, Any]]) -> st
         sort_keys=True, default=str,
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def plan_ref(plan_id: str) -> str:
+    """A plan's name in logs: anyone reading a log line must not be able to open the plan from it."""
+    return hashlib.sha256(plan_id.encode()).hexdigest()[:12]
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def resume_message(rec: dict[str, Any]) -> str:
+    """Signed to take over an approved plan in another browser (or after the page lost its run token)."""
+    return (
+        "Vanna Finance — continue this approved plan in this browser\n"
+        f"Wallet: {rec['wallet']}\n"
+        f"Plan: {rec['id']}\n"
+        f"Digest: {rec['digest']}\n"
+        "Signing this message does not move funds; each step still needs its own transaction signature."
+    )
 
 
 def approval_message(rec: dict[str, Any]) -> str:
@@ -176,7 +202,23 @@ class PlanEngine:
             ],
             "plan_url": self.plan_url(rec["id"]),
             "approval_message": approval_message(rec) if rec["status"] == "awaiting_approval" else None,
+            "resume_message": resume_message(rec) if rec["status"] in ("approved", "running", "paused") else None,
         }
+
+    def _issue_token(self, rec: dict[str, Any]) -> str:
+        token = secrets.token_urlsafe(32)
+        rec["run_token_hash"] = _token_hash(token)
+        return token
+
+    @staticmethod
+    def _authorize(rec: dict[str, Any], token: str | None) -> None:
+        """A page call must carry the run token its approval returned. `None` is an in-process caller (the MCP tools,
+        which have already scoped the wallet), never a web request: the routes always pass a string."""
+        if token is None:
+            return
+        expected = rec.get("run_token_hash")
+        if not expected or not token or not hmac.compare_digest(_token_hash(token), expected):
+            raise PlanError("not_authorized", "This browser has not approved the plan. Confirm with your wallet to continue here.", 401)
 
     async def get(self, plan_id: str) -> dict[str, Any]:
         rec = await self._load(plan_id)
@@ -193,11 +235,19 @@ class PlanEngine:
     # ------------------------------------------------------------------ approval
 
     async def approve(self, plan_id: str, wallet: str, signature_b64: str) -> dict[str, Any]:
+        """The wallet's approval; returns the plan and the page's run token. On an approved plan, a signature over
+        `resume_message` re-issues the token (another browser, or a page that lost it) and the old one stops working."""
         rec = await self._load(plan_id)
         if rec["status"] in FINAL_PLAN_STATES:
             raise PlanError("not_open", f"This plan is {rec['status']}.", 409)
         if rec["status"] != "awaiting_approval":
-            return self.view(rec)  # approving twice is harmless
+            if wallet != rec["wallet"]:
+                raise PlanError("wrong_wallet", "Connect the wallet this plan was drawn for.", 403)
+            if not siws.verify_signature(wallet, resume_message(rec), signature_b64):
+                raise PlanError("invalid_signature", "The confirmation signature did not verify.", 401)
+            token = self._issue_token(rec)
+            await self._save(rec)
+            return {**self.view(rec), "run_token": token}
         if self._clock() > rec["approval_expires_at"]:
             rec["status"] = "expired"
             await self._save(rec)
@@ -209,9 +259,10 @@ class PlanEngine:
         rec["status"] = "approved"
         rec["approved_at"] = self._clock()
         rec["run_until"] = rec["approved_at"] + get_settings().plan_run_window_seconds
+        token = self._issue_token(rec)
         await self._save(rec)
-        logger.info("plan approved | wallet=%s plan=%s digest=%s", wallet, plan_id, rec["digest"])
-        return self.view(rec)
+        logger.info("plan approved | wallet=%s plan=%s digest=%s", wallet, plan_ref(plan_id), rec["digest"])
+        return {**self.view(rec), "run_token": token}
 
     async def cancel(self, plan_id: str, wallet: str | None = None) -> dict[str, Any]:
         rec = await self._load(plan_id)
@@ -257,7 +308,12 @@ class PlanEngine:
                     step["state"], step["error"] = "failed", f"The transaction failed on-chain: {status['err']}"
                     changed = True
                 elif status is not None and status.get("confirmationStatus") in ("confirmed", "finalized"):
-                    step["state"] = "confirmed"
+                    if step.get("prereq"):
+                        # A one-time setup (the wallet's lookup table) landed: the step itself is built next.
+                        step.update({"state": "pending", "signature": None, "built": None, "prereq": False})
+                        step["notes"] = [*(step.get("notes") or []), "One-time lookup table set up."]
+                    else:
+                        step["state"] = "confirmed"
                     changed = True
                 elif status is None and now - step.get("submitted_at", now) > BLOCKHASH_DEAD_AFTER_SECONDS:
                     # Never landed and can't any more: safe to rebuild.
@@ -269,7 +325,7 @@ class PlanEngine:
             if changed or rec["status"] != before:
                 await self._save(rec)
 
-    async def build_next(self, plan_id: str) -> dict[str, Any]:
+    async def build_next(self, plan_id: str, token: str | None = None) -> dict[str, Any]:
         """Pre-flight, build and simulate the plan's next step. Returns the transaction(s) for the wallet to sign."""
         rec = await self._load(plan_id)
         await self._refresh(rec)
@@ -279,6 +335,7 @@ class PlanEngine:
             raise PlanError("not_open", f"This plan is {rec['status']}.", 409)
         if rec["status"] == "awaiting_approval":
             raise PlanError("not_approved", "Approve the plan before any step is built.", 409)
+        self._authorize(rec, token)
         if self._clock() > (rec["run_until"] or 0):
             rec["status"] = "expired"
             await self._save(rec)
@@ -329,7 +386,7 @@ class PlanEngine:
             envelope = await internal.call_raw(prepared.tool, **prepared.args)
             if _transient_failure(envelope):
                 # A stale swap quote or a fork hiccup: one rebuild fetches a fresh quote and blockhash.
-                logger.info("plan %s step %s: transient simulation failure, rebuilding once", plan_id, idx)
+                logger.info("plan %s step %s: transient simulation failure, rebuilding once", plan_ref(plan_id), idx)
                 envelope = await internal.call_raw(prepared.tool, **prepared.args)
             if not isinstance(envelope, dict) or not envelope.get("transactions"):
                 step["error"] = humanize(envelope.get("message") if isinstance(envelope, dict) else None)
@@ -353,12 +410,16 @@ class PlanEngine:
                 out_txs.append({"id": entry["id"], "purpose": entry.get("purpose"), "dependsOn": entry.get("dependsOn", []),
                                 "unsignedTransaction": entry["unsignedTransaction"],
                                 "lastValidBlockHeight": entry.get("lastValidBlockHeight")})
-            step.update({"state": "built", "built": built, "usd": prepared.usd, "resolved_amount": prepared.resolved_amount,
+            # A prerequisite (summary.prerequisite: the wallet's lookup-table setup) is signed first; the step itself is
+            # built again once it lands (`_refresh`). It moves no funds, so it counts nothing toward the spend limits.
+            prereq = bool((envelope.get("summary") or {}).get("prerequisite"))
+            step.update({"state": "built", "built": built, "usd": 0.0 if prereq else prepared.usd,
+                         "resolved_amount": prepared.resolved_amount, "prereq": prereq,
                          "notes": prepared.notes, "risk": prepared.risk.to_dict(), "error": None})
             if rec["status"] in ("approved", "paused"):
                 rec["status"] = "running"
             await self._save(rec)
-            return {"ok": True, "step": idx, "label": step["label"], "summary": envelope.get("summary"),
+            return {"ok": True, "step": idx, "label": step["label"], "summary": envelope.get("summary"), "prerequisite": prereq,
                     "notes": prepared.notes, "risk": prepared.risk.to_dict(), "simulation": prepared.simulation,
                     "transactions": out_txs, "plan": self.view(rec)}
         finally:
@@ -369,11 +430,12 @@ class PlanEngine:
             return await guard_direct_write(wallet, step["tool"], step["args"], consume_rate=False)
         return await preflight_step(wallet, step)
 
-    async def submit(self, plan_id: str, tx_id: str, signed_b64: str) -> dict[str, Any]:
+    async def submit(self, plan_id: str, tx_id: str, signed_b64: str, token: str | None = None) -> dict[str, Any]:
         """Check the wallet's signed transaction is exactly what was built, relay it, and start watching it."""
         rec = await self._load(plan_id)
         if rec["status"] in FINAL_PLAN_STATES:
             raise PlanError("not_open", f"This plan is {rec['status']}.", 409)
+        self._authorize(rec, token)
         idx = next((i for i, s in enumerate(rec["steps"]) if s["state"] == "built"), None)
         if idx is None:
             raise PlanError("not_built", "No step is waiting for a signature. Prepare the step first.", 409)
@@ -406,12 +468,12 @@ class PlanEngine:
             step["state"], step["error"] = "uncertain", "The result of sending this step is unclear, so it was not retried. Check your wallet's activity."
             rec["status"] = "failed"
             await self._save(rec)
-            logger.warning("relay outcome unclear | plan=%s step=%s: %s", plan_id, idx, exc)
+            logger.warning("relay outcome unclear | plan=%s step=%s: %s", plan_ref(plan_id), idx, exc)
             raise PlanError("uncertain", step["error"], 502) from exc
         step["state"], step["signature"], step["error"] = "submitted", signature, None
         await self.safety.record_spend(rec["wallet"], float(step.get("usd") or 0.0))
         await self._save(rec)
-        logger.info("signed transaction relayed | wallet=%s plan=%s step=%s signature=%s", rec["wallet"], plan_id, idx, signature)
+        logger.info("signed transaction relayed | wallet=%s plan=%s step=%s signature=%s", rec["wallet"], plan_ref(plan_id), idx, signature)
         return {"signature": signature, "step": idx, "plan": self.view(rec)}
 
 

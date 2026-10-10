@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import borsh_construct as borsh
 
+from vanna_core.constants import EMPTY_ASSET_INDEX, SCOPE_CHAIN_UNUSED  # noqa: F401 - re-exported
+
 PUBKEY = borsh.U8[32]
 
 ProtocolConfig = borsh.CStruct(
@@ -31,7 +33,12 @@ ProtocolConfig = borsh.CStruct(
     "max_assets_per_margin" / borsh.U8,
     "next_asset_index" / borsh.U16,
     "bump" / borsh.U8,
-    "reserved" / borsh.U8[128],
+    # Since the 2026-10-09 upgrade token collateral is protocol-wide: every margin is scanned over these token asset
+    # indexes (EMPTY_ASSET_INDEX = unused slot), in this order.
+    "allowed_tokens" / borsh.U16[24],
+    "max_debts_per_margin" / borsh.U8,
+    "max_venues_per_margin" / borsh.U8,
+    "reserved" / borsh.U8[78],
 )
 
 # Operating modes (ProtocolConfig.operating_mode) — TOOLS_CATALOGUE.md §2.5.
@@ -40,7 +47,6 @@ OPERATING_MODE_BORROW_PAUSED = 1
 OPERATING_MODE_WITHDRAW_ONLY = 2
 OPERATING_MODE_HALTED = 3
 
-SCOPE_CHAIN_UNUSED = 0xFFFF
 
 # vanna_oracle/src/config.rs::OracleConfig — how one token is priced (Scope chain primary, Pyth fallback, optional
 # second Pyth factor, klend cToken rate for receipts). 184 bytes. Since the agent split it is NOT part of AssetConfig:
@@ -81,7 +87,7 @@ _ASSET_CONFIG_HEAD = (
     "kind" / borsh.U8,
     "oracle" / PUBKEY,
 )
-AssetConfig = borsh.CStruct(*_ASSET_CONFIG_HEAD, "reserved" / borsh.U8[32])
+AssetConfig = borsh.CStruct(*_ASSET_CONFIG_HEAD, "issuer_controls_accepted" / borsh.Bool, "reserved" / borsh.U8[31])
 AssetConfigLegacy = borsh.CStruct(
     *_ASSET_CONFIG_HEAD,
     "settle_mint" / PUBKEY,  # GMTrade's settle token; gone from the current build
@@ -134,8 +140,18 @@ Reserve = borsh.CStruct(
     "reserve_factor_bps" / borsh.U16,
     "status" / borsh.U8,
     "bump" / borsh.U8,
-    "reserved" / borsh.U8[128],
+    "total_supply_shares" / borsh.U64,  # 2026-10-09: initialized from the share mint's supply
+    "interest_remainder_wad" / borsh.U128,
+    "fee_remainder" / borsh.U64,
+    "reserved" / borsh.U8[96],
 )
+
+# Caps: since the 2026-10-09 migration "no cap" is u64::MAX (it was 0, which is now a real cap of zero).
+UNCAPPED = 2**64 - 1
+
+
+def is_capped(cap: int) -> bool:
+    return cap != UNCAPPED
 
 # Reserve statuses (Reserve.status) — TOOLS_CATALOGUE.md §2.5.
 RESERVE_STATUS_ACTIVE = 0
@@ -143,25 +159,21 @@ RESERVE_STATUS_SUPPLY_ONLY = 1
 RESERVE_STATUS_REPAY_ONLY = 2
 RESERVE_STATUS_FROZEN = 3
 
-# EMPTY_INDEX sentinel used for unused collateral/debt asset-index slots
-# (mirrors lib/margin-utils.ts EMPTY_INDEX). Re-exported from assets.py too;
-# defined here as well since layouts.py has no dependency on assets.py.
-EMPTY_ASSET_INDEX = 65_535
 
 # Real margin arrays hold 24 entries each (MAX_ASSETS), not 8 — verified,
 # TOOLS_CATALOGUE.md §1/§6.1.
 MARGIN_ACCOUNT_MAX_ASSETS = 24
 
-# MarginAccount ends after `bump` here on purpose. Two program builds are live on the fork: vanna-credit-layer `main`
-# appends `venue_legs` (6 x {u16 asset_index, u64 legs}) and 36 reserved bytes (252-byte accounts), while
-# `feature/phoenix-titan` (deployed to the fork on 2026-10-06) removed `venue_legs` (184-byte accounts). The MCP reads
-# nothing after `bump`, and parsing ignores trailing bytes, so this one layout decodes both.
+# MarginAccount ends after `bump` here on purpose (parsing ignores the trailing reserved bytes, whose length has varied
+# between builds). Since the 2026-10-09 upgrade a margin keeps only its VENUES (Phoenix, vault venues) in the slots that
+# held its collateral: token collateral is the protocol's `ProtocolConfig.allowed_tokens`, scanned for every margin.
+# Read a margin through `vanna_core.margin_state.load_margin_state`, which joins the two the way the program does.
 MarginAccount = borsh.CStruct(
     "authority" / PUBKEY,
     "status" / borsh.U8,
-    "collateral_count" / borsh.U8,
+    "venue_count" / borsh.U8,
     "debt_count" / borsh.U8,
-    "collateral_asset_indexes" / borsh.U16[MARGIN_ACCOUNT_MAX_ASSETS],
+    "venue_asset_indexes" / borsh.U16[MARGIN_ACCOUNT_MAX_ASSETS],
     "debt_asset_indexes" / borsh.U16[MARGIN_ACCOUNT_MAX_ASSETS],
     "event_sequence" / borsh.U64,
     "bump" / borsh.U8,
@@ -301,14 +313,18 @@ EVENT_CollateralSeized = borsh.CStruct(
     "event_sequence" / borsh.U64,
     "timestamp" / borsh.I64,
 )
+# Since the 2026-10-09 upgrade a liquidation names its debt and collateral legs and its venue calls.
 EVENT_Liquidated = borsh.CStruct(
     "margin_account" / PUBKEY,
     "liquidator" / PUBKEY,
+    "debt_mint" / PUBKEY,
+    "repaid" / borsh.U64,
+    "collateral_mint" / PUBKEY,
+    "seized" / borsh.U64,
     "collateral_value" / borsh.U128,
     "debt_value" / borsh.U128,
     "health_factor_wad" / borsh.U128,
-    "collaterals_seized" / borsh.U8,
-    "debts_repaid" / borsh.U8,
+    "venue_calls" / borsh.U8,
     "event_sequence" / borsh.U64,
     "timestamp" / borsh.I64,
 )

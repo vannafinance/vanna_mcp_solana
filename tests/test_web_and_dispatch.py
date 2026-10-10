@@ -41,8 +41,8 @@ def _state():
     get_settings.cache_clear()
 
 
-def approval_sig(view, kp: Keypair = KP) -> str:
-    return base64.b64encode(bytes(kp.sign_message(view["approval_message"].encode()))).decode()
+def approval_sig(view, kp: Keypair = KP, message: str = "approval_message") -> str:
+    return base64.b64encode(bytes(kp.sign_message(view[message].encode()))).decode()
 
 
 def chain(monkeypatch, **kw) -> FakeChain:
@@ -125,19 +125,33 @@ async def test_the_full_browser_flow_over_http(monkeypatch, web: TestClient) -> 
 
     ok = web.post(f"{api}/approve", json={"wallet": WALLET, "signature": approval_sig(view)})
     assert ok.status_code == 200 and ok.json()["status"] == "approved"
+    token = ok.json()["run_token"]
+    assert "run_token" not in web.get(api).json()  # only the approving page receives it
 
-    nxt = web.post(f"{api}/next").json()
+    # The link alone cannot drive an approved plan.
+    assert web.post(f"{api}/next").json()["error"] == "not_authorized"
+    assert web.post(f"{api}/next", headers={"X-Plan-Token": "guess"}).status_code == 401
+    # Another browser re-confirms with the wallet; the first page's token stops working.
+    approved = web.get(api).json()
+    again = web.post(f"{api}/approve", json={"wallet": WALLET, "signature": approval_sig(approved, message="resume_message")})
+    assert again.status_code == 200 and again.json()["run_token"] != token
+    assert web.post(f"{api}/next", headers={"X-Plan-Token": token}).status_code == 401
+    token = again.json()["run_token"]
+    auth = {"X-Plan-Token": token}
+
+    nxt = web.post(f"{api}/next", headers=auth).json()
     assert nxt["ok"] and nxt["transactions"] and nxt["label"].startswith("Deposit")
     tx = nxt["transactions"][0]
 
-    bad = web.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": sign_wrong_key(tx["unsignedTransaction"], Keypair())})
+    assert web.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": sign_b64(tx["unsignedTransaction"], KP)}).status_code == 401
+    bad = web.post(f"{api}/submit", headers=auth, json={"tx_id": tx["id"], "signed": sign_wrong_key(tx["unsignedTransaction"], Keypair())})
     assert bad.status_code in (401, 400) and not net.sent
-    unsigned = web.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": tx["unsignedTransaction"]})
+    unsigned = web.post(f"{api}/submit", headers=auth, json={"tx_id": tx["id"], "signed": tx["unsignedTransaction"]})
     assert unsigned.status_code == 401 and not net.sent
 
-    sub = web.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": sign_b64(tx["unsignedTransaction"], KP)})
+    sub = web.post(f"{api}/submit", headers=auth, json={"tx_id": tx["id"], "signed": sign_b64(tx["unsignedTransaction"], KP)})
     assert sub.status_code == 200 and sub.json()["signature"] and len(net.sent) == 1
-    replay = web.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": sign_b64(tx["unsignedTransaction"], KP)})
+    replay = web.post(f"{api}/submit", headers=auth, json={"tx_id": tx["id"], "signed": sign_b64(tx["unsignedTransaction"], KP)})
     assert replay.status_code in (404, 409) or replay.status_code == 409  # not_open (completed) or not_built
     assert len(net.sent) == 1  # exactly once
 

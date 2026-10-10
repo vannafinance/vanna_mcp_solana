@@ -24,6 +24,7 @@ from vanna_core import math_utils
 from vanna_core.assets import TOKEN_PROGRAM_ID
 from vanna_core.client import SolanaClient
 from vanna_core.envelope import WriteEnvelope
+from vanna_core.layouts import is_capped
 from vanna_core.layouts import Reserve as ReserveLayout
 from vanna_core.pdas import (
     ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -124,8 +125,8 @@ class ReserveContract:
             borrow_apr_pct=str(borrow_apr),
             exchange_rate=self._exchange_rate_str(lender_assets, share_supply),
             reserve_factor_bps=reserve.reserve_factor_bps,
-            supply_cap=math_utils.ui_amount(reserve.supply_cap, self.decimals) if reserve.supply_cap else "uncapped",
-            borrow_cap=math_utils.ui_amount(reserve.borrow_cap, self.decimals) if reserve.borrow_cap else "uncapped",
+            supply_cap=math_utils.ui_amount(reserve.supply_cap, self.decimals) if is_capped(reserve.supply_cap) else "uncapped",
+            borrow_cap=math_utils.ui_amount(reserve.borrow_cap, self.decimals) if is_capped(reserve.borrow_cap) else "uncapped",
             status=reserve.status,
             linear_coeff_wad=str(reserve.rate_curve.linear_coeff_wad),
             jump_coeff_wad=str(reserve.rate_curve.jump_coeff_wad),

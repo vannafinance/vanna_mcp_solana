@@ -53,18 +53,91 @@ def test_margin_account_layout_has_24_slots_each():
     assert MarginAccount.sizeof() == 32 + 1 + 1 + 1 + 24 * 2 * 2 + 8 + 1
 
 
-def test_margin_account_decodes_both_program_builds():
-    # 184-byte accounts (feature/phoenix-titan, no venue_legs) and 252-byte accounts (main: venue_legs + reserved).
-    collateral = (1).to_bytes(2, "little") + (2).to_bytes(2, "little") + (65535).to_bytes(2, "little") * 22
+def test_margin_account_decodes_venues_whatever_the_trailing_bytes():
+    # Since 2026-10-09 the slots that held collateral hold only venues; trailing reserved bytes have varied by build.
+    venues = (17).to_bytes(2, "little") + (65535).to_bytes(2, "little") * 23
     debt = (0).to_bytes(2, "little") + (65535).to_bytes(2, "little") * 23
-    head = bytes(32) + bytes([0, 2, 1]) + collateral + debt + (7).to_bytes(8, "little") + bytes([254])
+    head = bytes(32) + bytes([0, 1, 1]) + venues + debt + (7).to_bytes(8, "little") + bytes([254])
     for tail in (bytes(36), bytes(6 * 10 + 36)):
         m = MarginAccount.parse(head + tail)
-        assert (m.collateral_count, m.debt_count, list(m.collateral_asset_indexes[:2]), m.event_sequence, m.bump) == (2, 1, [1, 2], 7, 254)
+        assert (m.venue_count, m.debt_count, list(m.venue_asset_indexes[:2]), m.event_sequence, m.bump) == (1, 1, [17, 65535], 7, 254)
 
 
 def test_protocol_config_layout_size():
-    assert ProtocolConfig.sizeof() == 32 * 3 + 1 + 1 + 2 + 1 + 128
+    # Same 237-byte account as before the upgrade: allowed_tokens and the two limits came out of `reserved`.
+    assert ProtocolConfig.sizeof() == 32 * 3 + 1 + 1 + 2 + 1 + 24 * 2 + 1 + 1 + 78 == 229
+
+
+def test_margin_state_joins_allowed_tokens_and_venues():
+    from solders.pubkey import Pubkey
+
+    from vanna_core.margin_state import MarginState
+
+    state = MarginState(
+        address=Pubkey.new_unique(), authority=None, status=0, venue_count=1, debt_count=1,
+        venue_asset_indexes=[17] + [65535] * 23, debt_asset_indexes=[0] + [65535] * 23, event_sequence=1,
+        allowed_token_indexes=[0, 1, 2], max_debts_per_margin=3, max_venues_per_margin=2, vault={0: 5, 2: 0},
+    )
+    # Health groups walk every allowed token (zero balances too), then the venue slots.
+    assert state.collateral_asset_indexes[:4] == [0, 1, 2, 17]
+    # Only what is held is valued: USDC (0) with a balance and the venue.
+    assert state.held_collateral_indexes == [0, 17]
+    assert state.collateral_count == 2
+    assert state.with_vault(1, 10).held_collateral_indexes == [0, 1, 17]
+    assert state.is_allowed(2) and not state.is_allowed(5)
+
+
+def test_caps_use_u64_max_for_none():
+    from vanna_core.layouts import UNCAPPED, is_capped
+
+    assert not is_capped(UNCAPPED)
+    assert is_capped(0) and is_capped(1_000)
+
+
+def test_error_markers_come_from_the_idl():
+    from vanna_core.program_errors import code, markers
+
+    assert code("StalePrice") == 6024
+    assert "custom(6024)" in markers("StalePrice") and "0x1788" in markers("StalePrice")
+
+
+def test_wallet_table_keys_skip_signers_tables_and_the_margin():
+    from solders.address_lookup_table_account import AddressLookupTableAccount
+    from solders.instruction import AccountMeta, Instruction
+    from solders.pubkey import Pubkey
+
+    from vanna_core.wallet_alt import wanted_keys
+
+    payer, margin, vault, shared, program = (Pubkey.new_unique() for _ in range(5))
+    ix = Instruction(program, b"", [AccountMeta(payer, True, True), AccountMeta(margin, False, True),
+                                    AccountMeta(vault, False, True), AccountMeta(shared, False, False)])
+    table = AddressLookupTableAccount(key=Pubkey.new_unique(), addresses=[shared, program])
+    assert wanted_keys([ix], payer, [table], {margin}) == [vault]
+
+
+async def test_wallet_table_memo_counts_only_when_the_wallet_paid():
+    from types import SimpleNamespace
+
+    from solders.pubkey import Pubkey
+
+    from vanna_core.wallet_alt import MEMO_PREFIX, _from_history
+
+    wallet, attacker = Pubkey.new_unique(), Pubkey.new_unique()
+    planted, own = Pubkey.new_unique(), Pubkey.new_unique()
+    history = [SimpleNamespace(signature="s1", err=None, memo=f"[12] {MEMO_PREFIX}{planted}"),
+               SimpleNamespace(signature="s2", err=None, memo=f"[12] {MEMO_PREFIX}{own}")]
+    payers = {"s1": str(attacker), "s2": str(wallet)}
+
+    class Client:
+        async def get_signatures_for_address(self, address, limit):
+            return history
+
+        async def get_transaction_fee_payer(self, signature):
+            return payers[signature]
+
+    assert await _from_history(Client(), wallet) == str(own)  # the newer, attacker-paid memo is skipped
+    payers["s2"] = str(attacker)
+    assert await _from_history(Client(), wallet) is None
 
 
 # ---------------------------------------------------------------------------
@@ -324,3 +397,44 @@ def test_deposit_and_farm_rules_follow_the_app():
     for symbol in ("JitoSOL", "JupSOL"):
         with pytest.raises(AssetNotOfferedError, match="closed to new supply"):
             assert_farm_listed(symbol)
+
+
+async def test_an_unsigned_wallet_table_setup_is_rebuilt_not_blocked(monkeypatch):
+    """The Copilot's dry build returns the one-time setup; nobody signs it; building again must return the same setup
+    (same table address) instead of 'hasn't landed yet'."""
+    from solders.pubkey import Pubkey
+
+    from vanna_core import wallet_alt
+
+    wallet = Pubkey.new_unique()
+    keys = [Pubkey.new_unique() for _ in range(3)]
+
+    class Client:
+        slot = 1_000
+
+        async def get_slot(self):
+            return self.slot
+
+        async def fetch_raw_account_or_none(self, key):
+            return None  # the setup never landed
+
+        async def get_signatures_for_address(self, address, limit):
+            return []
+
+        async def build_write_envelope(self, instructions, payer, purpose, summary):
+            return {"instructions": instructions, "summary": summary}
+
+    async def stable(_client, _wallet, _registry):
+        return keys
+
+    monkeypatch.setattr(wallet_alt, "stable_keys", stable)
+    wallet_alt.clear_wallet_table_cache()
+    client = Client()
+    first = await wallet_alt.setup_envelope_if_needed(client, wallet, registry=object())
+    client.slot += 40
+    second = await wallet_alt.setup_envelope_if_needed(client, wallet, registry=object())
+    assert first["summary"]["lookup_table"] == second["summary"]["lookup_table"]
+    client.slot += 400  # the creation slot is too old to reuse: a fresh table address
+    third = await wallet_alt.setup_envelope_if_needed(client, wallet, registry=object())
+    assert third["summary"]["lookup_table"] != first["summary"]["lookup_table"]
+    wallet_alt.clear_wallet_table_cache()

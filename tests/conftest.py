@@ -79,7 +79,7 @@ async def live_margin_position(funded_fork_keypair: Keypair) -> str:
     `tests/_live_helpers.py`) — this is fixture setup, not MCP behavior; the
     MCP itself never signs. Returns the wallet's base58 address.
     """
-    from tests._live_helpers import build_with_retry, sign_and_submit
+    from tests._live_helpers import build_action, sign_and_submit
 
     get_settings.cache_clear()
     settings = VannaSettings()  # type: ignore[call-arg]
@@ -99,16 +99,21 @@ async def live_margin_position(funded_fork_keypair: Keypair) -> str:
 
         state = await vanna_account(action="get", authority=authority)
         if "SOL" not in state["collateral_assets"]:
-            envelope = await vanna_margin_trade(action="deposit", authority=authority, asset="SOL", amount="1")
+            envelope = await build_action(
+                lambda: vanna_margin_trade(action="deposit", authority=authority, asset="SOL", amount="1"),
+                settings.solana_rpc_url, funded_fork_keypair,
+            )
             assert envelope["simulation_success"], envelope.get("reason")
             await sign_and_submit(settings.solana_rpc_url, envelope, funded_fork_keypair)
 
         state = await vanna_account(action="get", authority=authority)
         if "USDC" not in state["debt_assets"]:
             # The borrow path is health-checked (needs a fresh USDC price) —
-            # retry on the known stale-price symptom (see _live_helpers.py).
-            envelope = await build_with_retry(
-                lambda: vanna_margin_trade(action="borrow", authority=authority, asset="USDC", amount="1")
+            # retry on the known stale-price symptom (see _live_helpers.py). Its first build
+            # may be the wallet's lookup-table setup, signed first by `build_action`.
+            envelope = await build_action(
+                lambda: vanna_margin_trade(action="borrow", authority=authority, asset="USDC", amount="1"),
+                settings.solana_rpc_url, funded_fork_keypair,
             )
             assert envelope["simulation_success"], envelope.get("reason")
             await sign_and_submit(settings.solana_rpc_url, envelope, funded_fork_keypair)

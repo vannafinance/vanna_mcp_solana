@@ -6,12 +6,18 @@
   var api = "/api/plan/" + encodeURIComponent(planId);
   var $ = function (id) { return document.getElementById(id); };
   var running = false, view = null;
+  // The run token the approval returned: only the page that approved (or re-confirmed with the wallet) can act on the plan.
+  var tokenKey = "vanna-plan-token:" + planId, runToken = null;
+  try { runToken = sessionStorage.getItem(tokenKey); } catch (e) { /* storage blocked: re-confirm with the wallet */ }
+  function keepToken(t) { runToken = t || null; try { if (t) sessionStorage.setItem(tokenKey, t); } catch (e) { /* kept in memory */ } }
 
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
   async function call(method, path, body) {
-    var r = await fetch(api + path, { method: method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+    var headers = body ? { "Content-Type": "application/json" } : {};
+    if (runToken) headers["X-Plan-Token"] = runToken;
+    var r = await fetch(api + path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
     var data = await r.json().catch(function () { return {}; });
     if (!r.ok) { var e = new Error(data.message || ("Request failed (" + r.status + ")")); e.code = data.error; throw e; }
     return data;
@@ -76,7 +82,8 @@
     try {
       var w = await connectWallet();
       var sig = await VannaWallet.signMessage(view.approval_message);
-      render(await call("POST", "/approve", { wallet: w.address, signature: sig }));
+      var r = await call("POST", "/approve", { wallet: w.address, signature: sig });
+      keepToken(r.run_token); render(r);
       say("Approved. Review each step as it is prepared; nothing moves until you sign it.", false);
     } catch (e) { say(e.message, true); }
     $("approve").disabled = false;
@@ -94,10 +101,18 @@
     return "submitted";
   }
 
+  // An approved plan opened in another browser (or after the token was lost): the wallet re-confirms it here.
+  async function ensureToken(w) {
+    if (runToken || !view || !view.resume_message) return;
+    var sig = await VannaWallet.signMessage(view.resume_message);
+    var r = await call("POST", "/approve", { wallet: w.address, signature: sig });
+    keepToken(r.run_token); render(r);
+  }
+
   async function run() {
     if (running) return; running = true; say(""); $("run").disabled = true;
     try {
-      await connectWallet();
+      await ensureToken(await connectWallet());
       for (;;) {
         var r = await call("POST", "/next");
         if (r.plan) render(r.plan);

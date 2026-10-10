@@ -36,6 +36,9 @@ SIGNER_PARAM: dict[tuple[str, str], str] = {
     ("vanna_perps", "open"): "authority",
     ("vanna_perps", "close"): "authority",
     ("vanna_perps", "withdraw"): "authority",
+    ("vanna_vaults", "deposit"): "authority",
+    ("vanna_vaults", "withdraw"): "authority",
+    ("vanna_vaults", "move_shares"): "authority",
     ("vanna_swap", "wallet_swap"): "authority",
     # Anyone may repay a margin account's debt from their own wallet, so the *payer* is the signer and
     # `authority` (whose account is repaid) is free.
@@ -59,10 +62,12 @@ DEFAULT_PARAM: dict[str, str] = {
     "vanna_portfolio": "authority",
     "vanna_plan": "authority",
     "vanna_perps": "authority",
+    "vanna_vaults": "authority",
 }
 # Actions that take no wallet at all, so one must not be injected.
 NO_DEFAULT_ACTIONS: frozenset[tuple[str, str]] = frozenset({
     ("vanna_swap", "quote"), ("vanna_farm_overview", "markets"), ("vanna_risk", "policy"), ("vanna_perps", "markets"),
+    ("vanna_vaults", "list"),
 })
 
 

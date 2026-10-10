@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from vanna_core import math_utils
+from vanna_core import constants, math_utils
+from vanna_core.constants import SCOPE_CHAIN_UNUSED  # noqa: F401 - re-exported
 from vanna_core.contracts.kamino import ReserveRate, parse_reserve_rate
 from vanna_core.types import ContractCallError
 
-SCOPE_CHAIN_UNUSED = 0xFFFF
 SCOPE_MAX_ENTRIES = 512
 SCOPE_PROGRAM_ID = "HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ"
 PYTH_RECEIVER_PROGRAM_ID = "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ"
@@ -107,6 +107,9 @@ class Price:
         return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+KLEND_PROGRAM_ID = constants.KLEND_PROGRAM
+
+
 @dataclass(frozen=True)
 class OracleSpec:
     """The on-chain `OracleConfig` (accounts as base58 strings; '' / all-zero = unused)."""
@@ -136,7 +139,14 @@ class OracleSpec:
 
     @property
     def uses_klend(self) -> bool:
-        return bool(self.klend_reserve)
+        """A Kamino receipt. Since 2026-10-09 the same two fields also name a vault receipt's NAV account (Perena) or
+        vault (Basis), so only Kamino Lend's program makes it a klend receipt (the app's `isKaminoReceiptOracle`)."""
+        return bool(self.klend_reserve) and self.klend_program == KLEND_PROGRAM_ID
+
+    @property
+    def uses_vault_receipt(self) -> bool:
+        """A Basis or Perena vault receipt: priced from its vault, not by Scope/Pyth (phase 4)."""
+        return bool(self.klend_reserve) and self.klend_program != KLEND_PROGRAM_ID
 
     @property
     def is_configured(self) -> bool:
@@ -288,7 +298,9 @@ def get_price(
         raise PriceUnavailableError("price_unavailable: asset has no oracle configured")
 
     def is_fresh(ts: int) -> bool:
-        return now - ts <= oracle.max_age_secs
+        # Either side of the chain clock: a publish time a little ahead of the fork's clock is fresh too (the app's
+        # `isFresh` since 2026-10-09).
+        return abs(now - ts) <= oracle.max_age_secs
 
     quote: _Quote | None = None
     if oracle.uses_scope:

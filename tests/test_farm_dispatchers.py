@@ -63,8 +63,11 @@ async def test_farm_deposit_then_redeem_live(ctx, funded_fork_keypair, live_marg
 
     from tests._live_helpers import build_with_retry
 
-    deposit_env = await build_with_retry(
-        lambda: vanna_farm_kamino(action="deposit", authority=authority, underlying="SOL", amount="0.1")
+    from tests._live_helpers import build_action
+
+    deposit_env = await build_action(
+        lambda: vanna_farm_kamino(action="deposit", authority=authority, underlying="SOL", amount="0.1"),
+        settings.solana_rpc_url, funded_fork_keypair,
     )
     assert deposit_env["simulation_success"], deposit_env.get("reason")
     await sign_and_submit(settings.solana_rpc_url, deposit_env, funded_fork_keypair)
@@ -76,8 +79,9 @@ async def test_farm_deposit_then_redeem_live(ctx, funded_fork_keypair, live_marg
     assert float(ksol["receipt_balance"]) > 0
     assert float(ksol["underlying_amount"]) == pytest.approx(0.1, abs=1e-6)
 
-    redeem_env = await build_with_retry(
-        lambda: vanna_farm_kamino(action="redeem", authority=authority, underlying="SOL", amount=ksol["receipt_balance"])
+    redeem_env = await build_action(
+        lambda: vanna_farm_kamino(action="redeem", authority=authority, underlying="SOL", amount=ksol["receipt_balance"]),
+        settings.solana_rpc_url, funded_fork_keypair,
     )
     assert redeem_env["simulation_success"], redeem_env.get("reason")
     await sign_and_submit(settings.solana_rpc_url, redeem_env, funded_fork_keypair)

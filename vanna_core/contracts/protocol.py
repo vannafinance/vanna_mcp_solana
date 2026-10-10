@@ -64,6 +64,10 @@ class ProtocolContract:
             "operating_mode_code": cfg.operating_mode,
             "operating_mode_blocks": mode_blocks,
             "max_assets_per_margin": cfg.max_assets_per_margin,
+            "max_debts_per_margin": cfg.max_debts_per_margin,
+            "max_venues_per_margin": cfg.max_venues_per_margin,
+            # Token collateral is protocol-wide since 2026-10-09: every margin is scanned over these asset indexes.
+            "allowed_token_indexes": [int(i) for i in cfg.allowed_tokens if int(i) != 65_535],
             "next_asset_index": cfg.next_asset_index,
         }
 

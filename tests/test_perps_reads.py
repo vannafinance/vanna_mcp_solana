@@ -97,12 +97,17 @@ def test_margin_model_tracks_slots_like_the_program():
     from vanna_core.layouts import EMPTY_ASSET_INDEX
     from vanna_core.margin_execute import MarginModel
 
-    raw = SimpleNamespace(collateral_asset_indexes=[1, EMPTY_ASSET_INDEX, EMPTY_ASSET_INDEX], debt_asset_indexes=[EMPTY_ASSET_INDEX] * 3)
+    # Since 2026-10-09 tokens are the protocol's allowed list (permanent groups); only venues join and leave.
+    raw = SimpleNamespace(allowed_token_indexes=[1, 7], venue_asset_indexes=[EMPTY_ASSET_INDEX] * 2,
+                          debt_asset_indexes=[EMPTY_ASSET_INDEX] * 3, vault={})
     m = MarginModel(raw, {1: 100})
-    m.execute(1, 40, 7, 40)  # Ember: USDC (1) -> phUSD (7); USDC stays, phUSD joins the first empty slot
-    assert m.collateral_asset_indexes == [1, 7, EMPTY_ASSET_INDEX]
-    m.execute(7, 40, None, 0)  # deposit_funds drains phUSD
-    m.venue_call(9, opens=True)  # the venue joins
-    assert m.collateral_asset_indexes == [1, 9, EMPTY_ASSET_INDEX]
+    assert m.held_collateral_indexes == [1]
+    m.execute(1, 40, 7, 40)  # Ember: USDC (1) -> phUSD (7): both held now, the group list is unchanged
+    assert m.collateral_asset_indexes == [1, 7, EMPTY_ASSET_INDEX, EMPTY_ASSET_INDEX]
+    assert m.held_collateral_indexes == [1, 7]
+    m.execute(7, 40, None, 0)  # deposit_funds drains phUSD: no longer held (still scanned)
+    m.venue_call(9, opens=True)  # the venue joins the venue slots
+    assert m.collateral_asset_indexes == [1, 7, 9, EMPTY_ASSET_INDEX]
+    assert m.held_collateral_indexes == [1, 9]
     m.venue_call(9, opens=False, closes=True)
-    assert m.collateral_asset_indexes == [1, EMPTY_ASSET_INDEX, EMPTY_ASSET_INDEX]
+    assert m.collateral_asset_indexes == [1, 7, EMPTY_ASSET_INDEX, EMPTY_ASSET_INDEX]

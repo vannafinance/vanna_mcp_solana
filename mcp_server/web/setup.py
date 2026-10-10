@@ -36,6 +36,11 @@ def sign_base_url(settings: VannaSettings) -> str:
 def configure_signing(settings: VannaSettings, store: RecordStore | None = None) -> PlanEngine:
     """Create the plan engine and the safety counters on `store` (shared with the OAuth state in public mode)."""
     store = store or MemoryRecordStore()
+    # The wallet lookup tables (`vanna_core/wallet_alt.py`) are remembered in the same store, so every instance finds
+    # a wallet's table (Firestore in public mode).
+    from vanna_core.wallet_alt import set_wallet_table_store
+
+    set_wallet_table_store(store)
     safety = Safety(store)
     set_safety(safety)
     engine = PlanEngine(

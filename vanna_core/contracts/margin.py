@@ -25,7 +25,8 @@ from vanna_core.assets import AssetRegistry, DiscoveredAsset, assert_lend_borrow
 from vanna_core.client import SolanaClient
 from vanna_core.layouts import EMPTY_ASSET_INDEX, RESERVE_STATUS_ACTIVE
 from vanna_core.layouts import DebtPosition as DebtPositionLayout
-from vanna_core.layouts import MarginAccount as MarginAccountLayout
+from vanna_core.layouts import is_capped
+from vanna_core.margin_state import load_margin_state
 from vanna_core.layouts import Reserve as ReserveLayout
 from vanna_core.oracle_reader import OracleReader, OracleView, describe_price
 from vanna_core.pdas import debt_position_pda, find_associated_token_address, margin_pda
@@ -72,11 +73,11 @@ class MarginContract:
 
     async def get(self, authority: Pubkey) -> dict:
         address = self.margin_address(authority)
-        margin = await self._client.fetch_program_account(address, "MarginAccount", MarginAccountLayout)
         registry = AssetRegistry(self._client)
         await registry.load()
+        margin = await load_margin_state(self._client, address, registry)
 
-        collateral = await self._resolve_slots(margin.collateral_asset_indexes, registry)
+        collateral = await self._resolve_slots(margin.held_collateral_indexes, registry)
         debt = await self._resolve_slots(margin.debt_asset_indexes, registry)
 
         return {
@@ -166,17 +167,16 @@ class MarginContract:
             return {"allowed": False, "reason": f"reserve.status={reserve.status} blocks borrow (must be Active)"}
 
         raw_amount = math_utils.base_units(amount_ui, asset.decimals)
-        if reserve.borrow_cap and reserve.total_borrow_assets + raw_amount > reserve.borrow_cap:
+        if is_capped(reserve.borrow_cap) and reserve.total_borrow_assets + raw_amount > reserve.borrow_cap:
             return {"allowed": False, "reason": "borrow_cap exceeded"}
         if raw_amount > reserve.accounted_liquidity_assets:
             return {"allowed": False, "reason": "insufficient pool liquidity"}
 
         margin = snap.margin
+        # Token collateral is protocol-wide now: only a new debt takes a slot, up to the protocol's per-margin debt limit.
         opens_debt_slot = asset.symbol not in {r["symbol"] for r in snap.debt_rows}
-        opens_collateral_slot = asset.collateral_enabled and asset.symbol not in {r["symbol"] for r in snap.collateral_rows}
-        new_slots = int(opens_debt_slot) + int(opens_collateral_slot)
-        if new_slots and margin.collateral_count + margin.debt_count + new_slots > protocol["max_assets_per_margin"]:
-            return {"allowed": False, "reason": "margin account slot limit reached"}
+        if opens_debt_slot and margin.debt_count + 1 > margin.max_debts_per_margin:
+            return {"allowed": False, "reason": f"a margin account can hold at most {margin.max_debts_per_margin} different debts"}
 
         price = snap.view.price(asset)
         # Borrowing needs every price check on every asset of the account (`PriceStatus::ALL_CHECKS`).
@@ -280,7 +280,7 @@ class MarginContract:
         price = snap.view.price(asset)
         raw = _usd_to_raw(price, headroom_usd, asset.decimals)
         raw = min(raw, reserve.accounted_liquidity_assets)
-        if reserve.borrow_cap:
+        if is_capped(reserve.borrow_cap):
             raw = min(raw, max(0, reserve.borrow_cap - reserve.total_borrow_assets))
 
         for _ in range(12):
@@ -355,12 +355,13 @@ class MarginContract:
         extra_assets: list[DiscoveredAsset] | None = None,
     ) -> _Snapshot:
         address = self.margin_address(authority)
-        margin = await self._client.fetch_program_account(address, "MarginAccount", MarginAccountLayout)
         if registry is None:
             registry = AssetRegistry(self._client)
             await registry.load()
+        margin = await load_margin_state(self._client, address, registry)
 
-        collateral_assets = await self._resolve_slots(margin.collateral_asset_indexes, registry)
+        # Only what is held is valued and listed: the allowed-token scan includes every token at a zero balance.
+        collateral_assets = await self._resolve_slots(margin.held_collateral_indexes, registry)
         debt_assets = await self._resolve_slots(margin.debt_asset_indexes, registry)
         tokens = [a for a in collateral_assets if not a.is_venue]
         view = await self._reader.view([*tokens, *debt_assets, *(e for e in (extra_assets or []) if not e.is_venue)])
@@ -382,7 +383,20 @@ class MarginContract:
         token_program = Pubkey.from_string(asset.token_program)
         vault = find_associated_token_address(margin_address, Pubkey.from_string(asset.mint), token_program)
         balance_raw = await self._read_token_balance(vault)
-        price = view.price(asset)
+        if asset.oracle.uses_vault_receipt:
+            try:
+                price = view.price(asset)
+            except PriceUnavailableError:
+                # A vault share whose valuation is unavailable counts as zero, like the app (and fails price checks).
+                return {
+                    "symbol": asset.symbol, "raw_balance": balance_raw,
+                    "ui_balance": math_utils.ui_amount(balance_raw, asset.decimals), "usd_value": "0.00",
+                    "price": {"source": "receipt", "usd": None, "fresh": False, "twap_ok": False, "confidence_ok": False,
+                              "unavailable": True},
+                    "usd_value_nano": 0, "price_status_bits": 0,
+                }
+        else:
+            price = view.price(asset)
         usd_value = price.value_of(balance_raw, asset.decimals, False)
         return {
             "symbol": asset.symbol,
