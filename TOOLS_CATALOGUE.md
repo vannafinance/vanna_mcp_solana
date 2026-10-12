@@ -533,14 +533,21 @@ Phoenix, and nothing more moves. The app's `openPerp` still builds the single tr
 
 | Action | Purpose |
 |---|---|
-| `list` | each vault's NAV, share price, deposits open, deposit limit, hedge (Basis); the app's APY with its source (`apy_*_source`: `history`, or `deposit_event_estimate` with `apy_*_baseline`, an approximate figure from past deposits since backend `fa6d2f6`) and `apy_history_status`; Perena's published APY; Phoenix funding for Basis |
-| `positions` | the wallet's vault shares in its margin account (and SOL Basis shares still in the wallet) with collateral value |
+| `list` | each vault's NAV, share price, deposits open, deposit limit, hedge (Basis); the app's APY with its source (`apy_*_source`: `history`, or `deposit_event_estimate` with `apy_*_baseline`, an approximate figure from past deposits since backend `fa6d2f6`) and `apy_history_status`; Perena's published APY; Phoenix funding for Basis; Basis `apy_since_launch_pct` / `launched_at` (realized since launch, the app's headline until a 7-day figure exists, backend `82c5a05`) |
+| `positions` | the wallet's vault shares in its margin account (and SOL Basis shares left in the wallet) with collateral value |
 | `preview` | a simulated deposit (USDC) or withdrawal (shares): output, minimum, HF after (nothing built) |
 | `deposit` / `withdraw` | `margin_execute` into Perena or the Basis vault program (Basis runs its own Jupiter route; min out = simulated - 0.5%) |
-| `move_shares` | SOL Basis: deposit the shares its wallet-funded deposit minted into the margin account |
+| `move_shares` | SOL Basis: deposit vbSOL left in the wallet (minted above a deposit's minimum) into the margin account |
 
 Mirrors `lib/solana/vault-actions.ts`, `vault-state.ts`, `perena.ts` and `@vanna/phoenix-vault-client` 0.1.0.
 
+- **SOL Basis deposit (backend `82c5a05`).** The deployed SOL vault can't take a deposit through `margin_execute`, so it
+  is ONE transaction paid from the margin's USDC, like the app's `walletRouted` deposit: `user_withdraw_collateral`
+  (margin USDC -> wallet; with debt, health-checked with every other position), the vault `deposit` from the wallet,
+  then `user_deposit_collateral` of wallet vbSOL already held + the minimum minted. Atomic. The simulation reads the
+  `CollateralWithdrawn` health factor (`health_factor_while_usdc_moves`: the lowest point, which the program checks);
+  a `HealthFactorTooLow` refusal returns the app's wording ("…would push your health factor to or below 1.10…").
+  vbSOL minted above the minimum (~0.5%) stays in the wallet: `move_shares`, or the next SOL Basis deposit sweeps it.
 - **Market session.** A Basis vault whose `after_hours_deposits` is off (TSLA, META) refuses deposits while its Phoenix
   market is after hours (the perp asset map's session bits, backend `44aba70`). `deposit` checks it before building and
   answers with the app's wording; `list` shows `market_after_hours`, `deposits_open: false` and `deposit_blocked_reason`.

@@ -82,7 +82,7 @@ Then **use the tools for everything numeric or transactional**:
 | perps markets, their perps positions, "what would a 3x SOL long with 50 USDC look like?" | `vanna_perps` (markets, positions, preview) |
 | **open / close a perp**, move USDC back from Phoenix | `vanna_perps preview` first, then `register` (only when preview says `needs_trader_registration`), `open`, `close`, `withdraw`. Ask "spot leverage or a perp?" when the user says only "long SOL 3x" |
 | vaults (Basis delta-neutral SOL/ETH/BTC/TSLA/META, Perena USD* / USD* Junior): NAV, share price, APY, their vault shares | `vanna_vaults` (list, positions, preview) |
-| **deposit into / withdraw from a vault** | `vanna_vaults preview` first, then `deposit` (USDC) or `withdraw` (shares). SOL Basis deposits from the wallet: after it lands, `move_shares`. APY is empty until the app has history: never estimate it |
+| **deposit into / withdraw from a vault** | `vanna_vaults preview` first, then `deposit` (USDC) or `withdraw` (shares). SOL Basis also deposits margin USDC (one transaction routed through the wallet; vbSOL left in the wallet: `move_shares`). APY is empty until the app has history: never estimate it |
 | **lever X by Nx** | `vanna_plan lever` (deposit if needed → borrow a stable → margin swap → report HF) |
 | **close / unwind everything** | `vanna_plan unwind` (Kamino → repay → withdraw → Earn, health only improves) |
 | **swap A to receive N of B** | `vanna_plan swap_exact_out` |
@@ -98,7 +98,7 @@ Which product a request means (four ways to earn):
 - **Perena vaults** (`vanna_vaults`, perena-usdstar / perena-junior): USDC into a stablecoin yield pool; Junior is the
   first-loss tranche with a 1% instant-exit fee. Words: Perena, USD*, junior, stable vault.
 - **Basis vaults** (`vanna_vaults`, basis-sol ... basis-meta): delta-neutral (holds the asset, shorts it on Phoenix,
-  earns funding); USDC in (SOL Basis from the wallet). Words: basis, delta neutral, hedged, funding, vbETH.
+  earns funding); USDC in from the margin account. Words: basis, delta neutral, hedged, funding, vbETH.
 - "Vault" alone names no product: ask which. A request for yield that names no product ("best yield for my USDC",
   "stake my SOL", "passive income"): show `vanna_earn_market pool_stats`, `vanna_farm_overview markets` and
   `vanna_vaults list` side by side, then ask which - APR (Earn), live APY (Kamino), Perena's own 7-day APY and, for

@@ -9,8 +9,11 @@ What the app does, and so what this does:
 - Basis ETH/BTC/TSLA/META: one `margin_execute` into the Basis vault program; a deposit buys part of the USDC as the
   asset through a Jupiter route the vault runs itself (built for the vault authority), a withdrawal sells it back.
   The minimum output is the simulated output less 0.5%. The Phoenix book is refreshed (fork) before every Basis call.
-- Basis SOL: the deployed vault takes the deposit from the WALLET (wallet USDC -> wallet shares); a second
-  transaction (`move_shares`) deposits those shares into the margin account. Withdrawals are from margin, like the rest.
+- Basis SOL (backend `82c5a05`): the deployed vault can't take a deposit through `margin_execute`, so the deposit is
+  ONE transaction paid from the margin's USDC: `user_withdraw_collateral` (margin USDC -> wallet, health-checked),
+  the vault deposit from the wallet, `user_deposit_collateral` of the vbSOL back into the margin (wallet vbSOL already
+  held + the minimum minted). vbSOL minted above the minimum stays in the wallet (`move_shares`). Withdrawals are from
+  margin, like the rest.
 - APY is never invented: it comes from the app's hourly NAV history when the app is reachable, else it is empty.
 """
 
@@ -64,6 +67,11 @@ VIRTUAL_USD = 1_000_000
 MULTIPLIER_SCALE = 10**12
 MIN_OUT_BPS = 9_950  # the app's minimum output: the simulated output less 0.5%
 VAULT_STALE_SECONDS = 3_600  # Perena NAV older than an hour: deposits closed (the app's `stale`)
+# The app's refusal when the routed SOL Basis deposit's USDC withdrawal fails the health check (`ROUTED_HEALTH_MESSAGE`).
+ROUTED_HEALTH_MESSAGE = (
+    "SOL Basis moves this USDC out of your margin account before the vault deposit, and that would push your health "
+    "factor to or below 1.10. Deposit less, or repay some USDC debt first."
+)
 
 # ── account layouts (Anchor; vanna_phoenix_vault IDL) ─────────────────────────────────────────────────
 
@@ -525,6 +533,11 @@ def app_apy_fields(app: dict) -> dict:
         out[f"apy_{days}d_baseline"] = _iso(app.get(f"apy{days}BaselineAt")) if out[f"apy_{days}d_source"] == "deposit_event_estimate" else None
     status = app.get("apyHistoryStatus")
     out["apy_history_status"] = status if status in ("collecting", "available", "unavailable") else None
+    # Basis (backend `82c5a05`): the realized APY since launch (share price from 1.0, annualised by the second since
+    # the vault's first transaction), which the app shows until a 7-day figure exists. None under a day old.
+    since = app.get("apySinceLaunch")
+    out["apy_since_launch_pct"] = since if isinstance(since, (int, float)) else None
+    out["launched_at"] = _iso(app.get("launchedAt"))
     return out
 
 
@@ -637,7 +650,7 @@ class VaultContract:
                      "deposit_token": "USDC", "registered": False, "available": False, "error": None,
                      "nav_usd": None, "share_price_usd": None, "deposits_open": False, "paused": False,
                      "max_deposit_usd": None, "cap_usd": None, "exit_fee_bps": 100 if info.id == "perena-junior" else 0,
-                     "deposit_from": "wallet, then moved to margin" if info.id == "basis-sol" else "margin"}
+                     "deposit_from": "margin (routed through the wallet in one transaction)" if info.id == "basis-sol" else "margin"}
         try:
             row["registered"] = await self._registered(info, registry, allowed)
             if info.kind == "perena":
@@ -708,7 +721,9 @@ class VaultContract:
             "own share-price history on Vanna; 'deposit_event_estimate' = an approximate figure from the share price of "
             "past on-chain deposits since apy_*_baseline (integer share rounding makes it approximate - always call it "
             "an estimate); empty = not enough data yet (apy_history_status 'collecting', or 'unavailable' when the "
-            "history couldn't be read). Perena vaults also carry Perena's own published 7-day APY (mainnet). Basis "
+            "history couldn't be read). Basis vaults also carry apy_since_launch_pct: the realized return since "
+            "launched_at (share price from 1.0, annualised), which the app shows as the headline APY until a 7-day "
+            "figure exists; under a day old it is empty. Perena vaults also carry Perena's own published 7-day APY (mainnet). Basis "
             "vaults carry Phoenix's funding for their market (annualised, mainnet): what the short is paid, not the "
             "vault's net yield. Nothing here is computed by the MCP.")}
 
@@ -747,7 +762,7 @@ class VaultContract:
                 row["collateral_value_usd"] = None
                 row["valuation"] = "unavailable"
             if where == "wallet" and v.id == "basis-sol":
-                row["next_step"] = "move_shares: deposit these shares into the margin account"
+                row["next_step"] = "move_shares: deposit these shares (minted above a deposit's minimum) into the margin account"
             rows.append(row)
         return {"has_margin_account": has_margin, "positions": rows}
 
@@ -824,17 +839,29 @@ class VaultContract:
         usdc = registry.by_symbol("USDC")
         if receipt is None or not state.is_allowed(receipt.asset_index) or not state.is_allowed(usdc.asset_index):
             raise ContractCallError("This vault is not enabled on Vanna yet")
-        wallet_deposit = info.id == "basis-sol" and call == "deposit"
-        holder = authority if wallet_deposit else margin
+        # SOL Basis deposit (the app's `walletRouted`, backend `82c5a05`): the deployed vault can't take a deposit through
+        # margin_execute, so ONE transaction withdraws the margin's USDC to the wallet (health-checked), deposits it into
+        # the vault from the wallet, and deposits the vbSOL back into the margin. Atomic: if any leg fails nothing moves.
+        routed = info.id == "basis-sol" and call == "deposit"
+        # Shares are read where the vault mints them; USDC is always the margin's (the routed deposit's USDC only
+        # passes through the wallet inside the transaction).
+        holder = authority if routed else margin
         share_account = find_associated_token_address(holder, Pubkey.from_string(info.mint), TOKEN_PROGRAM_ID)
-        cash_account = find_associated_token_address(holder, USDC_MINT, TOKEN_PROGRAM_ID)
+        cash_account = find_associated_token_address(margin, USDC_MINT, TOKEN_PROGRAM_ID)
         before = await self._client.get_multiple_accounts_raw([share_account, cash_account])
         share_before = _token_amount((before.get(str(share_account)) or (None, None))[1])
         cash_before = _token_amount((before.get(str(cash_account)) or (None, None))[1])
         if units > (cash_before if call == "deposit" else share_before):
-            where = "wallet" if wallet_deposit else "margin account"
             have = math_utils.ui_amount(cash_before if call == "deposit" else share_before, SHARE_DECIMALS)
-            raise ValueError(f"Insufficient {where} {'USDC' if call == 'deposit' else info.symbol}: {have} available")
+            raise ValueError(f"Insufficient margin account {'USDC' if call == 'deposit' else info.symbol}: {have} available")
+        routed_legs: list[Instruction] = []
+        if routed:
+            from vanna_core.contracts.margin_trade import MarginTradeContract
+
+            trade = MarginTradeContract(self._client)
+            # Leg 1: margin USDC -> the wallet's USDC account. With debt the core health-checks it with every other
+            # position (USDC's own group excluded), exactly like a collateral withdrawal.
+            routed_legs = await trade._withdraw_collateral_instructions(authority, margin, usdc, units, registry, state)
 
         table_keys = [VAULT_SHARED_LOOKUP_TABLE, *([info.lookup_table] if info.lookup_table else [])]
         setup: list[Instruction] = []
@@ -872,12 +899,20 @@ class VaultContract:
                 raise ContractCallError("Deposit amount is too small for this vault's hedge swap — increase the amount")
 
             def outside(minimum: int) -> Instruction:
-                return basis_call(vault, ex, call, holder, wallet_deposit, units, minimum, route)
+                return basis_call(vault, ex, call, holder, routed, units, minimum, route)
 
         async def build(minimum: int) -> list[Instruction]:
+            """`minimum` 0 builds the simulation shape; for the routed SOL Basis deposit that shape leaves out the final
+            margin deposit (its size comes from the simulation), and any `minimum` > 0 appends it."""
             ix = outside(minimum)
-            if wallet_deposit:
-                return [*setup, request_heap_frame(256 * 1024), ix]
+            if routed:
+                # Leg 3: the wallet's vbSOL already held + the minimum the vault must mint, so it can never exceed what
+                # the vault mints. Shares minted above the minimum stay in the wallet (move_shares, or the next deposit).
+                back = trade._deposit_collateral_instructions(
+                    authority, margin, receipt, math_utils.ui_amount(share_before + minimum, SHARE_DECIMALS)
+                ) if minimum > 0 else []
+                # The withdraw is a Vanna core call, so compute_budget_prefix already asks for the larger heap frame.
+                return [*routed_legs, *setup, ix, *back]
             cpi = [AccountMeta(m.pubkey, False, m.is_writable) for m in ix.accounts]
             wrapped = await build_margin_execute_instructions(
                 self._client, authority, margin, target_program=ix.program_id,
@@ -886,14 +921,15 @@ class VaultContract:
             )
             return [*setup, *wrapped]
 
-        # Margin calls need the wallet's lookup table (it carries the margin's vaults) before they can fit.
-        if not wallet_deposit and preview_only:
+        # Every call touches the margin's vaults (the routed SOL Basis deposit too): the wallet's lookup table carries
+        # them, and it must exist before the transaction can fit.
+        if preview_only:
             if await wallet_alt.needs_setup(self._client, authority, registry):
                 # A preview can't ask for a signature: say what comes first instead of failing on size.
                 return {"action": f"vault_{call}", "vault": info.id, "name": info.name, "needs_setup": True,
                         "message": "This wallet's one-time lookup-table setup comes first: the deposit or withdraw "
                                    "action returns it to sign; preview again after it lands."}
-        elif not wallet_deposit:
+        else:
             try:
                 prerequisite = await wallet_alt.setup_envelope_if_needed(self._client, authority, registry)
             except wallet_alt.WalletTableNotReady as exc:
@@ -904,26 +940,34 @@ class VaultContract:
         tables = await fetch_lookup_tables(self._client, list(dict.fromkeys(table_keys)))
         given = {t.key for t in tables}
         tables += [t for t in await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables) if t.key not in given]
-        wallet_table = None if wallet_deposit else await wallet_alt.load_wallet_table(self._client, authority)
+        wallet_table = await wallet_alt.load_wallet_table(self._client, authority)
         if wallet_table is not None and wallet_table.key not in {t.key for t in tables}:
             tables.append(wallet_table)
 
-        trial = await build(0)
-        full = [*compute_budget_prefix(trial, self._client.program_id, EXEC_COMPUTE_UNITS), *trial]
         blockhash = (await self._client._rpc.get_latest_blockhash()).value.blockhash
-        message = MessageV0.try_compile(authority, full, tables, blockhash)
-        tx = VersionedTransaction.populate(message, [Signature.default()] * message.header.num_required_signatures)
-        if len(bytes(tx)) > 1232:
+
+        def compile_tx(ixs: list[Instruction]) -> tuple[MessageV0, VersionedTransaction]:
+            full = [*compute_budget_prefix(ixs, self._client.program_id, EXEC_COMPUTE_UNITS), *ixs]
+            msg = MessageV0.try_compile(authority, full, tables, blockhash)
+            return msg, VersionedTransaction.populate(msg, [Signature.default()] * msg.header.num_required_signatures)
+
+        message, tx = compile_tx(await build(0))
+        # Sized as the transaction that is signed: the routed deposit's final margin deposit adds accounts the
+        # simulation shape leaves out (its amount does not matter here).
+        sized = compile_tx(await build(1))[1] if routed else tx
+        if len(bytes(sized)) > 1232:
             tighter = [c for c in ROUTE_ACCOUNT_CAPS if c < route_accounts]
             if route is not None and tighter:
                 return await self._prepare(authority, info, call, amount, preview_only=preview_only, attempt=attempt,
                                            no_route=no_route, route_accounts=tighter[0])
             raise ContractCallError(
-                f"This {call} needs a larger swap route than fits in one Solana transaction ({len(bytes(tx))} bytes; the "
+                f"This {call} needs a larger swap route than fits in one Solana transaction ({len(bytes(sized))} bytes; the "
                 f"limit is 1232). A smaller amount needs a smaller route: try a smaller {call}, or split it into two."
             )
         sim = await _simulate_raw(self._client, tx, addresses=[str(share_account), str(cash_account)])
         logs = sim.get("logs") or []
+        if sim.get("err") is not None and routed and any("HealthFactorTooLow" in line for line in logs):
+            raise ContractCallError(ROUTED_HEALTH_MESSAGE)
         if sim.get("err") is not None and attempt < 2:
             if call == "withdraw" and info.kind == "basis" and _basis_failed_swap_not_needed(logs):
                 return await self._prepare(authority, info, call, amount, preview_only=preview_only, attempt=attempt + 1, no_route=True)
@@ -942,7 +986,9 @@ class VaultContract:
         output = share_change if call == "deposit" else cash_change
         if output <= 0:
             raise ContractCallError("The vault cannot fill this amount now")
-        health_factor = _health_after(sim, message, tables, self._client.program_id)
+        # Routed SOL Basis deposit: the health factor right after the USDC leaves the margin, before the vbSOL comes
+        # back - the lowest point of the transaction and the one the program checks. Otherwise: after the call.
+        health_factor = _routed_health(logs) if routed else _health_after(sim, message, tables, self._client.program_id)
         minimum = output * MIN_OUT_BPS // BPS
         out_symbol = info.symbol if call == "deposit" else "USDC"
         summary = {
@@ -950,22 +996,49 @@ class VaultContract:
             "amount": str(amount), "amount_token": "USDC" if call == "deposit" else info.symbol,
             "expected_out": math_utils.ui_amount(output, SHARE_DECIMALS), "out_token": out_symbol,
             "minimum_out": math_utils.ui_amount(minimum if info.kind == "basis" else output, SHARE_DECIMALS),
-            "health_factor_after": health_factor,
-            "from": "wallet" if wallet_deposit else "margin",
+            "health_factor_after": None if routed else health_factor,
+            "from": "margin",
         }
+        if routed:
+            summary["health_factor_while_usdc_moves"] = health_factor
+            summary["shares_to_margin"] = math_utils.ui_amount(share_before + minimum, SHARE_DECIMALS)
+            summary["note"] = (
+                "SOL Basis moves this margin USDC through your wallet into the vault and returns the vbSOL to your margin "
+                "account in one transaction (one approval). Your health factor is checked while the USDC is out of the "
+                "margin account and must stay above 1.10. vbSOL minted above the minimum (about 0.5%) stays in your "
+                "wallet; the next SOL Basis deposit sweeps it into the margin account, or you can move it yourself."
+            )
         if info.id == "perena-junior" and call == "withdraw":
             summary["note"] = "USD* Junior's instant withdrawal includes its 1% exit fee (already in the expected USDC)."
         if info.kind == "perena":
             summary["note"] = (summary.get("note", "") + " Perena takes no minimum-output parameter.").strip()
-        if wallet_deposit:
-            summary["next_step"] = "move_shares: after this lands, deposit the new shares into the margin account"
         if preview_only:
             return summary
         instructions = await build(minimum if info.kind == "basis" else 0)
         return await self._client.build_write_envelope(
             instructions, authority, purpose=f"vault_{call}", compute_unit_limit=EXEC_COMPUTE_UNITS,
-            address_lookup_tables=tables, use_protocol_lookup_tables=not wallet_deposit, summary=summary,
+            address_lookup_tables=tables, use_protocol_lookup_tables=True, summary=summary,
         )
+
+
+def _routed_health(logs: list[str]) -> str | None:
+    """The health factor in the simulated `CollateralWithdrawn` event (None = no debt / not reported). The routed SOL
+    Basis deposit's `user_withdraw_collateral` emits it to the logs (not as a CPI) as the first program call, so long
+    Jupiter / Phoenix logs can't truncate it."""
+    from vanna_core.layouts import EVENT_LAYOUTS, event_discriminator
+
+    disc = event_discriminator("CollateralWithdrawn")
+    for line in logs:
+        if not line.startswith("Program data: "):
+            continue
+        try:
+            data = base64.b64decode(line.removeprefix("Program data: "))
+        except Exception:  # noqa: BLE001
+            continue
+        if data[:8] == disc:
+            wad = EVENT_LAYOUTS["CollateralWithdrawn"].parse(data[8:]).borrow_health_factor_wad
+            return None if wad > 10**30 else f"{wad / 10**18:.4f}"
+    return None
 
 
 def _health_after(sim: dict, message: MessageV0, tables, program_id: Pubkey) -> str | None:

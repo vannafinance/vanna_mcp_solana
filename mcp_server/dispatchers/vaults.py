@@ -1,7 +1,7 @@
 """`vanna_vaults` — Basis (delta-neutral) and Perena vaults, the app's Farm page (vanna-credit-backend `2462473`).
 
 Reads (the vaults with NAV and share price, the wallet's vault shares, a simulated deposit / withdrawal preview) and
-writes (deposit USDC, withdraw shares to USDC, move SOL Basis shares from the wallet into margin), each returned
+writes (deposit USDC, withdraw shares to USDC, move SOL Basis shares left in the wallet into margin), each returned
 unsigned for the user's wallet. Vault shares are margin collateral and count toward the health factor.
 """
 
@@ -31,16 +31,19 @@ async def vanna_vaults(
     "basis-tsla", "basis-meta" (shares vbSOL, vbETH, vbBTC, vbTSLA, vbMETA); Perena "perena-usdstar" (USD*) and
     "perena-junior" (USD* Junior, 1% instant-exit fee). Every deposit is USDC and every withdrawal pays USDC; the shares
     are held in the margin account as collateral. A deposit or withdrawal moves the margin's USDC: it never borrows.
-    SOL Basis takes its deposit from the WALLET's USDC; then "move_shares" puts the new shares into the margin account.
+    SOL Basis also deposits the margin's USDC, in one transaction routed through the wallet (margin USDC -> wallet ->
+    vault -> vbSOL back into margin): the program checks the health factor while the USDC is out
+    (`health_factor_while_usdc_moves`), and vbSOL minted above the minimum (~0.5%) stays in the wallet for "move_shares".
 
     Args:
         action: "list" — every vault: NAV, share price, whether deposits are open, deposit limit, hedge (Basis), APY
             (only when the app has enough share-price history; never estimated). "positions" — the wallet's vault
-            shares in its margin account (and any SOL Basis shares still in the wallet) with their collateral value.
+            shares in its margin account (and any SOL Basis shares left in the wallet) with their collateral value.
             "preview" — simulate a deposit (`call`="deposit", `amount` USDC) or withdrawal (`call`="withdraw",
-            `amount` shares): expected shares or USDC, the minimum enforced, the health factor after. Nothing is built.
+            `amount` shares): expected shares or USDC, the minimum enforced, the health factor after (SOL Basis deposit:
+            while the USDC is out of the margin). Nothing is built.
             "deposit" — deposit `amount` USDC. "withdraw" — withdraw `amount` shares to USDC. "move_shares" — move
-            SOL Basis shares from the wallet into the margin account (`amount` shares, or all when omitted).
+            SOL Basis shares left in the wallet into the margin account (`amount` shares, or all when omitted).
             A margin write may first return a one-time setup transaction (summary.prerequisite): sign it, then repeat.
         authority: Base58 wallet address (the margin owner); required for every action but "list".
         vault: For "preview" / "deposit" / "withdraw" / "move_shares": a vault id, share symbol or name.

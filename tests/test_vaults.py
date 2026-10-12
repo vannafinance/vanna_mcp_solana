@@ -162,6 +162,9 @@ def test_app_apy_keeps_each_figure_with_its_source():
     # An app that predates the source field only had share-price history.
     assert app_apy_fields({"apy7": 3.0})["apy_7d_source"] == "history"
     assert app_apy_fields({"apyHistoryStatus": "collecting"})["apy_history_status"] == "collecting"
+    launch = app_apy_fields({"apy7": None, "apySinceLaunch": 8.25, "launchedAt": 1_760_140_800_000})
+    assert launch["apy_since_launch_pct"] == 8.25 and launch["launched_at"] == "2025-10-11"
+    assert app_apy_fields({"apySinceLaunch": None})["apy_since_launch_pct"] is None
 
 
 async def test_a_failed_basis_price_falls_back_to_the_last_good_one_flagged_stale(monkeypatch):
@@ -201,3 +204,22 @@ async def test_a_failed_basis_price_falls_back_to_the_last_good_one_flagged_stal
     with pytest.raises(PriceUnavailableError):
         stale.require(ALL_CHECKS)  # a health-checked write still refuses a stale share price
     oracle_reader.clear_last_basis_prices()
+
+
+def test_routed_sol_basis_health_comes_from_the_collateral_withdrawn_log():
+    import base64
+
+    from vanna_core.contracts.vaults import _routed_health
+    from vanna_core.layouts import EVENT_LAYOUTS, event_discriminator
+
+    def event(wad: int) -> str:
+        body = EVENT_LAYOUTS["CollateralWithdrawn"].build({
+            "margin_account": [0] * 32, "mint": [0] * 32, "amount": 10_000_000, "new_collateral_amount": 0,
+            "borrow_health_factor_wad": wad, "event_sequence": 1, "timestamp": 0,
+        })
+        return "Program data: " + base64.b64encode(event_discriminator("CollateralWithdrawn") + body).decode()
+
+    other = "Program data: " + base64.b64encode(b"\x01" * 40).decode()
+    assert _routed_health(["Program log: x", other, event(1_234_500_000_000_000_000)]) == "1.2345"
+    assert _routed_health([event(2**127)]) is None  # no debt: the program reports "infinite"
+    assert _routed_health(["Program log: nothing"]) is None

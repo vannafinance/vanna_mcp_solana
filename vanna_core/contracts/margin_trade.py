@@ -176,11 +176,24 @@ class MarginTradeContract:
         await registry.load()
         asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         margin = self.margin_address(authority)
-        mint = Pubkey.from_string(asset.mint)
-        token_program = Pubkey.from_string(asset.token_program)
         raw = math_utils.base_units(amount_ui, asset.decimals)
 
         margin_decoded = await load_margin_state(self._client, margin, registry)
+        instructions = await self._withdraw_collateral_instructions(
+            authority, margin, asset, raw, registry, margin_decoded, min_health_factor_wad
+        )
+        return await self._envelope(
+            instructions, authority, purpose="user_withdraw_collateral", compute_unit_limit=600_000,
+            summary={"action": "withdraw_collateral", "asset": asset.symbol, "amount": str(amount_ui)},
+        )
+
+    async def _withdraw_collateral_instructions(
+        self, authority: Pubkey, margin: Pubkey, asset: DiscoveredAsset, raw: int, registry: AssetRegistry,
+        margin_decoded, min_health_factor_wad: int = 0,
+    ) -> list:
+        """`user_withdraw_collateral` of `raw` units of `asset` to the wallet's ATA (created first, idempotently)."""
+        mint = Pubkey.from_string(asset.mint)
+        token_program = Pubkey.from_string(asset.token_program)
         # With no debt the program allows any withdrawal and reads no prices, so it needs no
         # health accounts at all; with debt it needs every other position plus every oracle.
         if margin_decoded.debt_count == 0:
@@ -214,10 +227,7 @@ class MarginTradeContract:
         # a withdrawal to a wallet that has never held this mint needs its
         # destination ATA created first.
         prep = wallet_prep_instructions(payer=authority, owner=authority, mint=mint, token_program=token_program)
-        return await self._envelope(
-            [*prep, ix], authority, purpose="user_withdraw_collateral", compute_unit_limit=600_000,
-            summary={"action": "withdraw_collateral", "asset": asset.symbol, "amount": str(amount_ui)},
-        )
+        return [*prep, ix]
 
     async def reclaim_rent(self, authority: Pubkey, asset_symbol: str, *, vault: bool = False, debt: bool = False) -> WriteEnvelope:
         """`user_reclaim_rent`: closes an EMPTY, inactive margin vault and/or a zero-share, inactive debt position of one
