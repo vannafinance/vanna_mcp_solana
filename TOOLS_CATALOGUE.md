@@ -12,6 +12,14 @@
 > liquidation). Where §1–§2 describe `PriceSource`/`PriceUpdateV2` mechanics, the code and
 > the ported code win. The tool surface (§3) is unchanged.
 
+> **Current state (2026-10-12).** 20 production dispatchers (+1 dev-only): the original 14 below, plus `vanna_plan`,
+> `vanna_risk`, `vanna_portfolio` (the Copilot's planner and advisor as tools, 2026-10-04), `vanna_perps` (Phoenix
+> perps, §3.19), `vanna_vaults` (Basis / Perena vaults, §3.20) and `vanna_predict` (World.xyz prediction markets,
+> §3.21). The program is vanna-credit-layer `feature/phoenix-titan` on the fork (2026-10-09 upgrade: allowed-token
+> collateral scan, per-wallet lookup tables, CPI events). Every call into the app goes through its access gate
+> (`APP_ACCESS_CODE`, §3.20 "App access gate"). §0–§2 keep the original design record; where they disagree with the
+> code, the code wins.
+
 This is the Solana counterpart of the Stellar/Soroban `vanna-mcp` tools reference
 (`Vanna_MCP/vanna-mcp/README.md` → "Tools reference"). The technique is the same:
 
@@ -317,9 +325,12 @@ All in integer fixed point, mirroring the contract's rounding:
 
 ---
 
-## 3. Tool catalogue — 14 dispatcher tools (+1 dev-only)
+## 3. Tool catalogue — 20 dispatcher tools (+1 dev-only)
 
-**Shape decision (2026-09-28):** the MCP's exposed tool surface is **14 dispatcher
+The original 14 are §3.1–§3.15; `vanna_plan`, `vanna_risk`, `vanna_portfolio` are §3.16–§3.18; `vanna_perps`,
+`vanna_vaults` and `vanna_predict` are §3.19–§3.21.
+
+**Shape decision (2026-09-28):** the MCP's exposed tool surface was **14 dispatcher
 tools**, each taking an `action` string parameter and action-specific args —
 not one flat tool per instruction/read. This mirrors how the Stellar MCP
 actually runs in production (14 dispatchers) and matches the tool list in
@@ -607,8 +618,9 @@ the app's server builds every trade and its market maker co-signs it, so the MCP
 - Every write dispatcher, when `SAFETY_LAYER` is on, is pre-flighted by `mcp_server/planning/guard.py` (same code as a plan
   step) and returns `sign_url`/`plan_id` when signing pages are enabled (a single action is a one-step plan).
 
-Tool count is now **17 dispatchers** (14 original + `vanna_plan`, `vanna_risk`, `vanna_portfolio`). The Copilot's own
-allowlist is unchanged: it keeps calling the original 14 by name.
+Tool count after this extension was **17 dispatchers** (14 original + `vanna_plan`, `vanna_risk`, `vanna_portfolio`);
+with `vanna_perps`, `vanna_vaults` and `vanna_predict` it is **20**. The Copilot calls the dispatchers by name (it
+uses the original 14 plus `vanna_perps`, `vanna_vaults` and `vanna_predict`).
 
 ### Composite flows (built from the dispatchers above, not separate actions)
 
@@ -652,9 +664,16 @@ nothing after state changes.
 | `vanna_history` | 2 | read | 1 |
 | `vanna_wallet` | 3 | read | 1 |
 | `vanna_sign` | 1 | read | 1 |
+| `vanna_plan` | 6 | 5 write (plan drawing, cancel), `status` read | 2–3 |
+| `vanna_risk` | 6 | read | 2 |
+| `vanna_portfolio` | 1 | read | 2 |
+| `vanna_perps` | 7 | 3 read, 4 write | 3 |
+| `vanna_vaults` | 6 | 3 read, 3 write | 3 |
+| `vanna_predict` | 8 | 5 read, 3 write (`trade`, `merge`, `faucet`) | 3 |
 | `vanna_fork` (dev only) | 1 | write, dev-gated | any |
 
-14 production dispatchers (46 actions, all built) + 1 dev-only. The
+20 production dispatchers (82 actions, all built) + 1 dev-only. The first 14 have 48 actions today: the 46 of the
+v1 surface plus `vanna_protocol_info concepts` and `vanna_wallet faucet` (2026-10-04). The
 read/write split per action is enforced by `mcp_server/scopes.py`: callers
 without write scope don't see the write-only dispatchers and are refused
 write actions on mixed ones. Outside the dispatcher set entirely: the isolated,

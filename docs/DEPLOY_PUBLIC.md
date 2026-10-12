@@ -105,5 +105,9 @@ Use `/mcp` in Claude Code to start the login; the browser opens the Vanna connec
 - Per-wallet lookup tables (since the 2026-10-09 program upgrade): a wallet's first margin write returns a one-time
   setup transaction that creates its table. Its address is kept in the state store (`wallet_alt:<wallet>`) and named
   by a memo in the setup transaction, so any instance finds it again from the wallet's history after a restart.
+- Every call into the app needs `APP_ACCESS_CODE` on the service (the app's access gate, backend `aaed5cc`); set it
+  with `--update-env-vars` or a secret on both services, never in `deploy/public-service.env.yaml`.
+- Predict trades are built by the app behind `PRICE_KEEPER_URL` (or `PREDICT_API_URL`): the hosted connector can only
+  trade what the deployed app can build, so deploy the app before relying on a Predict change.
 - Titan swaps need the `TITAN_API_KEY` secret (Secret Manager `titan-api-key`, mounted as the env var on both services).
   Without it the server still runs and quotes Jupiter only.

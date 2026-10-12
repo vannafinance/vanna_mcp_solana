@@ -42,10 +42,18 @@ vanna_core/                    # protocol logic — no MCP/AI concerns
   remaining_accounts.py          # health tail: position groups + oracle accounts (risk_engine.rs layout)
   margin_execute.py              # shared margin_execute (CPI-forwarding) instruction builder
   client.py                      # async RPC + v0-transaction build/simulate/envelope wrapper
+  margin_state.py                # the program's view of a margin: allowed-token collateral groups, venues, debts
+  wallet_alt.py, protocol_alt.py # per-wallet lookup table (one-time setup tx) and the protocol-wide lookup table
+  program_errors.py              # program error codes read from the IDL by name
+  phoenix.py                     # Phoenix perps decoding (exchange, perp asset map, market session bits)
+  vaults.py, vault_pricing.py    # the Basis / Perena vault catalogue and on-chain share pricing
+  fork_heal.py                   # fork only: re-clone drifted DEX pool accounts before a swap rebuild
+  app_gate.py                    # logs in to the app's access gate (APP_ACCESS_CODE) for every app call
   contracts/
     reserve.py, protocol.py, oracle.py, margin.py, margin_trade.py,
     wallet.py, history.py, kamino.py, farm.py, farm_kamino.py,
-    jupiter.py, swap.py, fork.py, oracle_refresh.py (keeper / cheatcode price refresh)
+    jupiter.py, titan.py, swap.py, fork.py, oracle_refresh.py (keeper / cheatcode price refresh),
+    perps.py (Phoenix), vaults.py (Basis / Perena), predict.py (World.xyz prediction markets, via the app)
 
 mcp_server/                    # MCP transport + dispatcher registration
   dependencies.py                # VannaContext DI container (lazy-init contract wrappers, IDL hash check)
@@ -147,10 +155,15 @@ that anyone can add to Claude, Cursor or another MCP client. There is no separat
 - The Copilot's service is untouched (IAM-locked, WorkOS machine-to-machine). Public mode refuses to start
   alongside `FIRST_PARTY_CLIENT_IDS` or the fork tools.
 
-Status: phases 1-3 of `MCP_CONNECTOR_PLAN.md` are built and tested locally (offline suite and a real MCP SDK
-OAuth client). Not yet built or deployed: the consent and sign pages in the app, the sign-link handoff, the
-shared (Firestore) state store, and the public Cloud Run service. Operator settings:
-`docs/CONNECTING_CLIENTS.md` §3.
+Status: live on the test fork since 2026-10-07 as the Cloud Run service `vanna-mcp-solana-public`
+(https://vanna-mcp-solana-public-398807408840.us-central1.run.app/mcp). It serves its own connect page and the
+signing pages, and keeps its state in Firestore (`mcp_state`). Deploy steps: `docs/DEPLOY_PUBLIC.md`; operator
+settings: `docs/CONNECTING_CLIENTS.md` §3.
+
+Signing pages (`/plan/<id>`): a direct write is a one-step plan with its own link, vault, perps and Predict writes
+included (they are `raw` plan steps). A Predict trade is several transactions signed in **one** wallet approval
+(`signAllTransactions`); the server then sends them in order, each confirmed before the next, and merges the pool
+after the last one lands.
 
 ## Deploying
 
@@ -167,7 +180,10 @@ shared (Firestore) state store, and the public Cloud Run service. Operator setti
   (`mcp-session-id`) live in instance memory, so the deploy sets `--session-affinity` and
   `--min-instances=1`; a request that still reaches another instance gets 404 and the client
   re-initializes. Runtime settings (`AUTH_ENABLED`, `OAUTH_*`, `EXTERNAL_BASE_URL`,
-  `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. With `AUTH_ENABLED=true` the server
+  `SOLANA_RPC_URL`, `JUPITER_API_KEY`, ...) are set on the service. Both services also need
+  `APP_ACCESS_CODE` (the app's site-wide access code, backend `aaed5cc`): without it every call into the app
+  (price keeper, Jupiter proxy, Phoenix helpers, vault APY, faucet, Predict) gets 401. Set it with
+  `--update-env-vars` or a secret, never in git. With `AUTH_ENABLED=true` the server
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
   `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
   Concrete project values: `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §11.
@@ -199,6 +215,11 @@ shared (Firestore) state store, and the public Cloud Run service. Operator setti
 - **Predict:** `vanna_predict` (World.xyz prediction markets) calls the app's `/api/predict/*`: the app builds each
   trade and its maker co-signs it; the MCP checks the batch (payer, co-signer, programs) and the wallet signs every
   transaction in one approval. Every app call goes through the app's access gate with `APP_ACCESS_CODE`.
+  `PREDICT_API_URL` points the Predict calls at a different app than `PRICE_KEEPER_URL` (locally:
+  `http://localhost:3000/api/predict`, so trades are built by the app version under test).
+- **Calls into the app** (all through `vanna_core/app_gate.py`): `POST /api/prices/refresh` (keeper), `/api/jupiter/*`
+  (Jupiter with the app's key), `POST /api/perps/phoenix-book` and `/phoenix-access` (fork helpers), `GET /api/farm/vaults`
+  (vault APY rows), `POST /api/faucet` and `/api/predict/*`. Titan is called directly with the MCP's own `TITAN_API_KEY`.
 - **Before a deploy, test the image itself:**
 
   ```bash

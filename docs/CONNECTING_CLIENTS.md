@@ -35,7 +35,7 @@ Surfpool fork. (`PORT=8765` to change the port; any value you set in the environ
 claude mcp add --transport http vanna-solana http://127.0.0.1:8000/mcp
 ```
 
-Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 19 tools. Or skip step 1 and let Claude Code start
+Open Claude Code and run `/mcp`: `vanna-solana` should be connected with 20 tools. Or skip step 1 and let Claude Code start
 it for you over stdio (it serves the same pages on `127.0.0.1:8000`):
 
 ```powershell
@@ -58,6 +58,10 @@ Things to try, each exercising a different part:
 | "open a margin account and deposit 5 SOL" | a two-step plan with one approval and a signature per step |
 | "lever my SOL 2x" | `vanna_plan lever`: sizes the borrow so health holds 1.15 even at a bad swap price, shows the worst case, then you approve |
 | "how much can I safely borrow?" / "what if I withdraw 1 SOL?" | `vanna_risk capacity` / `what_if` |
+| "open a 2x SOL long perp with 20 USDC" | `vanna_perps preview`, then `register` (first trade only) and `open`, each with its own link |
+| "deposit 20 USDC into ETH basis" | `vanna_vaults preview`, then `deposit` with a link |
+| "what prediction markets are there? bet 5 on Barcelona" | `vanna_predict markets`, `quote`, then `trade`: one link, the wallet signs all of the trade's transactions in one approval |
+| "get me test CASH" | `vanna_predict faucet` (fork only, needs `ENABLE_TEST_FAUCET`) |
 | "close everything" | `vanna_plan unwind`: Kamino → repay → withdraw → Earn, in an order where health only improves |
 | "swap SOL to get 100 USDC" | `vanna_plan swap_exact_out`: input sized from live quotes so the minimum received covers it |
 | "borrow 99999 USDC" | refused by the server with the reason (floor / limits), whatever the model says |
@@ -162,7 +166,9 @@ then `python scripts/smoke_public.py http://127.0.0.1:8000`.
 | `SAFETY_LAYER` | `false` (always on in public mode) | enforce the guardrails above on direct writes |
 | `ENABLE_SIGN_LINKS` | `false` | serve the signing pages; writes return a link |
 | `SIGN_BASE_URL` | `EXTERNAL_BASE_URL` or `http://127.0.0.1:PORT` | where the user's browser reaches the pages |
-| `ENABLE_TEST_FAUCET` | `false` | `vanna_wallet action=faucet` (fork only) |
+| `ENABLE_TEST_FAUCET` | `false` | `vanna_wallet action=faucet` and `vanna_predict action=faucet` (fork only) |
+| `APP_ACCESS_CODE` | empty | the app's site-wide access code; every call into the app logs in with it (an empty one gets 401 from a gated app) |
+| `PREDICT_API_URL` | `{PERPS_HELPER_URL or PRICE_KEEPER_URL}/api/predict` | the app that builds Predict trades |
 | `MIN_HEALTH_FACTOR` | `1.15` | the floor (must stay above 1.10) |
 | `MAX_ACTION_USD` / `MAX_DAILY_USD` | `5000` / `25000` | per wallet |
 | `WRITE_RATE_PER_MINUTE` | `6` | transaction builds per wallet |
