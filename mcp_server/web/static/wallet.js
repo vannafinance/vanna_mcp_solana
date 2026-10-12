@@ -57,5 +57,18 @@
     return b64(signed.serialize());
   }
 
-  window.VannaWallet = { providers: providers, connect: connect, signMessage: signMessage, signTransaction: signTransaction, current: function () { return current; } };
+  // A Predict trade: every transaction signed in ONE wallet approval (signAllTransactions), each keeping the app maker's
+  // signature already in it. A wallet without signAllTransactions signs them one by one.
+  async function signAllTransactions(unsignedList) {
+    if (!current) throw new Error("Connect a wallet first.");
+    var txs = unsignedList.map(function (t) { return solanaWeb3.VersionedTransaction.deserialize(fromB64(t)); });
+    var signed;
+    try {
+      if (current.p.signAllTransactions) signed = await current.p.signAllTransactions(txs);
+      else { signed = []; for (var i = 0; i < txs.length; i++) signed.push(await current.p.signTransaction(txs[i])); }
+    } catch (e) { if (isRejection(e)) throw new Error("You declined the transactions in your wallet. Nothing was sent."); throw e; }
+    return signed.map(function (t) { return b64(t.serialize()); });
+  }
+
+  window.VannaWallet = { providers: providers, connect: connect, signMessage: signMessage, signTransaction: signTransaction, signAllTransactions: signAllTransactions, current: function () { return current; } };
 })();

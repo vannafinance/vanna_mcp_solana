@@ -122,6 +122,13 @@ class VannaSettings(BaseSettings):
     # Optional USD cap on a perps order's size (collateral x leverage); 0 = none, as in the app.
     perps_max_action_usd: float = 0.0
     price_keeper_secret: str = ""
+    # The app's site-wide access code (backend proxy.ts / docs/ACCESS_GATE.md): every app `/api/*` call
+    # (keeper, Phoenix helpers, Jupiter proxy, vault rows, faucet, Predict) first enters it at POST /api/access
+    # for the `vanna_access` cookie (vanna_core/app_gate.py). Empty = no login; a gated app then answers 401.
+    app_access_code: str = ""
+    # The app's Predict API (World.xyz prediction markets; backend app/api/predict/*). Empty =
+    # `{perps_helper_url or price_keeper_url}/api/predict`.
+    predict_api_url: str = ""
     # `cheatcode` refresh source only: Kamino's Scope `OraclePrices` account is copied
     # from mainnet onto the fork - the public RPC is rate limited; set your own for reliability.
     mainnet_rpc_url: str = "https://api.mainnet-beta.solana.com"

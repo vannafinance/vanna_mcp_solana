@@ -41,13 +41,14 @@ def fee_payer(tx: VersionedTransaction) -> str:
     return str(list(tx.message.account_keys)[0])
 
 
-def verify_signed_transaction(tx: VersionedTransaction, wallet: str) -> str | None:
-    """Reason the signed transaction is unacceptable, or None. The only required signer (the fee payer) must be
-    `wallet`, and its signature must verify over the message."""
+def verify_signed_transaction(tx: VersionedTransaction, wallet: str, co_signers: frozenset[str] = frozenset()) -> str | None:
+    """Reason the signed transaction is unacceptable, or None. The fee payer must be `wallet`; its signature must verify
+    over the message. The only other signers allowed are `co_signers` (a Predict trade's app maker, which signed it when
+    the app built it), and their signatures must verify too."""
     message = tx.message
     required = message.header.num_required_signatures
     keys = list(message.account_keys)[:required]
-    if required != 1 or not keys or str(keys[0]) != wallet:
+    if not keys or str(keys[0]) != wallet or any(str(k) not in co_signers for k in keys[1:]):
         return "The transaction must be paid for and signed by your connected wallet only."
     signatures = list(tx.signatures)
     if len(signatures) != required:

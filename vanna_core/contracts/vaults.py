@@ -36,6 +36,7 @@ from solders.transaction import VersionedTransaction
 from spl.token.instructions import create_idempotent_associated_token_account
 
 from vanna_core import constants, math_utils
+from vanna_core.app_gate import app_request
 from vanna_core.assets import AssetRegistry, DiscoveredAsset
 from vanna_core.constants import EXEC_COMPUTE_UNITS
 from vanna_core.client import SolanaClient, b58decode, compute_budget_prefix, request_heap_frame, set_compute_unit_limit
@@ -533,10 +534,13 @@ def app_apy_fields(app: dict) -> dict:
         out[f"apy_{days}d_baseline"] = _iso(app.get(f"apy{days}BaselineAt")) if out[f"apy_{days}d_source"] == "deposit_event_estimate" else None
     status = app.get("apyHistoryStatus")
     out["apy_history_status"] = status if status in ("collecting", "available", "unavailable") else None
-    # Basis (backend `82c5a05`): the realized APY since launch (share price from 1.0, annualised by the second since
-    # the vault's first transaction), which the app shows until a 7-day figure exists. None under a day old.
-    since = app.get("apySinceLaunch")
-    out["apy_since_launch_pct"] = since if isinstance(since, (int, float)) else None
+    # Basis (backend `aaed5cc`): the raw share-price return since launch (share price from 1.0) and the days behind it,
+    # never annualised (a few days on a small NAV would turn one rebalance cost into a huge APY). The app shows it as
+    # "Since launch -1.57% · 5 days" beside the headline until a 7-day figure exists.
+    since = app.get("returnSinceLaunchPct")
+    days = app.get("sinceLaunchDays")
+    out["return_since_launch_pct"] = round(since, 4) if isinstance(since, (int, float)) else None
+    out["since_launch_days"] = round(days, 2) if isinstance(days, (int, float)) and out["return_since_launch_pct"] is not None else None
     out["launched_at"] = _iso(app.get("launchedAt"))
     return out
 
@@ -629,7 +633,7 @@ class VaultContract:
             return {}
         try:
             async with httpx.AsyncClient(timeout=20.0) as http:
-                resp = await http.get(f"{base}/api/farm/vaults")
+                resp = await app_request(http, self._client.settings, "GET", f"{base}/api/farm/vaults")
             rows = resp.json() if resp.status_code == 200 else []
             return {r["id"]: r for r in rows if isinstance(r, dict) and "id" in r}
         except Exception:  # noqa: BLE001 - APY is optional; it is never invented
@@ -721,9 +725,9 @@ class VaultContract:
             "own share-price history on Vanna; 'deposit_event_estimate' = an approximate figure from the share price of "
             "past on-chain deposits since apy_*_baseline (integer share rounding makes it approximate - always call it "
             "an estimate); empty = not enough data yet (apy_history_status 'collecting', or 'unavailable' when the "
-            "history couldn't be read). Basis vaults also carry apy_since_launch_pct: the realized return since "
-            "launched_at (share price from 1.0, annualised), which the app shows as the headline APY until a 7-day "
-            "figure exists; under a day old it is empty. Perena vaults also carry Perena's own published 7-day APY (mainnet). Basis "
+            "history couldn't be read). Basis vaults also carry return_since_launch_pct: the raw share-price "
+            "return since launched_at over since_launch_days (share price from 1.0, NOT annualised and not an APY - "
+            "say it as e.g. 'down 1.57% since launch, 5 days ago'), shown until a 7-day figure exists. Perena vaults also carry Perena's own published 7-day APY (mainnet). Basis "
             "vaults carry Phoenix's funding for their market (annualised, mainnet): what the short is paid, not the "
             "vault's net yield. Nothing here is computed by the MCP.")}
 

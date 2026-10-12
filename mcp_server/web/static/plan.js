@@ -134,11 +134,22 @@
         });
         if (!ok) { say("Stopped before signing. Nothing was sent for this step.", true); break; }
         var idx = r.step;
-        for (var i = 0; i < r.transactions.length; i++) {
-          var t = r.transactions[i];
-          var signed = await VannaWallet.signTransaction(t.unsignedTransaction);
-          var sub = await call("POST", "/submit", { tx_id: t.id, signed: signed });
-          if (sub.plan) render(sub.plan);
+        if (r.batch) {
+          // One approval for the whole trade; the server sends them in order, each confirmed before the next.
+          var all = await VannaWallet.signAllTransactions(r.transactions.map(function (t) { return t.unsignedTransaction; }));
+          for (var j = 0; j < r.transactions.length; j++) {
+            if (r.transactions.length > 1) say("Sending " + (j + 1) + " of " + r.transactions.length + ": " + (r.transactions[j].purpose || ""));
+            var sent = await call("POST", "/submit", { tx_id: r.transactions[j].id, signed: all[j] });
+            if (sent.plan) render(sent.plan);
+          }
+          say("");
+        } else {
+          for (var i = 0; i < r.transactions.length; i++) {
+            var t = r.transactions[i];
+            var signed = await VannaWallet.signTransaction(t.unsignedTransaction);
+            var sub = await call("POST", "/submit", { tx_id: t.id, signed: signed });
+            if (sub.plan) render(sub.plan);
+          }
         }
         clear(box); box.hidden = true;
         var outcome = await waitConfirmed(idx);

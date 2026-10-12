@@ -26,6 +26,7 @@ from mcp_server.dispatchers.oracle import vanna_oracle
 from mcp_server.dispatchers.perps import vanna_perps
 from mcp_server.dispatchers.plan import vanna_plan
 from mcp_server.dispatchers.portfolio import vanna_portfolio
+from mcp_server.dispatchers.predict import vanna_predict
 from mcp_server.dispatchers.risk_advisor import vanna_risk
 from mcp_server.dispatchers.protocol_info import vanna_protocol_info
 from mcp_server.dispatchers.sign import vanna_sign
@@ -53,6 +54,7 @@ ALL_DISPATCHERS = [
     vanna_plan,
     vanna_perps,
     vanna_vaults,
+    vanna_predict,
 ]
 
 # Dev-only — registered by main.py only when ENABLE_FORK_TOOLS=true. Never

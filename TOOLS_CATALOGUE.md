@@ -533,7 +533,7 @@ Phoenix, and nothing more moves. The app's `openPerp` still builds the single tr
 
 | Action | Purpose |
 |---|---|
-| `list` | each vault's NAV, share price, deposits open, deposit limit, hedge (Basis); the app's APY with its source (`apy_*_source`: `history`, or `deposit_event_estimate` with `apy_*_baseline`, an approximate figure from past deposits since backend `fa6d2f6`) and `apy_history_status`; Perena's published APY; Phoenix funding for Basis; Basis `apy_since_launch_pct` / `launched_at` (realized since launch, the app's headline until a 7-day figure exists, backend `82c5a05`) |
+| `list` | each vault's NAV, share price, deposits open, deposit limit, hedge (Basis); the app's APY with its source (`apy_*_source`: `history`, or `deposit_event_estimate` with `apy_*_baseline`, an approximate figure from past deposits since backend `fa6d2f6`) and `apy_history_status`; Perena's published APY; Phoenix funding for Basis; Basis `return_since_launch_pct` / `since_launch_days` / `launched_at` (raw share-price return since launch, never annualised, shown until a 7-day figure exists, backend `aaed5cc`) |
 | `positions` | the wallet's vault shares in its margin account (and SOL Basis shares left in the wallet) with collateral value |
 | `preview` | a simulated deposit (USDC) or withdrawal (shares): output, minimum, HF after (nothing built) |
 | `deposit` / `withdraw` | `margin_execute` into Perena or the Basis vault program (Basis runs its own Jupiter route; min out = simulated - 0.5%) |
@@ -556,10 +556,46 @@ Mirrors `lib/solana/vault-actions.ts`, `vault-state.ts`, `perena.ts` and `@vanna
   accounts), and if it still doesn't fit the error says to use a smaller amount or split it.
 - **Jupiter access.** Without a key of its own the MCP calls Jupiter through the app's `/api/jupiter` proxy (as the
   app's vault actions do), and retries a rate-limited (429) answer once.
+- **App access gate.** The app answers every `/api/*` call without its `vanna_access` cookie with 401 (backend
+  `aaed5cc`, `proxy.ts`). Every app call the MCP makes (price keeper, Phoenix helpers, Jupiter proxy, vault rows,
+  faucet, Predict) enters `APP_ACCESS_CODE` once at `POST /api/access`, keeps the 30-day cookie per app origin, and
+  logs in again once on a gate 401 (`vanna_core/app_gate.py`). Without the code a gated app's 401 comes back as is.
 
 A Basis share is priced by simulating the oracle; when that read fails (a transient RPC error), the last good price from
 the past hour is used, flagged not fresh, like the app (backend `039a46b`), so the shares don't drop to $0 in a health
 reading. A health-checked write still refuses a price that isn't fresh (`oracle_reader._LAST_BASIS_PRICE`).
+
+### 3.21 `vanna_predict` — Predict, World.xyz prediction markets (2026-10-12)
+
+The app's Predict page (backend `1a9cb3c`, `aaed5cc`; `lib/predict/*`, `app/api/predict/*`), through the app's API:
+the app's server builds every trade and its market maker co-signs it, so the MCP cannot build one itself.
+
+| Action | Calls (the app) | Purpose |
+|---|---|---|
+| `markets` | `GET /events?cat=&q=` | listed events; each outcome's `market_id`, buy / sell price in cents (YES and NO), tradable, joins Vanna's pool |
+| `market` | `GET /events/:id` | one event (by event id or any of its market ids) with pool figures and rules |
+| `positions` | `GET /positions/:owner` | wallet CASH, positions (wallet + pooled shares, value, P&L, pays if win), Vanna pool, World shares it can move into the pool |
+| `history` | `GET /activity/:owner?market=` | the wallet's trades on the fork |
+| `quote` | `POST /trade` | the trade's quotes and warnings; the transactions are dropped (a read) |
+| `trade` (write) | `POST /trade` | a batch envelope: buy (CASH, 0.1-5,000), sell (shares; pooled shares redeemed first), deposit (World shares into the pool); one leg, or `legs` (max 8) |
+| `merge` (write) | `POST /pool/merge` | the app's keeper merges matched YES+NO into USDC lent to Vanna; called after a trade confirms (`summary.merge_markets`) |
+| `faucet` (write) | `POST /faucet` | test fork + `ENABLE_TEST_FAUCET` only: test CASH (default 100, max 1000; the page's "Get test CASH") |
+
+- **As on the website:** paid with CASH only (`pay: "USDC"` is not offered) and a buy on an allowlisted market always
+  joins the pool (no `noPool`). Wallet-only: no margin account, no borrowing, no health factor.
+- **The batch.** One trade is 1..n v0 transactions sharing one blockhash. `summary.batch`, `sign_all_at_once`,
+  `send_in_order`: the wallet signs all of them in ONE approval (`signAllTransactions`), and they are sent in order,
+  each confirmed before the next (a later one spends what the one before created). Only the first is simulated; the
+  rest are `not_run_dependency`. Each keeps the maker's signature (`summary.co_signer`, `requiredSigners`).
+- **Checked before it is returned:** every transaction is paid by the user's wallet; its only other signer is the
+  app's maker (from `GET /status`, cached 10 minutes) and that signature is present; it calls only World, the outcome
+  pool, SPL Token, Token-2022, associated-token, compute budget and system. Anything else is refused.
+- **Limits:** a trade's spend for the per-action / per-day limits is its buys' CASH at $1 (`guard.predict_spend_usd`).
+- **Sign page:** a batch step is signed with one `signAllTransactions` and submitted in order; the server sends each
+  and waits for it to confirm before it accepts the next (`engine._wait_landed`), refuses an out-of-order or tampered
+  transaction, verifies the maker's signature too (`signing.verify_signed_transaction(co_signers=…)`), never rebuilds a
+  batch part of which landed, and runs the merge after the last one confirms. Direct writes with no plan op (vaults,
+  perps, Predict) are `raw` plan steps, accepted by `validate_steps` (they were refused before, so they got no link).
 
 ### Extensions to existing dispatchers (2026-10-04)
 

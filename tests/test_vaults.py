@@ -162,9 +162,14 @@ def test_app_apy_keeps_each_figure_with_its_source():
     # An app that predates the source field only had share-price history.
     assert app_apy_fields({"apy7": 3.0})["apy_7d_source"] == "history"
     assert app_apy_fields({"apyHistoryStatus": "collecting"})["apy_history_status"] == "collecting"
-    launch = app_apy_fields({"apy7": None, "apySinceLaunch": 8.25, "launchedAt": 1_760_140_800_000})
-    assert launch["apy_since_launch_pct"] == 8.25 and launch["launched_at"] == "2025-10-11"
-    assert app_apy_fields({"apySinceLaunch": None})["apy_since_launch_pct"] is None
+    launch = app_apy_fields({"apy7": None, "returnSinceLaunchPct": -1.571800000000001, "sinceLaunchDays": 5.0263657,
+                             "launchedAt": 1_760_140_800_000})
+    assert launch["return_since_launch_pct"] == -1.5718 and launch["since_launch_days"] == 5.03
+    assert launch["launched_at"] == "2025-10-11"
+    gone = app_apy_fields({"returnSinceLaunchPct": None, "sinceLaunchDays": 2.0})
+    assert gone["return_since_launch_pct"] is None and gone["since_launch_days"] is None
+    # The old annualised field is no longer read.
+    assert "apy_since_launch_pct" not in app_apy_fields({"apySinceLaunch": 8.25})
 
 
 async def test_a_failed_basis_price_falls_back_to_the_last_good_one_flagged_stale(monkeypatch):

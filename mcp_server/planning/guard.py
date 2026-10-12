@@ -78,6 +78,14 @@ def describe_call(tool: str, args: dict[str, Any]) -> str:
             return f"Withdraw {args.get('amount')} {name} shares to USDC"
         if action == "move_shares":
             return f"Move your {name} shares from the wallet into your margin account"
+    if tool == "vanna_predict" and action == "trade":
+        legs = args.get("legs") or [{"side": args.get("side") or "buy", "amount": args.get("amount"), "outcome": args.get("outcome")}]
+        if len(legs) > 1:
+            return f"Predict trade on {len(legs)} outcomes (one approval)"
+        leg = legs[0]
+        verb = {"buy": "Buy", "sell": "Sell", "deposit": "Move into Vanna's pool:"}.get(str(leg.get("side")), "Trade")
+        what = f"{leg.get('amount')} CASH of {str(leg.get('outcome')).upper()}" if leg.get("side", "buy") == "buy" else f"{leg.get('amount')} {str(leg.get('outcome')).upper()} shares"
+        return f"{verb} {what} (Predict)"
     if tool == "vanna_perps":
         market = str(args.get("market") or "").upper().removesuffix("-PERP")
         if action == "register":
@@ -92,6 +100,16 @@ def describe_call(tool: str, args: dict[str, Any]) -> str:
         if action == "withdraw":
             return f"Move {args.get('amount_usdc') or 'all your'} USDC from Phoenix back to your margin account"
     return f"{tool.replace('vanna_', '').replace('_', ' ')}: {action}"
+
+
+def predict_spend_usd(args: dict[str, Any]) -> float:
+    """A Predict trade's spend for the limits: the CASH its buys pay, valued at $1 (CASH is World's dollar). Sells and
+    pool deposits spend nothing."""
+    from vanna_core.contracts.predict import validate_legs
+    from mcp_server.dispatchers.predict import _legs
+
+    legs = validate_legs(_legs(args.get("legs"), args.get("market"), args.get("outcome"), args.get("side"), args.get("amount")))
+    return float(sum(leg["amount"] for leg in legs if leg["side"] == "buy"))
 
 
 def check_amounts(tool: str, args: dict[str, Any]) -> str | None:
@@ -126,6 +144,8 @@ async def guard_direct_write(wallet: str, tool: str, args: dict[str, Any], *, co
     if step is None:
         # A vault deposit spends its USDC amount (USDC is valued at $1 here: the deposit token is always USDC).
         usd = float(args["amount"]) if tool == "vanna_vaults" and args.get("action") == "deposit" and args.get("amount") else 0.0
+        if tool == "vanna_predict" and args.get("action") == "trade":
+            usd = predict_spend_usd(args)
         spend = await get_safety().check_spend(wallet, usd)
         if not spend.ok:
             return Preflight(False, code="limit", message=spend.message)

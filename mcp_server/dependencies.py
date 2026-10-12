@@ -188,6 +188,14 @@ class VannaContext:
         return self._vaults
 
     @property
+    def predict(self):
+        from vanna_core.contracts.predict import PredictContract
+
+        if getattr(self, "_predict", None) is None:
+            self._predict = PredictContract(self.client)
+        return self._predict
+
+    @property
     def fork(self) -> ForkContract:
         if self._fork is None:
             self._fork = ForkContract(self._settings)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import httpx
 
+from vanna_core.app_gate import app_request
 from vanna_core.config import VannaSettings
 from vanna_core.types import ContractCallError
 
@@ -35,7 +36,7 @@ class ForkContract:
             headers["Authorization"] = f"Bearer {self._settings.price_keeper_secret}"
 
         async with httpx.AsyncClient(timeout=20.0) as http:
-            resp = await http.post(f"{self._settings.price_keeper_url}/api/faucet", json=payload, headers=headers)
+            resp = await app_request(http, self._settings, "POST", f"{self._settings.price_keeper_url}/api/faucet", json=payload, headers=headers)
         try:
             body = resp.json()
         except Exception as exc:  # noqa: BLE001 — a non-JSON response (e.g. a 404 HTML page)

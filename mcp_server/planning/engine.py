@@ -314,6 +314,11 @@ class PlanEngine:
                         step["notes"] = [*(step.get("notes") or []), "One-time lookup table set up."]
                     else:
                         step["state"] = "confirmed"
+                        await self._merge_after(step)
+                    changed = True
+                elif status is None and now - step.get("submitted_at", now) > BLOCKHASH_DEAD_AFTER_SECONDS and len((step.get("batch") or {}).get("sent") or []) > 1:
+                    # Part of a Predict trade landed: rebuilding would trade again. Stop and say so.
+                    step["state"], step["error"] = "uncertain", "The last transaction of this trade did not land; the ones before it did. Check your positions."
                     changed = True
                 elif status is None and now - step.get("submitted_at", now) > BLOCKHASH_DEAD_AFTER_SECONDS:
                     # Never landed and can't any more: safe to rebuild.
@@ -413,6 +418,10 @@ class PlanEngine:
             # A prerequisite (summary.prerequisite: the wallet's lookup-table setup) is signed first; the step itself is
             # built again once it lands (`_refresh`). It moves no funds, so it counts nothing toward the spend limits.
             prereq = bool((envelope.get("summary") or {}).get("prerequisite"))
+            env_summary = envelope.get("summary") or {}
+            # A Predict trade: several transactions signed in one approval and sent in order, co-signed by the app's maker.
+            step["batch"] = ({"order": [t["id"] for t in out_txs], "sent": [], "co_signer": env_summary.get("co_signer"),
+                              "merge": list(env_summary.get("merge_markets") or [])} if env_summary.get("batch") else None)
             step.update({"state": "built", "built": built, "usd": 0.0 if prereq else prepared.usd,
                          "resolved_amount": prepared.resolved_amount, "prereq": prereq,
                          "notes": prepared.notes, "risk": prepared.risk.to_dict(), "error": None})
@@ -420,10 +429,43 @@ class PlanEngine:
                 rec["status"] = "running"
             await self._save(rec)
             return {"ok": True, "step": idx, "label": step["label"], "summary": envelope.get("summary"), "prerequisite": prereq,
+                    "batch": bool(step["batch"]),
                     "notes": prepared.notes, "risk": prepared.risk.to_dict(), "simulation": prepared.simulation,
                     "transactions": out_txs, "plan": self.view(rec)}
         finally:
             await self.store.delete(f"planlock:{plan_id}:{idx}")
+
+    async def _wait_landed(self, signature: str, timeout: float = 60.0) -> bool | None:
+        """True once confirmed, False when it failed on-chain, None when it did not confirm within `timeout` seconds."""
+        import asyncio
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                status = (await self._statuses([signature]))[0]
+            except Exception:  # noqa: BLE001 — keep polling until the deadline
+                status = None
+            if status is not None and status.get("err") is not None:
+                return False
+            if status is not None and status.get("confirmationStatus") in ("confirmed", "finalized"):
+                return True
+            if time.monotonic() > deadline:
+                return None
+            await asyncio.sleep(1.0)
+
+    async def _merge_after(self, step: dict[str, Any]) -> None:
+        """After a Predict trade confirms, the app's keeper merges the touched pools (best effort, as on the website)."""
+        markets = (step.get("batch") or {}).get("merge") or []
+        if not markets:
+            return
+        try:
+            result = await internal.call_raw("vanna_predict", action="merge", market_ids=markets)
+            merged = sum(r.get("merged_usdc") or 0 for r in result.get("results") or [])
+            note = f"Vanna's pool merged {merged:g} USDC of matched shares." if merged else "Your shares are in Vanna's pool."
+        except Exception:  # noqa: BLE001 — the pool keeps the shares (still redeemable) when the merge fails
+            logger.warning("predict merge after trade failed", exc_info=True)
+            note = "The pool merge did not run just now; your shares stay in the pool and can still be sold."
+        step["notes"] = [*(step.get("notes") or []), note]
 
     async def _preflight(self, wallet: str, step: dict[str, Any]) -> Preflight:
         if step["op"] == "raw":
@@ -452,7 +494,11 @@ class PlanEngine:
             raise PlanError("invalid_transaction", "That is not a valid signed transaction.") from exc
         if signing.message_hash(tx) != expected:
             raise PlanError("transaction_changed", "The signed transaction differs from the one prepared (the wallet may have modified it). Nothing was sent.")
-        reason = signing.verify_signed_transaction(tx, rec["wallet"])
+        batch = step.get("batch")
+        if batch and tx_id != batch["order"][len(batch["sent"])]:
+            raise PlanError("out_of_order", "This trade's transactions are sent in order; send the next one in the list.", 409)
+        co_signers = frozenset({batch["co_signer"]}) if batch and batch.get("co_signer") else frozenset()
+        reason = signing.verify_signed_transaction(tx, rec["wallet"], co_signers)
         if reason:
             raise PlanError("invalid_signature", reason, 401)
         # Exactly once: the state moves before anything is sent, so a second submit of the same step is refused.
@@ -470,6 +516,22 @@ class PlanEngine:
             await self._save(rec)
             logger.warning("relay outcome unclear | plan=%s step=%s: %s", plan_ref(plan_id), idx, exc)
             raise PlanError("uncertain", step["error"], 502) from exc
+        if batch:
+            batch["sent"].append(signature)
+            if len(batch["sent"]) < len(batch["order"]):
+                # The next transaction spends what this one creates: it is accepted only once this one confirmed.
+                landed = await self._wait_landed(signature)
+                if landed is True:
+                    step["state"] = "built"
+                    await self._save(rec)
+                    return {"signature": signature, "step": idx, "next": batch["order"][len(batch["sent"])], "plan": self.view(rec)}
+                n = len(batch["sent"])
+                step["state"] = "failed" if landed is False else "uncertain"
+                step["error"] = (f"Transaction {n} of this trade failed on-chain; nothing after it was sent." if landed is False else
+                                 f"Transaction {n} of this trade did not confirm in time; nothing after it was sent. Check your positions.")
+                rec["status"] = "failed"
+                await self._save(rec)
+                raise PlanError("batch_stopped", step["error"], 502)
         step["state"], step["signature"], step["error"] = "submitted", signature, None
         await self.safety.record_spend(rec["wallet"], float(step.get("usd") or 0.0))
         await self._save(rec)

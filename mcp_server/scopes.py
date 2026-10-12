@@ -25,6 +25,8 @@ WRITE_ACTIONS: dict[str, frozenset[str]] = {
     "vanna_perps": frozenset({"register", "open", "close", "withdraw"}),
     "vanna_vaults": frozenset({"deposit", "withdraw", "move_shares"}),
     "vanna_wallet": frozenset({"faucet"}),
+    # merge is the app keeper's own transaction (no wallet signs it), but it is still an action that moves pool funds.
+    "vanna_predict": frozenset({"trade", "merge", "faucet"}),
     # Drawing a plan creates an executable path (the user still approves it with their wallet), so a read-only login
     # does not get it; `status` is a read.
     "vanna_plan": frozenset({"lever", "unwind", "swap_exact_out", "custom", "cancel"}),
@@ -45,6 +47,7 @@ WRITE_ONLY_TOOLS: frozenset[str] = frozenset({
 EXPENSIVE_READ_TOOLS: frozenset[str] = frozenset({
     "vanna_perps",
     "vanna_vaults",
+    "vanna_predict",
     "vanna_farm_overview",
     "vanna_history",
     "vanna_margin_status",

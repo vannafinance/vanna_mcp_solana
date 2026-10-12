@@ -14,6 +14,8 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def keeper(monkeypatch: pytest.MonkeyPatch):
+    # This fake keeper has no access gate (tests/test_app_gate.py covers the login): no code from a local .env.
+    monkeypatch.setenv("APP_ACCESS_CODE", "")
     calls: list[httpx.Request] = []
     state = {"status": 200, "body": {"ok": True, "prices": {"SOL": 150.0}, "healedReserves": []}}
 

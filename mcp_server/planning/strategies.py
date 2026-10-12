@@ -60,6 +60,8 @@ def label_for(step: dict[str, Any]) -> str:
         return f"Redeem {what} from Kamino (farm) back to margin"
     if op == "report":
         return "Report your health factor"
+    if op == "raw":
+        return str(step.get("label") or "Direct action")
     return op
 
 

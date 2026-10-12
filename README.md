@@ -116,8 +116,9 @@ to ~6 s.
 
 The MCP client's model replaces the Copilot's Gemini (understanding, planning, wording); this server does everything that
 must be exact — sizing, risk checks, limits, building and simulating transactions, approval and exactly-once execution —
-with the Copilot's guardrails. 17 dispatcher tools: reads, `vanna_plan` (lever, unwind, exact-output swap, custom chains),
-`vanna_risk` (capacity, what-if, leverage, liquidation distance), `vanna_portfolio`, the original write tools, and a
+with the Copilot's guardrails. 20 dispatcher tools: reads, `vanna_plan` (lever, unwind, exact-output swap, custom chains),
+`vanna_risk` (capacity, what-if, leverage, liquidation distance), `vanna_portfolio`, the original write tools, Phoenix
+perps (`vanna_perps`), Basis / Perena vaults (`vanna_vaults`), World.xyz prediction markets (`vanna_predict`), and a
 test faucet. Writes return a link where the user's own wallet approves and signs; the server never signs.
 
 ```powershell
@@ -195,6 +196,9 @@ shared (Firestore) state store, and the public Cloud Run service. Operator setti
 - **Vaults:** `vanna_vaults` (Basis delta-neutral SOL/ETH/BTC/TSLA/META, Perena USD* / USD* Junior) ports the app's
   `vault-actions.ts` / `vault-state.ts` / `perena.ts`; vault shares are priced like the program does
   (`vanna_core/vault_pricing.py`).
+- **Predict:** `vanna_predict` (World.xyz prediction markets) calls the app's `/api/predict/*`: the app builds each
+  trade and its maker co-signs it; the MCP checks the batch (payer, co-signer, programs) and the wallet signs every
+  transaction in one approval. Every app call goes through the app's access gate with `APP_ACCESS_CODE`.
 - **Before a deploy, test the image itself:**
 
   ```bash

@@ -39,6 +39,7 @@ import httpx
 from solders.pubkey import Pubkey
 
 from vanna_core import constants
+from vanna_core.app_gate import app_request
 from vanna_core.assets import PYTH_PUSH_ORACLE_PROGRAM_ID, PYTH_RECEIVER_PROGRAM_ID, WSOL_MINT, AssetRegistry, DiscoveredAsset
 from vanna_core.client import SolanaClient
 from vanna_core.config import VannaSettings
@@ -219,7 +220,7 @@ async def refresh_via_keeper(settings: VannaSettings) -> dict | None:
             headers["Authorization"] = f"Bearer {settings.price_keeper_secret}"
         url = f"{settings.price_keeper_url.rstrip('/')}/api/prices/refresh"
         async with httpx.AsyncClient(timeout=60.0) as http:
-            resp = await http.post(url, headers=headers)
+            resp = await app_request(http, settings, "POST", url, headers=headers)
         try:
             body = resp.json()
         except ValueError:

@@ -453,6 +453,15 @@ def validate_steps(steps: list[dict[str, Any]]) -> str | None:
                 return "Unsupported read step."
             continue
         op = s.get("op")
+        if op == "raw":
+            # A direct write with no plan-op equivalent (vaults, perps, Predict, deposit_and_borrow): built exactly as
+            # called, through the same pre-flight (guard_direct_write). Only a real write action of a dispatcher.
+            from mcp_server.scopes import is_write_call
+
+            args = s.get("args") if isinstance(s.get("args"), dict) else {}
+            if not isinstance(s.get("tool"), str) or not is_write_call(s["tool"], args.get("action")) or not s.get("label"):
+                return "Unsupported direct step."
+            continue
         if op not in WRITE_OPS:
             return f"Unsupported step {op!r}."
         rule = OP_ASSETS[op]

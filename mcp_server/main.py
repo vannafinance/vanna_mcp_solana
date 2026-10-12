@@ -130,6 +130,13 @@ def _normalize_sdk_error(tool: str, result: Any) -> Any:
 # Tools that run their own safety checks per step (the plan engine pre-flights every step it builds) or are not
 # transactions (the faucet has its own per-wallet cap).
 _OWN_SAFETY_TOOLS = frozenset({"vanna_plan", "vanna_wallet", "vanna_fork"})
+# Single actions of that kind: the Predict CASH faucet (its own per-wallet cap) and the keeper's pool merge (no wallet
+# signs it; it moves only what a confirmed trade left in the pool).
+_OWN_SAFETY_ACTIONS = frozenset({("vanna_predict", "faucet"), ("vanna_predict", "merge")})
+
+
+def _own_safety(tool: str, action: Any) -> bool:
+    return tool in _OWN_SAFETY_TOOLS or (tool, action) in _OWN_SAFETY_ACTIONS
 
 
 def _acting_wallet(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -249,7 +256,7 @@ class ScopedMCPServer(MCPServer):
                     return _json_result({"error": "forbidden", "code": "wallet_mismatch", "message": refusal})
                 params = params.model_copy(update={"arguments": scoped})
             guarded: dict[str, Any] | None = None
-            if is_write and name not in _OWN_SAFETY_TOOLS and safety_layer.active():
+            if is_write and not _own_safety(name, action) and safety_layer.active():
                 # The Copilot's guardrails, enforced where the transaction is built (see mcp_server/safety.py).
                 acting = wallet or _acting_wallet(name, params.arguments or {})
                 if acting is not None:
@@ -261,7 +268,7 @@ class ScopedMCPServer(MCPServer):
             except Exception:
                 breaker.record_failure(name)
                 raise
-            if is_write and name not in _OWN_SAFETY_TOOLS:
+            if is_write and not _own_safety(name, action):
                 result = await _attach_signing_link(result, name, params.arguments or {}, wallet)
         if _result_error_code(result) in _DOWNSTREAM_ERRORS:
             breaker.record_failure(name)

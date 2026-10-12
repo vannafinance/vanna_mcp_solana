@@ -320,10 +320,12 @@ class PerpsContract:
             return None
         import httpx
 
+        from vanna_core.app_gate import app_request
+
         base = (settings.perps_helper_url or settings.price_keeper_url).rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=30.0) as http:
-                resp = await http.post(f"{base}{path}", json=body)
+                resp = await app_request(http, settings, "POST", f"{base}{path}", json=body)
             return resp.json() if resp.status_code == 200 else None
         except Exception:  # noqa: BLE001 - a missing helper leaves the fork's own state; the simulation decides
             return None

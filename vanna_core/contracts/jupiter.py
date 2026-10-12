@@ -16,6 +16,7 @@ from solders.address_lookup_table_account import AddressLookupTable, AddressLook
 from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey
 
+from vanna_core.app_gate import app_request
 from vanna_core.client import SolanaClient
 from vanna_core.config import VannaSettings
 from vanna_core.types import ContractCallError
@@ -70,7 +71,8 @@ class JupiterClient:
     async def _send(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
         async with httpx.AsyncClient(timeout=15.0) as http:
             for attempt in range(2):
-                resp = await http.request(method, self._url(endpoint), **kwargs)
+                url = self._url(endpoint)
+                resp = await (app_request(http, self._settings, method, url, **kwargs) if self._proxy else http.request(method, url, **kwargs))
                 if resp.status_code not in _RETRY_STATUSES or attempt == 1:
                     return resp
                 await asyncio.sleep(_RETRY_AFTER_SECS)
