@@ -448,6 +448,13 @@ Adapter rules: the first `cpi_account_count` remaining accounts are exactly the 
 
 The Copilot never offers arbitrary program invocation; only these two adapters, and only when their `Integration` is enabled.
 
+**Jupiter and Titan (2026-10-08 on).** `quote` returns both providers (`providers`, best first) and `titan_status`
+(`quoted`, `no-route`, `not-configured`, `no-wallet`, or `too-large`). For a margin swap Titan is offered only if its route
+fits one transaction together with the margin instruction (built, not simulated); otherwise it is left out with
+`too-large`. A build with no `provider` takes the better quote and falls back to Jupiter when Titan's route can't be built;
+a build pinned to Titan re-quotes Titan up to twice (its route changes between quotes) and is then refused with "Jupiter
+can build this swap". The website's own Spot page swaps only inside the margin account.
+
 ### 3.12 `vanna_history` — read
 
 | Action | Phase | Mirrors | Purpose |

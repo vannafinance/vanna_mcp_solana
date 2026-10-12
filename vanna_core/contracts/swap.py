@@ -59,6 +59,8 @@ MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 # The core program also runs out of heap on long routes next to the position and oracle segments, so the
 # app asks Jupiter for at most 20 accounts (`MARGIN_SWAP_MAX_ACCOUNTS`); this list ends there too.
 MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
+# A Titan margin route that doesn't fit is quoted again this many times (its route can change between quotes).
+TITAN_REQUOTES = 2
 
 Provider = Literal["jupiter", "titan"]
 PROVIDERS: tuple[str, ...] = ("jupiter", "titan")
@@ -107,7 +109,8 @@ class SwapContract:
         self, from_asset, to_asset, raw_amount: int, slippage_bps: int, user_key: str | None, mode: Literal["wallet", "margin"]
     ) -> tuple[dict | None, TitanQuote | None, str, Exception | None]:
         """Jupiter's and Titan's quotes side by side (the app's `bestSwapQuote`). Returns (jupiter, titan, titan_status,
-        jupiter_error); titan_status is quoted | no-route | not-configured | no-wallet."""
+        jupiter_error); titan_status is quoted | no-route | not-configured | no-wallet (`quote` adds too-large: a margin
+        route that can't fit one transaction with the margin instruction, so it isn't offered)."""
 
         async def titan():
             if not self._titan.configured:
@@ -155,6 +158,16 @@ class SwapContract:
             raise jerr or ContractCallError("No route found")
         return "jupiter", None
 
+    async def _titan_margin_fits(self, authority: Pubkey, from_asset, to_asset, registry, quote: TitanQuote) -> bool:
+        """Whether this Titan route fits one margin transaction (built, not simulated). Unknown (an error) counts as
+        fitting: the build reports it with its own reason."""
+        try:
+            margin = margin_pda(authority, self._client.program_id)[0]
+            return (await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote))[2]
+        except Exception:  # noqa: BLE001
+            logger.info("Titan margin fit check failed", exc_info=True)
+            return True
+
     async def _pair(self, from_symbol: str, to_symbol: str, registry: AssetRegistry):
         from_asset = registry.by_symbol(from_symbol)
         to_asset = registry.by_symbol(to_symbol)
@@ -187,6 +200,9 @@ class SwapContract:
         if authority is not None:
             user_key = str(margin_pda(authority, self._client.program_id)[0]) if mode == "margin" else str(authority)
         jq, tq, titan_status, jerr = await self._quotes(from_asset, to_asset, raw_amount, slippage_bps, user_key, mode)
+        if tq is not None and mode == "margin" and authority is not None and not await self._titan_margin_fits(authority, from_asset, to_asset, registry, tq):
+            # Offered only if it can be built: Titan's route plus the margin instruction must fit one transaction.
+            tq, titan_status = None, "too-large"
         providers: list[dict] = []
         if jq is not None:
             providers.append({
@@ -363,7 +379,7 @@ class SwapContract:
         chosen, titan_quote = await self._pick(provider, from_asset, to_asset, raw_amount, slippage_bps, str(margin), "margin")
         if chosen == "titan" and titan_quote is not None:
             try:
-                return await self._margin_titan(authority, margin, from_asset, to_asset, raw_amount, amount_ui, registry, titan_quote)
+                return await self._margin_titan(authority, margin, from_asset, to_asset, raw_amount, amount_ui, registry, titan_quote, slippage_bps)
             except ContractCallError as exc:
                 # Titan was only the better quote, not the caller's choice: a route the margin can't run (wrong shape,
                 # or too large for one transaction) falls back to Jupiter. A caller who named Titan gets the error.
@@ -423,13 +439,8 @@ class SwapContract:
             summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui), "provider": "jupiter"},
         )
 
-    async def _margin_titan(
-        self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, raw_amount: int, amount_ui, registry, quote: TitanQuote
-    ) -> WriteEnvelope:
-        """Titan's `swap_route_v3` through `margin_execute` (the app's `executeMarginTitanSwap`): the wallet creates any
-        missing atlas token accounts first, then the margin calls Titan; Titan's own minimum out bounds the price."""
-        from vanna_core.protocol_alt import load_protocol_tables
-
+    async def _titan_margin_build(self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, registry, quote: TitanQuote):
+        """The Titan margin transaction's instructions and lookup tables, and whether it fits one Solana transaction."""
         data, accounts = margin_swap_call(quote, margin)
         atlas = await missing_atlas_accounts(self._client, authority, accounts, data[20])
         instructions = await build_margin_execute_instructions(
@@ -442,10 +453,27 @@ class SwapContract:
         route_keys = {t.key for t in lookup_tables}
         all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
         full = [*atlas, *instructions]
-        if not fits_one_transaction(full, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS, self._client.program_id):
+        return full, lookup_tables, fits_one_transaction(full, authority, all_tables, MARGIN_SWAP_COMPUTE_UNITS, self._client.program_id)
+
+    async def _margin_titan(
+        self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, raw_amount: int, amount_ui, registry, quote: TitanQuote,
+        slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    ) -> WriteEnvelope:
+        """Titan's `swap_route_v3` through `margin_execute` (the app's `executeMarginTitanSwap`): the wallet creates any
+        missing atlas token accounts first, then the margin calls Titan; Titan's own minimum out bounds the price.
+
+        Titan's route can change from one quote to the next. A route that doesn't fit one transaction with the margin
+        instruction is quoted again (at most TITAN_REQUOTES more times) before the swap is refused."""
+        full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
+        for _ in range(TITAN_REQUOTES):
+            if fits:
+                break
+            quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, str(margin), slippage_bps, "margin")
+            full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
+        if not fits:
             raise ContractCallError(
                 f"Transaction too large: Titan margin swap {from_asset.symbol}->{to_asset.symbol} exceeds {MAX_TX_BYTES} bytes. "
-                "Try Jupiter, or a smaller amount."
+                "Titan's route for it is too large right now; Jupiter can build this swap."
             )
         return await self._client.build_write_envelope(
             full, authority, purpose="margin_execute:titan_swap", compute_unit_limit=MARGIN_SWAP_COMPUTE_UNITS,
