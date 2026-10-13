@@ -91,21 +91,54 @@ def _b58encode(data: bytes) -> str:
     return "1" * (len(data) - len(data.lstrip(b"\x00"))) + out
 
 
+# Read calls that are shared while in flight: two identical requests running at the same time (concurrent tool
+# calls, or one read's parallel parts asking for the same account) send one request and both get its answer.
+_SHARED_READS = frozenset({
+    "get_account_info", "get_multiple_accounts", "get_latest_blockhash", "get_minimum_balance_for_rent_exemption",
+    "get_balance", "get_token_account_balance", "get_slot", "get_block_height", "get_address_lookup_table",
+})
+_CLOCK_SYSVAR = "SysvarC1ock11111111111111111111111111111111"
+# Answers reused for a short while after they arrive, only where that can't mislead: a recent blockhash stays valid for
+# ~60 s (150 slots), the clock is read for price-age checks counted in tens of seconds, and the rent-exempt minimum is a
+# constant for a given size. Account data and simulations are never reused across time: a build right after a
+# confirmation always reads the new state.
+# Connections to the RPC kept open between calls (see SolanaClient).
+RPC_POOL_LIMITS = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=30.0)
+_BLOCKHASH_REUSE_S = 5.0
+_CLOCK_REUSE_S = 1.0
+
+
+def _reuse_for(name: str, args: tuple) -> float:
+    if name == "get_latest_blockhash":
+        return _BLOCKHASH_REUSE_S
+    if name == "get_minimum_balance_for_rent_exemption":
+        return float("inf")
+    if name == "get_account_info" and args and str(args[0]) == _CLOCK_SYSVAR:
+        return _CLOCK_REUSE_S
+    return 0.0
+
+
 class _ResilientRpc:
     """Proxy over `AsyncClient` that retries transient transport/gateway errors (the hosted
     fork intermittently answers 502 / "Internal error") with bounded backoff. Non-transient
     RPC errors (bad params, program errors) are raised immediately; nothing here sends a
-    transaction, so retrying is always safe."""
+    transaction, so retrying is always safe.
+
+    Every tool's reads also go through here, so this is where repeats are saved for all of them: identical read calls
+    in flight share one request (`_SHARED_READS`), and a few answers that can't go stale in a harmful way are reused
+    briefly (`_reuse_for`). On the fork each request takes about a second, so a repeat saved is a second saved."""
 
     def __init__(self, inner: AsyncClient) -> None:
         self._inner = inner
+        self._inflight: dict[str, asyncio.Task] = {}
+        self._kept: dict[str, tuple[float, object]] = {}
 
     def __getattr__(self, name: str):
         attr = getattr(self._inner, name)
         if not callable(attr) or name == "close":
             return attr
 
-        async def call(*args, **kwargs):
+        async def send(*args, **kwargs):
             for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
                 try:
                     return await attr(*args, **kwargs)
@@ -114,6 +147,31 @@ class _ResilientRpc:
                         raise
                     logger.warning("RPC %s failed transiently (%s); retry %d", name, type(exc).__name__, attempt + 1)
                     await asyncio.sleep(delay)
+
+        if name not in _SHARED_READS:
+            return send
+
+        async def call(*args, **kwargs):
+            key = f"{name}|{args!r}|{sorted(kwargs.items())!r}"
+            loop = asyncio.get_running_loop()
+            kept = self._kept.get(key)
+            if kept is not None and loop.time() < kept[0]:
+                return kept[1]
+            task = self._inflight.get(key)
+            if task is None:
+                # Its own task: a caller that gives up (a timeout, a cancelled request) never cancels it for the others.
+                task = loop.create_task(send(*args, **kwargs))
+                self._inflight[key] = task
+
+                def settled(t: asyncio.Task, key: str = key) -> None:
+                    self._inflight.pop(key, None)
+                    if not t.cancelled() and t.exception() is None:
+                        reuse = _reuse_for(name, args)
+                        if reuse > 0:
+                            self._kept[key] = (loop.time() + reuse, t.result())
+
+                task.add_done_callback(settled)
+            return await asyncio.shield(task)
 
         return call
 
@@ -124,7 +182,12 @@ class SolanaClient:
     def __init__(self, settings: VannaSettings) -> None:
         self._settings = settings
         self.program_id = Pubkey.from_string(settings.vanna_program_id)
-        self._rpc = _ResilientRpc(AsyncClient(settings.solana_rpc_url, commitment=Confirmed))
+        inner = AsyncClient(settings.solana_rpc_url, commitment=Confirmed)
+        # Keep connections open between calls: httpx's default drops an idle one after 5 s, and a new HTTPS connection
+        # to the RPC costs ~1.2-1.7 s against ~0.3 s for a request on a kept one (the fork keeps them 45 s and more).
+        provider = inner._provider
+        provider.session = httpx.AsyncClient(timeout=provider.session.timeout, limits=RPC_POOL_LIMITS)
+        self._rpc = _ResilientRpc(inner)
 
     @property
     def settings(self) -> VannaSettings:

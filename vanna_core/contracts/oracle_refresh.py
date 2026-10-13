@@ -38,6 +38,7 @@ from dataclasses import dataclass
 import httpx
 from solders.pubkey import Pubkey
 
+from vanna_core.http_pool import pooled_http
 from vanna_core import constants
 from vanna_core.app_gate import app_request
 from vanna_core.assets import PYTH_PUSH_ORACLE_PROGRAM_ID, PYTH_RECEIVER_PROGRAM_ID, WSOL_MINT, AssetRegistry, DiscoveredAsset
@@ -103,7 +104,7 @@ _FEED_BY_ACCOUNT: dict[str, _Feed] = {str(f.account): f for f in _FEEDS}
 
 async def _fetch_jupiter_usd_prices(mints: list[str]) -> dict[str, float]:
     try:
-        async with httpx.AsyncClient(timeout=8.0) as http:
+        async with pooled_http(8.0) as http:
             resp = await http.get(_JUPITER_PRICE_URL, params={"ids": ",".join(mints)})
         if resp.status_code != 200:
             return {}
@@ -219,7 +220,7 @@ async def refresh_via_keeper(settings: VannaSettings) -> dict | None:
         if settings.price_keeper_secret:
             headers["Authorization"] = f"Bearer {settings.price_keeper_secret}"
         url = f"{settings.price_keeper_url.rstrip('/')}/api/prices/refresh"
-        async with httpx.AsyncClient(timeout=60.0) as http:
+        async with pooled_http(60.0) as http:
             resp = await app_request(http, settings, "POST", url, headers=headers)
         try:
             body = resp.json()
@@ -301,7 +302,7 @@ class DevForkOracleAdapter:
         self._settings = settings
 
     async def _call_cheatcode(self, method: str, params: list) -> dict:
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with pooled_http(30.0) as http:
             resp = await http.post(
                 self._settings.solana_rpc_url,
                 json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
@@ -410,7 +411,7 @@ class DevForkOracleAdapter:
         import base64
 
         try:
-            async with httpx.AsyncClient(timeout=20.0) as http:
+            async with pooled_http(20.0) as http:
                 resp = await http.post(
                     self._settings.mainnet_rpc_url,
                     json={"jsonrpc": "2.0", "id": 1, "method": "getAccountInfo", "params": [SCOPE_PRICES, {"encoding": "base64"}]},

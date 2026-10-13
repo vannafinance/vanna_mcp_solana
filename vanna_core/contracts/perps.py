@@ -15,6 +15,7 @@ import logging
 
 from solders.pubkey import Pubkey
 
+from vanna_core.http_pool import pooled_http
 from vanna_core import math_utils
 from vanna_core.client import SolanaClient
 from vanna_core.risk import LIQUIDATION_HF
@@ -324,7 +325,7 @@ class PerpsContract:
 
         base = (settings.perps_helper_url or settings.price_keeper_url).rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=30.0) as http:
+            async with pooled_http(30.0) as http:
                 resp = await app_request(http, settings, "POST", f"{base}{path}", json=body)
             return resp.json() if resp.status_code == 200 else None
         except Exception:  # noqa: BLE001 - a missing helper leaves the fork's own state; the simulation decides

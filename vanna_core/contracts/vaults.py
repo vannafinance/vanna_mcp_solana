@@ -35,6 +35,7 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from spl.token.instructions import create_idempotent_associated_token_account
 
+from vanna_core.http_pool import pooled_http
 from vanna_core import constants, math_utils
 from vanna_core.app_gate import app_request
 from vanna_core.assets import AssetRegistry, DiscoveredAsset
@@ -272,7 +273,7 @@ async def _simulate_raw(client: SolanaClient, tx: VersionedTransaction, *, addre
         params["accounts"] = {"encoding": "base64", "addresses": addresses}
     body = {"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
             "params": [base64.b64encode(bytes(tx)).decode(), params]}
-    async with httpx.AsyncClient(timeout=60.0) as http:
+    async with pooled_http(60.0) as http:
         resp = (await http.post(client.settings.solana_rpc_url, json=body)).json()
     if "error" in resp:
         raise ContractCallError(f"Simulation request failed: {resp['error']}")
@@ -550,7 +551,7 @@ async def perena_published_apy(vault_id: str) -> float | None:
     key = "usdstarJunior" if vault_id == "perena-junior" else "usdstar"
 
     async def load():
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with pooled_http(15.0) as http:
             resp = await http.get(f"{PERENA_API}/{key}/apy", headers={"Origin": "https://app.perena.org"})
         value = resp.json().get("apy") if resp.status_code == 200 else None
         return float(value) if isinstance(value, (int, float)) else None
@@ -582,7 +583,7 @@ async def phoenix_funding(asset: str) -> dict | None:
 
     async def load():
         start = int((time.time() - 90 * 86_400) * 1000)
-        async with httpx.AsyncClient(timeout=20.0) as http:
+        async with pooled_http(20.0) as http:
             resp = await http.get(f"{PHOENIX_API}/v1/funding/{asset}/rates", params={"startTime": start, "limit": 10000})
         if resp.status_code != 200:
             return None
@@ -632,7 +633,7 @@ class VaultContract:
         if not base:
             return {}
         try:
-            async with httpx.AsyncClient(timeout=20.0) as http:
+            async with pooled_http(20.0) as http:
                 resp = await app_request(http, self._client.settings, "GET", f"{base}/api/farm/vaults")
             rows = resp.json() if resp.status_code == 200 else []
             return {r["id"]: r for r in rows if isinstance(r, dict) and "id" in r}

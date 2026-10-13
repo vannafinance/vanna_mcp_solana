@@ -120,6 +120,17 @@ tries `getProgramAccounts` once, with no retry backoff. An RPC that refuses it (
 known-mints discovery straight away and is asked again hourly. On the fork this took a cold margin build from ~34 s
 to ~6 s.
 
+Every tool's network calls share two layers. On the fork, a new HTTPS connection costs ~1.2-1.7 s and a request on a
+kept one ~0.3 s:
+- **Connections are kept.** The RPC client keeps idle connections for 30 s instead of httpx's 5 s. Every other outbound
+  call (raw RPC posts such as Phoenix view simulations, the app's callbacks, Jupiter, Titan, Phoenix and Perena) uses
+  one shared pool (`vanna_core/http_pool.py` `pooled_http`) instead of a new client per call.
+- **Repeats are shared** (`vanna_core/client.py` `_ResilientRpc`). Identical read calls in flight send one request. Three
+  answers are reused briefly, only where that can't mislead: the recent blockhash for 5 s (valid ~60 s), the clock
+  sysvar for 1 s, and the rent-exempt minimum always. Account data and simulations are never reused across time.
+
+The vault list went from ~27-32 s to ~11-14 s from a cold process.
+
 ## Using it from Claude, Cursor or any MCP client
 
 The MCP client's model replaces the Copilot's Gemini (understanding, planning, wording); this server does everything that

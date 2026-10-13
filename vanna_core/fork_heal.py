@@ -23,6 +23,7 @@ from solders.address_lookup_table_account import AddressLookupTable
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
+from vanna_core.http_pool import pooled_http
 from vanna_core.client import SolanaClient
 from vanna_core.envelope import WriteEnvelope
 
@@ -99,7 +100,7 @@ async def heal_stale_dex_pools(client: SolanaClient, tx: VersionedTransaction) -
         stale = sorted(dex_owned | vaults | set(stale_tables))
         if not stale:
             return 0
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with pooled_http(30.0) as http:
             for address in stale:
                 try:
                     await http.post(client.settings.solana_rpc_url,

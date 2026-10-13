@@ -19,6 +19,7 @@ from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey
 from spl.token.instructions import create_idempotent_associated_token_account
 
+from vanna_core.http_pool import pooled_http
 from vanna_core.client import SolanaClient
 from vanna_core.pdas import find_associated_token_address
 from vanna_core.phoenix import TITAN_ATLAS, TITAN_PROGRAM_ID
@@ -95,7 +96,7 @@ class TitanClient:
         params["dexes"] = self._settings.titan_fork_dexes
         key = self._settings.titan_api_key
         headers = {"Accept": "application/json", **({"x-api-key": key, "Authorization": f"Bearer {key}"} if key else {})}
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with pooled_http(15.0) as http:
             resp = await http.get(f"{self.base_url}/quote/swap", params=params, headers=headers)
         if resp.status_code != 200:
             raise ContractCallError(f"Titan quote failed ({resp.status_code}): {resp.text[:200]}")

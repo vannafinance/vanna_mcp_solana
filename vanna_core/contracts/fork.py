@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import httpx
 
+from vanna_core.http_pool import pooled_http
 from vanna_core.app_gate import app_request
 from vanna_core.config import VannaSettings
 from vanna_core.types import ContractCallError
@@ -35,7 +36,7 @@ class ForkContract:
         if self._settings.price_keeper_secret:
             headers["Authorization"] = f"Bearer {self._settings.price_keeper_secret}"
 
-        async with httpx.AsyncClient(timeout=20.0) as http:
+        async with pooled_http(20.0) as http:
             resp = await app_request(http, self._settings, "POST", f"{self._settings.price_keeper_url}/api/faucet", json=payload, headers=headers)
         try:
             body = resp.json()

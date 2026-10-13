@@ -17,6 +17,7 @@ from decimal import Decimal
 import httpx
 from solders.pubkey import Pubkey
 
+from vanna_core.http_pool import pooled_http
 from vanna_core import math_utils
 from vanna_core.assets import KAMINO_MAIN_MARKET, KLEND_PROGRAM_ID, AssetRegistry, DiscoveredAsset, find_receipt
 from vanna_core.client import SolanaClient
@@ -35,7 +36,7 @@ async def _fetch_kamino_metrics() -> dict[str, dict]:
     fabricated number (matches `vanna-credit-backend`'s own `/api/farm/pools`
     contract)."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with pooled_http(10.0) as http:
             resp = await http.get(_KAMINO_METRICS_URL, params={"env": "mainnet-beta"})
             resp.raise_for_status()
             rows = resp.json()

@@ -16,6 +16,7 @@ from solders.address_lookup_table_account import AddressLookupTable, AddressLook
 from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey
 
+from vanna_core.http_pool import pooled_http
 from vanna_core.app_gate import app_request
 from vanna_core.client import SolanaClient
 from vanna_core.config import VannaSettings
@@ -69,7 +70,7 @@ class JupiterClient:
         return {"x-api-key": self._settings.jupiter_api_key} if self._settings.jupiter_api_key else {}
 
     async def _send(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with pooled_http(15.0) as http:
             for attempt in range(2):
                 url = self._url(endpoint)
                 resp = await (app_request(http, self._settings, method, url, **kwargs) if self._proxy else http.request(method, url, **kwargs))

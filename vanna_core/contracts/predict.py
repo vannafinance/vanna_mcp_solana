@@ -30,6 +30,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
+from vanna_core.http_pool import pooled_http
 from vanna_core.app_gate import app_request
 from vanna_core.client import SolanaClient
 from vanna_core.envelope import SimulationOutcome, TransactionEnvelope, WriteEnvelope
@@ -195,7 +196,7 @@ class PredictContract:
     async def _call(self, method: str, path: str, *, timeout: float = 60.0, **kwargs) -> dict:
         """One app call. The first events read after the app starts scans mainnet (10-40 s), so reads wait up to a minute."""
         try:
-            async with httpx.AsyncClient(timeout=timeout) as http:
+            async with pooled_http(timeout) as http:
                 resp = await app_request(http, self._settings, method, f"{self.base}{path}", **kwargs)
         except httpx.TimeoutException as exc:
             raise ContractCallError("Predict markets are still loading on the app (its first read scans mainnet). Try again in a minute.") from exc
