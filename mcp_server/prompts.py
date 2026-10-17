@@ -38,6 +38,18 @@ def register_prompts(server: MCPServer, *, public: bool) -> None:
             "health factor and the risks, then give me the plan link to approve with my wallet."
         )
 
+    @server.prompt(name="leverage_borrow", title="Deposit and borrow at a leverage",
+                   description="Deposit an asset and borrow another against it at a leverage multiple (no swap), at the health floor.")
+    def leverage_borrow(asset: str = "SOL", leverage: str = "2", amount: str = "", borrow: str = "", wallet: str = "") -> str:
+        who = f" for wallet {wallet}" if wallet else ""
+        amt = f"deposit {amount} {asset} and borrow" if amount else f"borrow against the {asset} already in my margin account,"
+        what = f" {borrow}" if borrow else ""
+        return (
+            f"I want to {amt}{what} at {leverage}x leverage{who}. Use vanna_plan leverage_borrow (ask me which asset to "
+            "borrow if I did not say). Explain the plan, the health factor after and the risks, then give me the plan "
+            "link to approve with my wallet."
+        )
+
     @server.prompt(name="unwind", title="Close everything",
                    description="Plan an exit from all positions in an order where health only improves.")
     def unwind(scope: str = "all", wallet: str = "") -> str:

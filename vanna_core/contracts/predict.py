@@ -22,7 +22,7 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -87,6 +87,23 @@ def parse_amount(value: Any, what: str) -> Decimal:
     if -amount.as_tuple().exponent > AMOUNT_DECIMALS:
         raise ValueError(f"{what} has more than {AMOUNT_DECIMALS} decimals: {value}")
     return amount
+
+
+def _relative_share(value: Any) -> Decimal | None:
+    """"all" -> 1, "N%" (0 < N <= 100) -> N/100; anything else -> None (an exact amount, checked by `parse_amount`)."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text in ("all", "max", "everything"):
+        return Decimal(1)
+    if text.endswith("%"):
+        try:
+            pct = Decimal(text[:-1].strip())
+        except InvalidOperation:
+            return None
+        if pct.is_finite() and 0 < pct <= 100:
+            return pct / 100
+    return None
 
 
 def validate_legs(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -306,7 +323,43 @@ class PredictContract:
 
     # ── trades ───────────────────────────────────────────────────────────────────────────────────────
 
+    async def resolve_relative_amounts(self, owner: Pubkey, legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """"Sell all", "sell 50%", "move all to the pool": a sell or deposit leg's `amount` may be "all" or "N%", resolved
+        here against the wallet's live holding of that outcome (sell: every share it holds, pooled ones included, the
+        way the website sells; deposit: the World shares in the wallet that can move into the pool). Buys stay CASH
+        amounts. Legs with exact amounts pass through untouched."""
+        relative = [i for i, leg in enumerate(legs) if isinstance(leg, dict) and _relative_share(leg.get("amount")) is not None]
+        if not relative:
+            return legs
+        held = await self.positions(owner)
+        out = [dict(leg) if isinstance(leg, dict) else leg for leg in legs]
+        for i in relative:
+            leg = out[i]
+            side = str(leg.get("side") or "buy").lower()
+            if side == "buy":
+                raise ValueError(f"leg {i + 1}: a buy is an amount of CASH to spend; 'all' and percentages apply to sells and pool deposits")
+            market = str(leg.get("market") or leg.get("market_id") or leg.get("marketId") or "").strip()
+            outcome = str(leg.get("outcome") or "").lower()
+            if side == "sell":
+                rows = [p for p in held["positions"] if p.get("market_id") == market
+                        and outcome in (str(p.get("side") or "").lower(), str(p.get("outcome") or "").lower())]
+                have = sum(p.get("shares") or 0 for p in rows)
+            else:
+                rows = [p for p in held["can_move_to_pool"] if p.get("market_id") == market and str(p.get("outcome") or "").lower() == outcome]
+                have = sum(p.get("shares") or 0 for p in rows)
+            if not have > 0:
+                where = "holds no" if side == "sell" else "has no World"
+                raise ValueError(f"leg {i + 1}: the wallet {where} {outcome.upper()} shares of that market to {'sell' if side == 'sell' else 'move'}")
+            share = _relative_share(leg.get("amount"))
+            quant = Decimal(1).scaleb(-AMOUNT_DECIMALS)
+            amount = (Decimal(str(have)) * share).quantize(quant, rounding=ROUND_DOWN)
+            if not amount > 0:
+                raise ValueError(f"leg {i + 1}: that percentage of the {have} shares held is too small to trade")
+            leg["amount"] = format(amount.normalize(), "f")
+        return out
+
     async def _build(self, owner: Pubkey, legs: list[dict[str, Any]]) -> dict:
+        legs = await self.resolve_relative_amounts(owner, legs)
         # CASH only and always into the pool where it is allowlisted, as the website's Predict page sends it.
         return await self._call("POST", "/trade", json={"owner": str(owner), "legs": validate_legs(legs), "pay": "CASH"}, timeout=90.0)
 

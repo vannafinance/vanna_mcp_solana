@@ -1,4 +1,5 @@
-"""Named strategies, planned from live reads: "lever X Nx" and "close everything" (unwind).
+"""Named strategies, planned from live reads: "lever X Nx" (a leveraged long: borrow, then swap into X), "deposit X and
+borrow Y at Nx" (leverage_borrow: deposit + borrow, no swap) and "close everything" (unwind).
 
 Ports of the Copilot's `workflow/strategy.ts` and `workflow/unwind.ts`. A strategy returns a frozen list of steps with
 exact amounts (only "all" stays live and says so), the worst-case health factor, and warnings — or a refusal that
@@ -228,6 +229,109 @@ async def plan_lever(wallet: str, asset: str, leverage: float, borrow_asset: str
         "asset": borrow_asset,
         "margin_applicable": True,
     }
+    return {"ok": True, "summary": summary, "steps": steps, "warnings": warnings, "simulation": simulation, "hf_floor": floor}
+
+
+async def simulate(wallet: str, steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Health before and after a plan whose amounts are all exact (deposit / withdraw / borrow / repay; swaps and
+    Earn / farm moves don't change the figure much and are left out). None when it can't be estimated honestly."""
+    from mcp_server.planning import amounts
+
+    writes = [s for s in steps if s.get("kind", "write") == "write"]
+    margin_ops = {"deposit", "withdraw", "borrow", "repay"}
+    if not any(s.get("op") in margin_ops for s in writes):
+        return None
+    for s in writes:
+        if s.get("op") in margin_ops and amounts.parse_number(str(s.get("amount"))) is None:
+            return None  # an "all" step is only resolved when built
+    book = amounts.Book(wallet)
+    if await book.load():
+        return None
+    before = (book.collateral_usd, book.debt_usd)
+    for s in writes:
+        await book.apply(s)
+    return {
+        "hf_before": risk.hf_after(*before),
+        "hf_after": risk.hf_after(book.collateral_usd, book.debt_usd),
+        "collateral_before": before[0], "collateral_after": book.collateral_usd,
+        "debt_before": before[1], "debt_after": book.debt_usd,
+        "liquidation_threshold": risk.LIQUIDATION_HF, "margin_applicable": True,
+    }
+
+
+async def plan_leverage_borrow(wallet: str, asset: str | None, leverage: float, borrow_asset: str | None, amount: str | None,
+                               min_hf: float | None = None, base_amount: str | None = None) -> dict[str, Any]:
+    """"Deposit X and borrow Y at Nx" / "a Nx loan of Y against X" (the Copilot's `sizeLevBorrow`): deposit `amount` of
+    `asset` (when given), then BORROW `borrow_asset` so that collateral = N x the base. The borrowed asset stays in the
+    margin account; there is NO swap.
+
+    The base is the deposit made by this plan; without one, `base_amount` (or all) of the `asset` already held as
+    collateral; with no asset either, the account's equity. "Lever my SOL 2x" on its own is a leveraged long instead
+    (`plan_lever`: borrow, then swap into the asset)."""
+    from mcp_server.planning import amounts
+
+    settings = get_settings()
+    if asset is not None and asset not in facts.PRODUCT_ASSETS:
+        return _no(f"{asset} is not part of the product.")
+    if borrow_asset is None:
+        options = [b for b in facts.LEND_BORROW_ASSETS if b != asset] or list(facts.LEND_BORROW_ASSETS)
+        what = f"{amount} {asset}" if amount and asset else (asset or "your account")
+        return _no(f"Leverage on {what} is taken by borrowing against it. Which asset should be borrowed?",
+                   [{"label": f"Borrow {b}", "borrow_asset": b} for b in options])
+    if borrow_asset not in facts.LEND_BORROW_ASSETS:
+        return _no(f"Only {', '.join(facts.LEND_BORROW_ASSETS)} can be borrowed.")
+    floor = max(settings.min_health_factor, min_hf or 0.0)
+
+    book = amounts.Book(wallet)
+    problem = await book.load()
+    if problem:
+        return _no(problem)
+    steps: list[dict[str, Any]] = []
+    if not book.has_account:
+        if amount is None:
+            return _no("There is no margin account yet. Say how much to deposit, for example 'deposit 5 SOL and borrow USDC at 2x'.")
+        steps.append(write_step("create_account"))
+    if amount is not None:
+        if asset is None:
+            return _no("Say which asset the amount is in.")
+        r = await amounts.resolve(book, "deposit", asset, amount, {}, steps, {})
+        if not r.ok:
+            return _no(r.message)
+        if r.amount == "all":
+            spend = await facts.wallet_spendable(wallet, asset)
+            if spend is None or not spend > 0:
+                return _no(f"The wallet has no spendable {asset} to deposit.")
+            r.amount = risk.floor_decimals(spend, risk.token_decimals(asset))
+        spendable = await facts.wallet_spendable(wallet, asset)
+        if spendable is None:
+            return _no("The wallet balance could not be read, so the deposit can't be planned.")
+        if spendable + 1e-9 < float(r.amount):
+            return _no(f"The wallet has {risk.floor_decimals(spendable, 9)} {asset} available"
+                       f"{' (keeping a little SOL for fees)' if asset == 'SOL' else ''}, less than the {r.amount} {asset} to deposit.")
+        deposit = write_step("deposit", asset, r.amount)
+        steps.append(deposit)
+        await book.apply(deposit)
+
+    use_holding = amount is None and asset is not None
+    if use_holding and not book.holdings.get(asset, 0.0) > 0:
+        return _no(f"There is no {asset} collateral in the margin account. Say how much {asset} to deposit, for example "
+                   f"'deposit 5 {asset} and borrow {borrow_asset} at {leverage:g}x'.")
+    sized = await amounts.size_leverage_borrow(book, borrow_asset, float(leverage), floor=floor,
+                                               base_asset=asset if use_holding else None,
+                                               base_amount=base_amount if use_holding else None)
+    if not sized.ok:
+        return _no(sized.message)
+    borrow = write_step("borrow", borrow_asset, sized.amount)
+    steps += [borrow, report_step()]
+    simulation = await simulate(wallet, steps)
+    hf_after = simulation["hf_after"] if simulation else None
+    lead = f"Deposit {steps[-3]['amount']} {asset} and borrow" if amount is not None else "Borrow"
+    summary = (f"{lead} {sized.amount} {borrow_asset} ({leverage:g}x leverage). The {borrow_asset} stays in your margin "
+               f"account. Health factor {'no debt' if hf_after is None else f'{hf_after:.2f}'} after (floor {floor:.2f}).")
+    warnings = plan_warnings(steps, sized.notes + [
+        "Each step is re-checked against your live health factor before it is built and pauses if it would fall below the floor.",
+        "Borrowing raises your debt: if your collateral's price falls your health factor falls with it, and at 1.10 the account can be liquidated.",
+    ])
     return {"ok": True, "summary": summary, "steps": steps, "warnings": warnings, "simulation": simulation, "hf_floor": floor}
 
 

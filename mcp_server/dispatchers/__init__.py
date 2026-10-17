@@ -57,6 +57,32 @@ ALL_DISPATCHERS = [
     vanna_predict,
 ]
 
+# Each tool's human title and whether it only reads. Sent to clients as MCP tool annotations (`title`,
+# `readOnlyHint`, ...) so a client can run reads without asking and present writes for approval. "Writes" here only
+# ever BUILD unsigned transactions and plan links: nothing moves until the user's own wallet signs.
+TOOL_INFO: dict[str, tuple[str, bool]] = {
+    "vanna_protocol_info": ("Protocol facts and explanations", True),
+    "vanna_oracle": ("Prices", True),
+    "vanna_account": ("Margin account: status, health, open / close", False),
+    "vanna_margin_status": ("Margin account details and borrow / withdraw checks", True),
+    "vanna_margin_trade": ("Single margin action: deposit, withdraw, borrow, repay", False),
+    "vanna_earn_market": ("Lending pool rates and liquidity", True),
+    "vanna_earn_position": ("Your lending (Earn) positions", True),
+    "vanna_earn_write": ("Lend to or withdraw from a Vanna pool", False),
+    "vanna_wallet": ("Wallet balances (and test faucet)", False),
+    "vanna_history": ("Transaction history", True),
+    "vanna_farm_overview": ("Kamino farm markets and positions", True),
+    "vanna_farm_kamino": ("Kamino farm deposit / redeem", False),
+    "vanna_swap": ("Swap quotes and swaps (Jupiter / Titan)", False),
+    "vanna_sign": ("Transaction status", True),
+    "vanna_risk": ("Risk advisor: safe amounts, what-if, max leverage", True),
+    "vanna_portfolio": ("Portfolio overview", True),
+    "vanna_plan": ("Plan and run: leverage, multi-step actions, sized amounts", False),
+    "vanna_perps": ("Phoenix perpetuals", False),
+    "vanna_vaults": ("Basis and Perena vaults", False),
+    "vanna_predict": ("Prediction markets (World)", False),
+}
+
 # Dev-only — registered by main.py only when ENABLE_FORK_TOOLS=true. Never
 # part of the Copilot's allowlist even then (TOOLS_CATALOGUE.md §3.15).
 FORK_DISPATCHERS = [

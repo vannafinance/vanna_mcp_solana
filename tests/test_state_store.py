@@ -256,3 +256,46 @@ async def test_a_flood_from_one_address_is_stopped_before_the_shared_store():
         await mw(scope, receive, send)
     assert statuses.count(200) == 3 and statuses.count(429) == 47
     assert CountingStore.incrs == 3  # only the allowed requests ever touched the shared store
+
+
+async def test_the_website_plan_proxy_is_counted_per_end_user_only_with_its_secret():
+    """Every website user reaches /api/plan/* from the website's own address. With the shared secret, the plan limit
+    counts the user address the website forwards; without it (or with a wrong one) a forwarded address is ignored."""
+    from mcp_server.oauth.http import OAuthRateLimitMiddleware
+
+    async def ok_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    def scope(user_ip: str, secret: str) -> dict:
+        headers = [(b"x-vanna-client-ip", user_ip.encode()), (b"x-vanna-proxy-secret", secret.encode())]
+        return {"type": "http", "method": "GET", "path": "/api/plan/abc", "headers": headers, "client": ("198.51.100.7", 1)}
+
+    async def run(mw, user_ip: str, secret: str, n: int) -> list[int]:
+        out: list[int] = []
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                out.append(message["status"])
+
+        for _ in range(n):
+            await mw(scope(user_ip, secret), receive, send)
+        return out
+
+    mw = OAuthRateLimitMiddleware(ok_app, MemoryRecordStore(), plan_proxy_secret="s3cret")
+    assert (await run(mw, "203.0.113.1", "s3cret", 120)).count(200) == 120
+    assert (await run(mw, "203.0.113.2", "s3cret", 5)).count(200) == 5  # another user: own bucket
+    assert (await run(mw, "203.0.113.1", "s3cret", 1)) == [429]
+
+    # A wrong secret: the forwarded address is ignored, the caller is the website's own address (one shared bucket).
+    mw = OAuthRateLimitMiddleware(ok_app, MemoryRecordStore(), plan_proxy_secret="s3cret")
+    a = await run(mw, "203.0.113.1", "guess", 120)
+    b = await run(mw, "203.0.113.2", "guess", 1)
+    assert a.count(200) == 120 and b == [429]
+    # No secret configured: same as before this feature.
+    mw = OAuthRateLimitMiddleware(ok_app, MemoryRecordStore())
+    a = await run(mw, "203.0.113.1", "s3cret", 120)
+    assert (await run(mw, "203.0.113.9", "s3cret", 1)) == [429]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 from typing import Any
+from urllib.parse import urlparse
 
 from mcp_server import safety as safety_module
 from mcp_server.oauth.store import MemoryRecordStore, RecordStore
@@ -33,6 +34,20 @@ def sign_base_url(settings: VannaSettings) -> str:
     return f"http://{host}:{settings.mcp_http_port}"
 
 
+def plan_link_base(settings: VannaSettings) -> str:
+    """The prefix of every plan link: APPROVE_PAGE_URL (the website's approve page), else this server's /plan page.
+    The website must be https (http only for a local run), the same rule as every URL a user is sent to."""
+    approve = settings.approve_page_url.strip().rstrip("/")
+    if not approve:
+        return f"{sign_base_url(settings)}/plan"
+    parsed = urlparse(approve)
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")):
+        raise RuntimeError("APPROVE_PAGE_URL must be https (http is allowed only for localhost).")
+    if parsed.query or parsed.fragment or not parsed.netloc:
+        raise RuntimeError("APPROVE_PAGE_URL must be a plain https URL without query or fragment.")
+    return approve
+
+
 def configure_signing(settings: VannaSettings, store: RecordStore | None = None) -> PlanEngine:
     """Create the plan engine and the safety counters on `store` (shared with the OAuth state in public mode)."""
     store = store or MemoryRecordStore()
@@ -43,13 +58,14 @@ def configure_signing(settings: VannaSettings, store: RecordStore | None = None)
     set_wallet_table_store(store)
     safety = Safety(store)
     set_safety(safety)
+    links = plan_link_base(settings)  # validated once, at startup
     engine = PlanEngine(
         store, safety, rpc_sender(settings.solana_rpc_url), rpc_status_reader(settings.solana_rpc_url),
-        base_url=lambda: sign_base_url(settings),
+        base_url=lambda: sign_base_url(settings), link_base=lambda: plan_link_base(settings),
     )
     set_engine(engine)
-    logger.info("Signing pages enabled — base URL %s (safety layer %s)", sign_base_url(settings),
-                "on" if safety_module.active() else "off")
+    logger.info("Signing pages enabled — base URL %s, plan links %s/<id> (safety layer %s)", sign_base_url(settings),
+                links, "on" if safety_module.active() else "off")
     return engine
 
 

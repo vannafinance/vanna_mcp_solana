@@ -330,6 +330,15 @@ All in integer fixed point, mirroring the contract's rounding:
 The original 14 are §3.1–§3.15; `vanna_plan`, `vanna_risk`, `vanna_portfolio` are §3.16–§3.18; `vanna_perps`,
 `vanna_vaults` and `vanna_predict` are §3.19–§3.21.
 
+**What a client sees (2026-10-17):** every tool has a `title` and MCP annotations from
+`mcp_server/dispatchers/__init__.py` `TOOL_INFO` — `readOnlyHint` true for the 10 pure-read tools, `destructiveHint` false
+for all (a write only builds an unsigned transaction and a plan link; the user's wallet signs), `idempotentHint` = read-only,
+`openWorldHint` true. `tools/list`, `prompts/list` and `server/discover` carry SEP-2549 cache hints (`ttlMs` 1 h,
+`cacheScope` private: the list differs between read-only and read+write logins), so clients reuse the definitions
+instead of refetching them; they only change on a deploy. Descriptions are written as "the user says X → call Y", and
+every amount a user says in words is resolved by the server (§3.16 `custom`), never computed by the client model.
+Phrase-level checks live in `tests/test_intent_vocabulary.py`.
+
 **Shape decision (2026-09-28):** the MCP's exposed tool surface was **14 dispatcher
 tools**, each taking an `action` string parameter and action-specific args —
 not one flat tool per instruction/read. This mirrors how the Stellar MCP
@@ -498,10 +507,11 @@ decides what the user wants; this tool does every number and every rule. Mirrors
 
 | Action | Purpose |
 |---|---|
-| `lever` | "lever X Nx": deposit X if not already margin collateral → borrow a stable (`borrow_asset`; omitted = the tool returns the choices) → `margin_swap` into X → report HF. Sized so the 1.15 floor holds with the swap at its worst allowed price; checks pool liquidity, `can_borrow`, a live quote, wallet funding |
+| `lever` | "lever my SOL 2x", "go 3x long SOL" — levering an asset **on its own** = a leveraged long: deposit X if not already margin collateral → borrow a stable (`borrow_asset`; omitted = the tool returns the choices) → `margin_swap` into X → report HF. Sized so the 1.15 floor holds with the swap at its worst allowed price; checks pool liquidity, `can_borrow`, a live quote, wallet funding. `amount` = units of X levered (omit = the margin balance) |
+| `leverage_borrow` | "deposit 10 SOL and borrow USDC at 3x", "a 2x loan of USDC against depositing 1 JitoSOL", "borrow USDT at 2x against my SOL" — **deposit + borrow, no swap** (the Copilot's `sizeLevBorrow`, added 2026-10-17). Deposits `amount` of `asset` (always, even if that asset is already collateral) → borrows `borrow_asset` (any lend asset; omitted = the tool returns the choices) worth (N−1) × the base, which **stays in the margin account** → report HF. Base = the deposit; no `amount` = the `asset` already held; no `asset` = the account's equity. Refused, with the largest multiple that does hold, when the 1.15 floor, the per-action limit or the pool's free liquidity (× 0.99) would not allow it; checks wallet funding |
 | `unwind` | "close everything" (`scope` all/margin/earn/farm, `close_account`): Kamino redeem → repay each debt (margin balance, else wallet, else swap other collateral in by *required output*) → withdraw → Earn redeem; health only improves; capped at 8 steps, never cut between a swap and its repay |
 | `swap_exact_out` | "swap SOL to get 100 USDC": input sized from live quotes (4 correction rounds) so the *minimum received* covers the target |
-| `custom` | a chain of up to 8 steps (`create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap, farm_deposit, farm_redeem, close_account, report`); amounts exact / `all` / `NN%` (resolved once) / `out:N` |
+| `custom` | a chain of up to 8 steps (`create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap, farm_deposit, farm_redeem, close_account, report`). Every amount is in the shared vocabulary (`mcp_server/planning/amounts.py`, the Copilot's sizing kinds), resolved by the server against a running estimate of the account (live figures + the plan's earlier steps): exact; `all` / `max` / `max_safe` (live at build; a borrow / withdraw = the most the floor and pool allow); `NN%`; `usd:N` / `$N`; `leverage:N` / `Nx` (borrow only; base = earlier deposits, else the step's `base_asset` + `base_amount`, else equity); `health:H` (borrow / withdraw / repay to land on HF H); `previous` (the step before's amount); `out:N` (swap). A drawn custom plan now carries `simulation` (HF before / after) when its margin amounts are exact |
 | `status` / `cancel` | plan and per-step state (`pending, built, submitted, confirmed, skipped, failed, uncertain, expired`); owner-only |
 
 A drawn plan is frozen (exact amounts, sha256 digest over every executable slot + wallet + floor), valid for approval for 5
@@ -511,15 +521,17 @@ with their own wallet, and signs each step. Each step is pre-flighted again agai
 and daily USD caps, funding), then built and simulated by the existing write dispatchers; a step that would breach the
 floor **pauses** the plan. Exactly-once per step; an unclear send is `uncertain` and never retried; a transaction that
 never lands is rebuilt. The server checks the signed bytes equal its own build and relays them. Needs `ENABLE_SIGN_LINKS`;
-without it a drawn plan is a preview (`executable: false`).
+without it a drawn plan is a preview (`executable: false`). With `APPROVE_PAGE_URL` set, `plan_url` (and every write's
+`sign_url`) is `{APPROVE_PAGE_URL}/{plan_id}` on the Vanna website, whose approve page proxies this server's plan API;
+the approval message's `Site:` line names that site.
 
 ### 3.17 `vanna_risk` — advisor reads (the Copilot's capacity / what-if / liquidation answers)
 
 | Action | Purpose |
 |---|---|
-| `capacity` | largest SAFE borrow or withdrawal at the floor, per asset, verified through the program's `can_*`; `protocol_max` (1.10) for reference |
+| `capacity` | largest SAFE borrow or withdrawal at the floor, per asset, verified through the program's `can_*`; a borrow is also capped at the pool's free liquidity × 0.99 (`limited_by` says so — before 2026-10-17 a pool smaller than the health headroom wrongly read as 0); `protocol_max` (1.10) for reference |
 | `what_if` | `op` borrow/withdraw/repay with an `amount` (program's own check, projected HF) or a `target_hf` (solves for the amount) |
-| `max_leverage` | highest leverage on an amount that holds the floor at the swap's worst price, plus a 1.5x–10x table |
+| `max_leverage` | highest multiple at the floor for both plans: `max_leverage` = `lever` (the swap at its worst price; meaning unchanged) and `max_leverage_deposit_borrow` = `leverage_borrow` (`amount` = a new deposit, no swap); a 1.5x–10x table with `allowed` / `worst_case_hf` (lever) and `deposit_borrow_allowed` / `deposit_borrow_hf` |
 | `liquidation_distance` | % collateral can fall before HF reaches 1.10 (read-only; liquidation is never executed) |
 | `funding_check` | can the wallet pay for a plan's wallet-funded steps |
 | `policy` | the product's floor, limits, asset policy and refusals |
@@ -595,7 +607,7 @@ the app's server builds every trade and its market maker co-signs it, so the MCP
 | `positions` | `GET /positions/:owner` | wallet CASH, positions (wallet + pooled shares, value, P&L, pays if win), Vanna pool, World shares it can move into the pool |
 | `history` | `GET /activity/:owner?market=` | the wallet's trades on the fork |
 | `quote` | `POST /trade` | the trade's quotes and warnings; the transactions are dropped (a read) |
-| `trade` (write) | `POST /trade` | a batch envelope: buy (CASH, 0.1-5,000), sell (shares; pooled shares redeemed first), deposit (World shares into the pool); one leg, or `legs` (max 8) |
+| `trade` (write) | `POST /trade` | a batch envelope: buy (CASH, 0.1-5,000), sell (shares; pooled shares redeemed first), deposit (World shares into the pool); one leg, or `legs` (max 8). A sell / deposit amount may be `all` or `NN%` ("sell all my Senate shares"): resolved from `positions` (sell: every share held; deposit: the movable World shares), 6 decimals rounded down, before the app builds it (`PredictContract.resolve_relative_amounts`) |
 | `merge` (write) | `POST /pool/merge` | the app's keeper merges matched YES+NO into USDC lent to Vanna; called after a trade confirms (`summary.merge_markets`) |
 | `faucet` (write) | `POST /faucet` | test fork + `ENABLE_TEST_FAUCET` only: test CASH (default 100, max 1000; the page's "Get test CASH") |
 

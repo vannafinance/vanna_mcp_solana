@@ -180,6 +180,77 @@ async def test_lever_min_hf_can_raise_the_floor_never_lower_it(monkeypatch) -> N
     assert (await strategies.plan_lever(WALLET, "SOL", 2.0, "USDC", None, min_hf=1.4))["hf_floor"] == 1.4
 
 
+# ================================================================ leverage_borrow ("deposit X and borrow Y at Nx": no swap)
+
+
+async def test_deposit_and_borrow_at_a_leverage_never_swaps(monkeypatch) -> None:
+    """Deposit, then borrow (N-1) x the deposit's value, kept in the margin account."""
+    chain(monkeypatch, collateral={}, wallet_tokens={"USDC": 0.0}, sol_balance=20.0)
+    drawn = await strategies.plan_leverage_borrow(WALLET, "SOL", 2.0, "USDC", "5")
+    assert drawn["ok"], drawn
+    assert [(s["op"], s.get("asset")) for s in drawn["steps"]] == [("deposit", "SOL"), ("borrow", "USDC"), ("report", None)]
+    assert drawn["steps"][0]["amount"] == "5"
+    assert float(drawn["steps"][1]["amount"]) == pytest.approx(500)  # (2-1) x 5 SOL x $100
+    assert drawn["simulation"]["hf_after"] == pytest.approx(1000 / 500) and drawn["hf_floor"] == 1.15
+    assert "stays in your margin account" in drawn["summary"] and "swap" not in drawn["summary"].lower()
+
+
+async def test_deposit_and_borrow_deposits_the_asked_amount_even_when_held(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 10}, sol_balance=50.0)
+    drawn = await strategies.plan_leverage_borrow(WALLET, "SOL", 3.0, "USDC", "10")
+    assert drawn["ok"] and drawn["steps"][0] == {**drawn["steps"][0], "op": "deposit", "amount": "10"}
+    assert float(drawn["steps"][1]["amount"]) == pytest.approx(2000)  # (3-1) x the 10 SOL deposited, not the 20 held
+
+
+async def test_deposit_and_borrow_creates_the_account_first(monkeypatch) -> None:
+    chain(monkeypatch, has_account=False, wallet_tokens={}, sol_balance=20.0)
+    drawn = await strategies.plan_leverage_borrow(WALLET, "SOL", 2.0, "USDC", "5")
+    assert drawn["ok"] and [s["op"] for s in drawn["steps"][:2]] == ["create_account", "deposit"]
+
+
+async def test_borrow_at_a_leverage_against_a_holding_or_the_equity(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 10}, debt={"USDC": 200})
+    held = await strategies.plan_leverage_borrow(WALLET, "SOL", 3.0, "USDC", None)
+    assert held["ok"] and [s["op"] for s in held["steps"]] == ["borrow", "report"]
+    assert float(held["steps"][0]["amount"]) == pytest.approx(2000)  # (3-1) x the 10 SOL held
+    equity = await strategies.plan_leverage_borrow(WALLET, None, 2.0, "USDC", None)
+    assert equity["ok"] and float(equity["steps"][0]["amount"]) == pytest.approx(800)  # equity = 1000 - 200
+
+
+async def test_deposit_and_borrow_asks_which_asset_to_borrow(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 10})
+    r = await strategies.plan_leverage_borrow(WALLET, "SOL", 2.0, None, None)
+    assert not r["ok"] and {o["borrow_asset"] for o in r["options"]} == {"USDC", "USDT"}
+    r = await strategies.plan_leverage_borrow(WALLET, "USDC", 2.0, None, None)
+    assert {o["borrow_asset"] for o in r["options"]} == {"SOL", "USDT"}
+
+
+@pytest.mark.parametrize("args, text", [
+    (dict(asset="SOL", leverage=9.0, borrow_asset="USDC", amount=None), "most that holds the floor"),
+    (dict(asset="BONK", leverage=2.0, borrow_asset="USDC", amount=None), "not part of the product"),
+    (dict(asset="SOL", leverage=1.0, borrow_asset="USDC", amount=None), "above 1x"),
+    (dict(asset="SOL", leverage=11.0, borrow_asset="USDC", amount=None), "10x"),
+    (dict(asset="SOL", leverage=2.0, borrow_asset="JitoSOL", amount=None), "can be borrowed"),
+    (dict(asset="SOL", leverage=2.0, borrow_asset="USDC", amount="-5"), "positive"),
+])
+async def test_deposit_and_borrow_refusals(monkeypatch, args, text) -> None:
+    chain(monkeypatch, collateral={"SOL": 10})
+    r = await strategies.plan_leverage_borrow(WALLET, **args)
+    assert not r["ok"] and text in r["message"], r
+
+
+async def test_deposit_and_borrow_limits_say_the_largest_multiple(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 100})  # $10,000; 3x borrows $20,000, above the $5,000 per-action limit
+    r = await strategies.plan_leverage_borrow(WALLET, "SOL", 3.0, "USDC", None)
+    assert not r["ok"] and "per-action limit" in r["message"] and "1.50x" in r["message"]
+    chain(monkeypatch, collateral={"SOL": 10}, pool_liquidity={"SOL": 1e6, "USDC": 100.0, "USDT": 1e6})
+    r = await strategies.plan_leverage_borrow(WALLET, "SOL", 3.0, "USDC", None)
+    assert not r["ok"] and "available to borrow" in r["message"]
+    chain(monkeypatch, sol_balance=1.0)
+    r = await strategies.plan_leverage_borrow(WALLET, "SOL", 2.0, "USDC", "5")
+    assert not r["ok"] and "less than the" in r["message"] and "fees" in r["message"]
+
+
 # ================================================================ unwind
 
 

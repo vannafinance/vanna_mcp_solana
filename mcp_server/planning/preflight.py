@@ -86,6 +86,8 @@ def humanize(exc_or_text: Any) -> str:
         (("transaction_too_large", "size limit", "exceeds solana", "too large for one"), "That swap route is too large for one Solana transaction. Try a different pair, or swap in the wallet instead of inside the margin account."),
         (("insufficient pool liquidity",), "The pool does not have enough available liquidity for that."),
         (("borrow_cap", "supply_cap", "cap exceeded", *markers("SupplyCapExceeded", "BorrowCapExceeded")), "That would exceed the pool's cap."),
+        (("too many requests", "'code': 429", "http 429", "rate limit", "http 502", "http 503", "'code': 503"),
+         "The swap route service is busy right now, so this step could not be prepared. Nothing was sent; try again in a few seconds."),
     )
     low = text.lower()
     for needles, sentence in patterns:

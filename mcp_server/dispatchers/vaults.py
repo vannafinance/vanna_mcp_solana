@@ -25,32 +25,20 @@ async def vanna_vaults(
     amount: str | None = None,
     call: Literal["deposit", "withdraw"] | None = None,
 ) -> dict[str, Any]:
-    """Basis and Perena vaults on Vanna: list, positions, previews, deposits and withdrawals.
+    """Basis and Perena vaults: margin USDC in, vault shares (kept as margin collateral) out. Never borrows.
 
-    Vaults: Basis (delta-neutral: holds the asset and shorts it on Phoenix) "basis-sol", "basis-eth", "basis-btc",
-    "basis-tsla", "basis-meta" (shares vbSOL, vbETH, vbBTC, vbTSLA, vbMETA); Perena "perena-usdstar" (USD*) and
-    "perena-junior" (USD* Junior, 1% instant-exit fee). Every deposit is USDC and every withdrawal pays USDC; the shares
-    are held in the margin account as collateral. A deposit or withdrawal moves the margin's USDC: it never borrows.
-    SOL Basis also deposits the margin's USDC, in one transaction routed through the wallet (margin USDC -> wallet ->
-    vault -> vbSOL back into margin): the program checks the health factor while the USDC is out
-    (`health_factor_while_usdc_moves`), and vbSOL minted above the minimum (~0.5%) stays in the wallet for "move_shares".
+    Vaults: basis-sol, basis-eth, basis-btc, basis-tsla, basis-meta (delta-neutral: hold the asset, short it on
+    Phoenix; shares vbSOL ...), perena-usdstar (USD*), perena-junior (USD* Junior, 1% instant-exit fee).
 
-    Args:
-        action: "list" — every vault: NAV, share price, whether deposits are open, deposit limit, hedge (Basis), APY
-            (only when the app has enough share-price history; never estimated). "positions" — the wallet's vault
-            shares in its margin account (and any SOL Basis shares left in the wallet) with their collateral value.
-            "preview" — simulate a deposit (`call`="deposit", `amount` USDC) or withdrawal (`call`="withdraw",
-            `amount` shares): expected shares or USDC, the minimum enforced, the health factor after (SOL Basis deposit:
-            while the USDC is out of the margin). Nothing is built.
-            "deposit" — deposit `amount` USDC. "withdraw" — withdraw `amount` shares to USDC. "move_shares" — move
-            SOL Basis shares left in the wallet into the margin account (`amount` shares, or all when omitted).
-            A margin write may first return a one-time setup transaction (summary.prerequisite): sign it, then repeat.
-        authority: Base58 wallet address (the margin owner); required for every action but "list".
-        vault: For "preview" / "deposit" / "withdraw" / "move_shares": a vault id, share symbol or name.
-        amount: USDC for a deposit; shares for a withdrawal or move_shares.
-        call: For "preview": "deposit" or "withdraw".
-
-    Returns: a dict. On error: {"error": "invalid_input" | "contract_error" | ..., "message": "..."}
+    Actions:
+      list — NAV, share price, deposits open, limits, APY (empty until the app has history: never estimate it).
+      positions — the wallet's vault shares and their value.
+      preview — call="deposit" (amount USDC) or "withdraw" (amount shares): expected result, health after. Always
+        before a deposit or withdraw.
+      deposit — amount USDC. withdraw — amount shares, paid in USDC.
+      move_shares — SOL Basis shares left in the wallet into the margin account (amount, or all).
+    A write may first return a one-time setup transaction (summary.prerequisite): have it signed, then call again.
+    authority: the wallet (omit when logged in).
     """
     ctx = get_context()
     vaults = ctx.vaults

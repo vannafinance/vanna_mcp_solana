@@ -44,9 +44,56 @@ gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-centr
 ```
 
 The build-only config is the one the private service uses (`build` + `push`, `logging: CLOUD_LOGGING_ONLY`).
-`EXTERNAL_BASE_URL` in the env file must be the service's own https URL (Cloud Run's is
-`https://<service>-<project number>.<region>.run.app`); a custom domain means changing it and redeploying, because it is
-the OAuth issuer and every issued token names it.
+`EXTERNAL_BASE_URL` in the env file must be the https URL users reach the service on: it is the OAuth issuer, every
+issued token names it, and the connect / sign pages are served on it. Today it is Cloud Run's own URL
+(`https://vanna-mcp-solana-public-398807408840.us-central1.run.app`); it moves to the custom domain below once mapped.
+
+## Approvals on the Vanna website (`APPROVE_PAGE_URL`)
+
+Plan links can open on the website's approve page instead of this service's own `/plan/<id>` (which stays as the
+fallback). Deploy the website with the page first (`MCP_PLAN_API_URL` = this service's origin, `PLAN_PROXY_SECRET` from
+Secret Manager), then point the links at it:
+
+```
+gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=APPROVE_PAGE_URL=https://test.solana.vanna.finance/approve
+# and the shared secret, from Secret Manager, on both this service and the website: PLAN_PROXY_SECRET
+```
+
+The website's access gate applies to the page (a visitor without the code sees the gate first).
+
+## Custom domain: `https://mcp.solana.vanna.finance` (pending)
+
+Not live yet (2026-10-16): the gcloud account deploying the service has no verified domain, and the `vanna.finance`
+zone sits in a project it cannot see, so a `vanna.finance` admin first makes that account a Search Console owner of
+`vanna.finance` (Settings → Users and permissions → Manage property owners → Add an owner) and adds the CNAME of step 3.
+Until then everything uses the run.app URL; nothing below has been applied.
+
+The connector and its signing pages should live on a Vanna domain, so users (and wallets' phishing lists) can recognise
+them. The site uses the same mechanism (`test.solana.vanna.finance` is a CNAME to `ghs.googlehosted.com`); `vanna.finance`
+DNS is on Google Cloud DNS.
+
+```
+# 1. Once per account: the gcloud account must be a verified owner of vanna.finance (Search Console)
+gcloud domains list-user-verified
+
+# 2. Map the domain to the service (Cloud Run issues and renews the TLS certificate)
+gcloud beta run domain-mappings create --service=vanna-mcp-solana-public --domain=mcp.solana.vanna.finance --project=solana-mcp --region=us-central1
+
+# 3. The DNS record it asks for, in the vanna.finance zone
+gcloud dns record-sets create mcp.solana.vanna.finance. --zone=<vanna.finance zone> --project=<DNS project> --type=CNAME --ttl=300 --rrdatas=ghs.googlehosted.com.
+
+# 4. Wait until the certificate is ready (CertificateProvisioned = True), then check https://mcp.solana.vanna.finance/health
+gcloud beta run domain-mappings describe --domain=mcp.solana.vanna.finance --project=solana-mcp --region=us-central1
+
+# 5. Only then switch the issuer (no rebuild) and set the same value in deploy/public-service.env.yaml; run the smoke test on it
+gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=EXTERNAL_BASE_URL=https://mcp.solana.vanna.finance
+```
+
+Changing `EXTERNAL_BASE_URL` changes the OAuth issuer: tokens issued under the old URL stop verifying, so every client
+reconnects once, on the new URL (`claude mcp remove vanna-solana`, then add it with the URL below). The run.app URL
+keeps answering, but its OAuth metadata names the custom domain, so clients must use the custom domain.
+
+After the domain is live, submit it to Phantom's and Blowfish's domain review so wallets show it as a known site.
 
 On Cloud Run the service **refuses to start** unless `STATE_STORE=firestore`, `EXTERNAL_BASE_URL` is https, a signing key
 is present, and no first-party client or dev-only fork tool is configured.

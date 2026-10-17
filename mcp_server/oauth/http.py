@@ -7,6 +7,8 @@ limiter, since none of these paths carry a bearer token to key a bucket on.
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import logging
 import math
@@ -64,6 +66,7 @@ class OAuthRateLimitMiddleware:
         token_per_minute: int = 60,
         consent_per_minute: int = 60,
         trusted_proxy_hops: int = 0,
+        plan_proxy_secret: str = "",
         clock: Callable[[], float] | None = None,
     ) -> None:
         import time
@@ -71,6 +74,7 @@ class OAuthRateLimitMiddleware:
         self.app = app
         self._store = store
         self._hops = trusted_proxy_hops
+        self._plan_proxy_secret = plan_proxy_secret.strip()
         self._clock = clock or time.time
         # A per-instance gate in front of the shared store: a flood from one address is refused from memory and
         # never reaches Firestore (every shared counter is a database write the flood would otherwise pay for).
@@ -86,6 +90,20 @@ class OAuthRateLimitMiddleware:
         }
         self._consent_rule = ("consent", consent_per_minute, 60)
         self._plan_rule = ("plan", 120, 60)
+
+    def _proxied_caller(self, scope: Scope) -> str | None:
+        """The end user's address as the website's plan proxy forwards it: only with the shared secret, and only a
+        well-formed IP. Anything else is None, and the caller is counted by its own address as usual."""
+        if not self._plan_proxy_secret:
+            return None
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        given = headers.get("x-vanna-proxy-secret", "")
+        if not given or not hmac.compare_digest(given.encode(), self._plan_proxy_secret.encode()):
+            return None
+        try:
+            return f"proxied:{ipaddress.ip_address(headers.get('x-vanna-client-ip', '').strip())}"
+        except ValueError:
+            return "proxied:unknown"
 
     def _rule(self, path: str) -> tuple[str, int, int] | None:
         if path in self._rules:
@@ -107,7 +125,8 @@ class OAuthRateLimitMiddleware:
         name, limit, window = rule
         now = self._clock()
         bucket = int(now // window)
-        key = f"rl:{name}:{caller_key(scope, self._hops)}:{bucket}"
+        caller = (self._proxied_caller(scope) if name == "plan" else None) or caller_key(scope, self._hops)
+        key = f"rl:{name}:{caller}:{bucket}"
         count = await self._local.incr(key, window)
         if count <= limit:
             count = await self._store.incr(key, window)  # the service-wide count, shared by every instance

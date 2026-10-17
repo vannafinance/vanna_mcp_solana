@@ -28,35 +28,18 @@ async def vanna_swap(
     provider: SwapProvider | None = None,
     mode: Literal["wallet", "margin"] = "wallet",
 ) -> dict[str, Any]:
-    """Quote or execute a swap through Jupiter or Titan.
+    """Swap one token for another with an EXACT amount to sell, through Jupiter or Titan (like the app's Spot page).
 
-    Two providers, like the app's Spot page. "quote" returns both providers' quotes (`providers`, best first, each with
-    its output, minimum received and route) and the better one at the top level. If the user did not name a provider,
-    show them both quotes and ask which to use; then pass it as `provider`. With `provider` omitted, the builds use
-    whichever quote is better at build time. Titan quotes only when the server has a Titan key and a wallet is given.
+    "Swap to receive 100 USDC", "swap half / all my SOL" -> vanna_plan (swap_exact_out, or custom with "50%" / "all").
 
-    Args:
-        action: "quote" — read-only ExactIn quote. "can_swap" — would a
-            margin-account swap of `amount` `from_asset` into `to_asset`
-            stay within the 1.10 health-factor threshold (`authority`
-            required; N/A for `wallet_swap`, which never touches a margin
-            account). "margin_swap" — swap collateral inside the margin
-            account (`from_asset` must already be active collateral).
-            "wallet_swap" — a plain wallet-to-wallet swap, no margin account
-            involved (the real `/trade/spot` product surface).
-        from_asset: Symbol to sell.
-        to_asset: Symbol to buy.
-        amount: Human-readable amount of `from_asset`.
-        authority: Base58 wallet address — the margin owner for
-            "can_swap"/"margin_swap", or the wallet itself for "wallet_swap".
-        slippage_bps: Slippage tolerance, default 100 (1%).
-        provider: "jupiter" or "titan" for can_swap / margin_swap / wallet_swap; omitted = the better quote.
-        mode: For "quote" only: "wallet" (default) or "margin" - which account Titan quotes for (Titan builds per
-            address; `authority` must be given for Titan to quote at all).
-
-    Returns: a quote dict (read actions) or the schema-v1 write envelope.
-    On error: {"error": "contract_error" | "invalid_input" | "account_not_found"
-        | "simulation_failed", "message": "..."}
+    Actions:
+      quote — both providers' quotes (`providers`, best first) and the better one on top. If the user named no
+        provider, show both and ask which; pass it as `provider` (omitted = the better quote at build time).
+        `mode` "wallet" (default) or "margin" says which account Titan quotes for (needs `authority`).
+      can_swap — would a swap inside the margin account keep the health factor safe.
+      margin_swap — swap collateral inside the margin account (from_asset must already be collateral).
+      wallet_swap — a plain swap in the wallet; no margin account involved.
+    from_asset, to_asset, amount (of from_asset); slippage_bps default 100. authority: the wallet (omit when logged in).
     """
     ctx = get_context()
     swap = ctx.swap

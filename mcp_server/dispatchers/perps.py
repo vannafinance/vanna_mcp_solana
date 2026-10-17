@@ -31,41 +31,22 @@ async def vanna_perps(
     amount_usdc: str | None = None,
     funded: bool = False,
 ) -> dict[str, Any]:
-    """Phoenix perps on Vanna: markets, positions, order previews, and opening / closing positions.
+    """Phoenix perpetuals (SOL, ETH, BTC, TSLA, META; long or short), paid from the margin account's USDC.
 
-    Perps are NOT margin borrowing: a perps position is opened on Phoenix with the margin account's USDC as collateral
-    and Phoenix's own leverage (position size = collateral x leverage); no Vanna loan is created. Margin borrowing is
-    `vanna_margin_trade`; spot leverage is `vanna_plan lever`.
+    A perp is not a Vanna loan: Phoenix's own leverage, position size = collateral x leverage. "Long SOL 3x" with no
+    other detail: ask "spot leverage (vanna_plan lever) or a perp?".
 
-    Args:
-        action: "markets" — every listed market (SOL, ETH, BTC, TSLA, META): index and mark price, max leverage,
-            whether it is open for new positions, taker fee, default slippage. "positions" — the margin account's
-            Phoenix balance, what can be withdrawn now, and each position (side, size, entry, PnL, funding, equity,
-            the price at which the Phoenix balance reaches zero, and the liquidation price of the whole margin
-            account). "preview" — what opening or adding to a position would do, with the app's checks: size, limit
-            price, fee, projected health factor and liquidation price. Nothing is built or sent.
-            "register" — the first Phoenix trade's extra step: creates the margin's Phoenix trading account (needed when
-            preview says needs_trader_registration). "open" — open or add to a long / short: moves `collateral_usdc`
-            of margin USDC into Phoenix and places an immediate-or-cancel market order of collateral x leverage, in one
-            transaction; on an account holding many assets that is too much for one transaction, and open returns only
-            the funding transaction (summary.prerequisite_kind "phoenix_fund"): once it lands, call open again with the
-            same arguments and funded=true. "close" — close the whole position in `market`, or part of it (`fraction` 0-1, or
-            `size_usd`), with a reduce-only order. "withdraw" — move USDC from Phoenix back to the margin account (all,
-            or `amount_usdc`), only what Phoenix pays now. Writes return an unsigned transaction for the wallet.
-        authority: Base58 wallet address (the margin owner); required for every action but "markets".
-        market: For "preview" / "open" / "close": "SOL", "ETH", "BTC", "TSLA" or "META" ("-PERP" optional).
-        side: For "preview" / "open": "long" or "short".
-        collateral_usdc: For "preview" / "open": USDC moved from the margin account into Phoenix for this order; "0"
-            uses the Phoenix balance already there.
-        leverage: For "preview" / "open": 1 up to the market's max leverage.
-        funded: For "preview" / "open": true when an earlier "phoenix_fund" transaction of this same open already moved
-            `collateral_usdc` into Phoenix; the order is sized from it and nothing more moves.
-        slippage_bps: For "preview" / "open" / "close": worst-price protection; default 100 (1%), 200 for TSLA and META.
-        fraction: For "close": the share of the position to close (0-1]; omitted = all of it.
-        size_usd: For "close": close this USD size instead of a fraction.
-        amount_usdc: For "withdraw": USDC to move back; omitted = all of it.
-
-    Returns: a dict. On error: {"error": "invalid_input" | "contract_error" | ..., "message": "..."}
+    Actions:
+      markets — prices, max leverage, fees, open for trading.
+      positions — Phoenix balance, withdrawable now, each position (PnL, funding, liquidation prices).
+      preview — what an open would do (size, price, fee, health after). Builds nothing. Always before open.
+      register — first trade only, when preview says needs_trader_registration.
+      open — market, side, collateral_usdc (from margin; "0" = the Phoenix balance), leverage. If it returns
+        summary.prerequisite_kind "phoenix_fund", that is a funding transaction: after it lands call open again with
+        the same arguments and funded=true.
+      close — market; all, or `fraction` (0-1] or `size_usd`.
+      withdraw — USDC back to the margin account: all, or `amount_usdc`.
+    slippage_bps: default 100 (200 for TSLA, META). authority: the wallet (omit when logged in).
     """
     ctx = get_context()
     perps = ctx.perps

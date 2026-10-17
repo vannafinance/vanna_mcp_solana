@@ -39,9 +39,20 @@ def _safe_json(resp: httpx.Response, what: str) -> dict:
         raise ContractCallError(f"{what}: HTTP {resp.status_code}, non-JSON response ({exc})") from exc
 
 
-# A rate-limited (429) or briefly unavailable answer is retried once after this pause.
+# A rate-limited (429) or briefly unavailable answer is retried after these pauses (one per retry), or after the
+# server's own `Retry-After` when it gives one, capped so a plan step never waits more than a few seconds per call.
 _RETRY_STATUSES = {429, 502, 503}
-_RETRY_AFTER_SECS = 1.5
+_RETRY_DELAYS_SECS = (1.0, 2.5, 5.0)
+_RETRY_AFTER_CAP_SECS = 8.0
+
+
+def _retry_delay(resp: httpx.Response, attempt: int) -> float:
+    default = _RETRY_DELAYS_SECS[attempt]
+    try:
+        asked = float(resp.headers.get("retry-after", ""))
+    except ValueError:
+        return default
+    return min(max(asked, default), _RETRY_AFTER_CAP_SECS)
 
 
 class JupiterClient:
@@ -71,12 +82,12 @@ class JupiterClient:
 
     async def _send(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
         async with pooled_http(15.0) as http:
-            for attempt in range(2):
+            for attempt in range(len(_RETRY_DELAYS_SECS) + 1):
                 url = self._url(endpoint)
                 resp = await (app_request(http, self._settings, method, url, **kwargs) if self._proxy else http.request(method, url, **kwargs))
-                if resp.status_code not in _RETRY_STATUSES or attempt == 1:
+                if resp.status_code not in _RETRY_STATUSES or attempt == len(_RETRY_DELAYS_SECS):
                     return resp
-                await asyncio.sleep(_RETRY_AFTER_SECS)
+                await asyncio.sleep(_retry_delay(resp, attempt))
         return resp
 
     async def get_quote(

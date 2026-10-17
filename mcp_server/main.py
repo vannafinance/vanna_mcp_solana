@@ -27,8 +27,9 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from mcp.server.context import ServerRequestContext
+from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import MCPServer
-from mcp_types import CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, TextContent
+from mcp_types import CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, TextContent, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp
@@ -37,7 +38,7 @@ from vanna_core.config import MCPTransport, get_settings
 from mcp_server.agent_firewall import get_agent_instructions
 from mcp_server import safety as safety_layer
 from mcp_server.dependencies import VannaContext, _set_context
-from mcp_server.dispatchers import ALL_DISPATCHERS, FORK_DISPATCHERS
+from mcp_server.dispatchers import ALL_DISPATCHERS, FORK_DISPATCHERS, TOOL_INFO
 from mcp_server.identity import caller_has_write_scope, caller_wallet, request_identity
 from mcp_server.rate_limit import get_circuit_breaker
 from mcp_server.scopes import WRITE_ONLY_TOOLS, is_write_call
@@ -277,14 +278,26 @@ class ScopedMCPServer(MCPServer):
         return result
 
 
+# Tool definitions, annotations, prompts and instructions only change on a deploy, so clients may reuse what they
+# fetched (SEP-2549 cache hints). "private": the tool list differs between read-only and read+write logins.
+_FIXED_FOR = CacheHint(ttl_ms=3_600_000, scope="private")
+
 mcp = ScopedMCPServer(
     name="vanna-solana",
     instructions=get_agent_instructions(public=settings.public_mode),
     lifespan=_lifespan,
+    cache_hints={"tools/list": _FIXED_FOR, "prompts/list": _FIXED_FOR, "server/discover": _FIXED_FOR},
 )
 
 for _dispatcher in ALL_DISPATCHERS:
-    mcp.add_tool(_dispatcher)
+    _title, _read_only = TOOL_INFO[_dispatcher.__name__]
+    mcp.add_tool(_dispatcher, title=_title, annotations=ToolAnnotations(
+        title=_title,
+        readOnlyHint=_read_only,
+        destructiveHint=False,  # writes only build unsigned transactions; the user's wallet signs every one
+        idempotentHint=_read_only,
+        openWorldHint=True,  # reads and builds against Solana and the Vanna app
+    ))
 
 from mcp_server.prompts import register_prompts  # noqa: E402
 
@@ -414,6 +427,7 @@ def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGI
         store,
         register_per_hour=settings.oauth_dcr_per_ip_per_hour,
         trusted_proxy_hops=settings.trusted_proxy_hops,
+        plan_proxy_secret=settings.plan_proxy_secret,
     )
 
 

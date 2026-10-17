@@ -71,6 +71,9 @@ async def test_prompts_are_registered_and_render() -> None:
     lever = await main.mcp.get_prompt("lever", {"asset": "JitoSOL", "leverage": "3", "amount": "2"})
     body = lever.messages[0].content.text
     assert "JitoSOL 3x" in body and "vanna_plan lever" in body and "approve with my wallet" in body
+    lb = await main.mcp.get_prompt("leverage_borrow", {"asset": "SOL", "leverage": "3", "amount": "10", "borrow": "USDC"})
+    body = lb.messages[0].content.text
+    assert "deposit 10 SOL and borrow USDC at 3x leverage" in body and "vanna_plan leverage_borrow" in body
     rules = await main.mcp.get_prompt("vanna_assistant", {})
     assert "Domain firewall" in rules.messages[0].content.text
 

@@ -41,35 +41,24 @@ async def vanna_predict(
     legs: list[dict[str, Any]] | None = None,
     market_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Prediction markets (World.xyz, on Vanna's test fork): browse markets, trade YES/NO shares for CASH, positions.
+    """Prediction markets (World.xyz): YES / NO shares paid in CASH from the wallet. No margin, no health factor.
 
-    A share of an outcome pays 1 CASH (World's dollar) if that outcome wins; prices are cents per share. Buying on a
-    market that joins Vanna's pool deposits the shares into it automatically (they earn while held), as on the
-    website. Payment is CASH from the wallet; Predict never uses the margin account and never changes the health factor.
+    A share pays 1 CASH if its outcome wins; prices are cents per share. Never say which side to take.
 
-    Args:
-        action: "markets" — listed events with each outcome's market_id and buy/sell prices (filter by `category`,
-            search with `query`). "market" — one event (`id`: event_id or market_id) with every outcome, pool figures
-            and its rules. "positions" — the wallet's Predict positions (wallet + pooled shares, value, P&L, payout if
-            win), its CASH, Vanna pool figures, and World shares it could move into the pool. "history" — the wallet's
-            trades (optionally one `market`). "quote" — price a trade without building it. "trade" — build the trade
-            for the wallet to sign: a batch of transactions, all signed in ONE approval and sent in order (each
-            confirmed before the next); after it confirms call "merge" with summary.merge_markets. "merge" — the app's
-            keeper merges matched YES+NO in those pools into USDC lent to Vanna (`market_ids`). "faucet" — TEST FORK
-            ONLY: add test CASH to the wallet (`amount`, default 100, max 1000), the Predict page's "Get test CASH".
-        authority: Base58 wallet address; required for positions, history, quote, trade, faucet.
-        category: For "markets": crypto, sports, politics, economics or other.
-        query: For "markets": search text (team, candidate, asset, league).
-        id: For "market": an event_id or market_id.
-        market: For one-leg "quote" / "trade": the outcome's market_id (from "markets"/"market"); for "history": a filter.
-        outcome: "yes" or "no".
-        side: "buy" (amount = CASH to spend, 0.1-5,000), "sell" (amount = shares; pooled shares are redeemed first
-            when the wallet holds too few) or "deposit" (amount = World shares in the wallet to move into Vanna's pool).
-        amount: Decimal string (up to 6 decimals).
-        legs: For several outcomes in one trade (max 8): [{"market", "outcome", "side", "amount"}, ...].
-        market_ids: For "merge".
-
-    Returns: a dict; "trade" returns an unsigned (maker co-signed) batch envelope. On error: {"error", "message"}.
+    Actions:
+      markets — events and each outcome's market_id and prices (`category`, `query` to search).
+      market — one event by `id` (event_id or market_id), with its rules.
+      positions — the wallet's shares, value, P&L, CASH, and World shares it can move into Vanna's pool.
+      history — past trades (optionally one `market`).
+      quote — price a trade without building it. Always before trade.
+      trade — `market` (a market_id from a read; never guess: ask when several match), `outcome` yes|no, `side`
+        buy|sell|deposit, `amount`; or `legs` [{market, outcome, side, amount}] for up to 8 outcomes. All its
+        transactions are signed in ONE approval. Afterwards call merge with summary.merge_markets.
+      merge — `market_ids`. faucet — test CASH (test fork only; `amount` default 100, max 1000).
+    Amounts: buy = CASH to spend (0.1-5,000). sell = shares; deposit = World shares moved into the pool. A sell or
+    deposit may be "all" or "50%": "sell all my Senate shares" -> side="sell", amount="all" (the server reads the
+    holding; never ask for the share count).
+    authority: the wallet (omit when logged in).
     """
     ctx = get_context()
     predict = ctx.predict

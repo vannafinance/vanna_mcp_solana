@@ -56,7 +56,9 @@ Things to try, each exercising a different part:
 | "what's my health factor / portfolio?" | `vanna_portfolio`, `vanna_account health` |
 | "supply 100 USDC to Earn" | a single write: safety checks, then a **link**; open it, approve, sign, it confirms |
 | "open a margin account and deposit 5 SOL" | a two-step plan with one approval and a signature per step |
-| "lever my SOL 2x" | `vanna_plan lever`: sizes the borrow so health holds 1.15 even at a bad swap price, shows the worst case, then you approve |
+| "deposit 10 SOL and borrow USDC at 3x" | `vanna_plan leverage_borrow`: deposits, then borrows (N−1) × the deposit's value, kept in the margin account (no swap); shows the health factor after, then you approve |
+| "lever my SOL 2x" | `vanna_plan lever`: a leveraged long — borrows a stable and swaps it into SOL, sized so health holds 1.15 even at a bad swap price |
+| "borrow the max USDC" / "borrow $500 of USDC" / "borrow to health 2" / "sell all my Senate shares" | sized by the server from those words (`vanna_plan custom`, Predict `all`): the client never computes a number |
 | "how much can I safely borrow?" / "what if I withdraw 1 SOL?" | `vanna_risk capacity` / `what_if` |
 | "open a 2x SOL long perp with 20 USDC" | `vanna_perps preview`, then `register` (first trade only) and `open`, each with its own link |
 | "deposit 20 USDC into ETH basis" | `vanna_vaults preview`, then `deposit` with a link |
@@ -67,7 +69,7 @@ Things to try, each exercising a different part:
 | "borrow 99999 USDC" | refused by the server with the reason (floor / limits), whatever the model says |
 | "set a stop-loss at 80" | refused: no conditional or standing orders |
 
-Slash commands (MCP prompts): `/mcp__vanna-solana__lever`, `/mcp__vanna-solana__unwind`, `/mcp__vanna-solana__health_check`,
+Slash commands (MCP prompts): `/mcp__vanna-solana__lever`, `/mcp__vanna-solana__leverage_borrow`, `/mcp__vanna-solana__unwind`, `/mcp__vanna-solana__health_check`,
 `/mcp__vanna-solana__earn_overview`, `/mcp__vanna-solana__vanna_assistant` (the full rules).
 
 **What the signing page does** (`http://127.0.0.1:8000/plan/<id>`): shows the plan the *server* drew (summary, warnings,
@@ -80,6 +82,22 @@ The link itself only lets its holder see the plan (and cancel it). Approving ret
 page's prepare and submit calls carry it (`X-Plan-Token`), so a copied link cannot drive the plan. Opening an approved
 plan in another browser asks the wallet to sign a short "continue here" message, which issues a new token and retires
 the old one. Logs name a plan by a hash (`plan_ref`), never by the id that makes up the link.
+
+The hosted pages live on `https://vanna-mcp-solana-public-398807408840.us-central1.run.app`. Each page shows that address and warns if it is opened
+anywhere else, and the approve and continue messages the wallet shows start with `Site: <that host>`. Only the page's
+own origin may approve, prepare, submit or cancel (a cross-site `Origin` is refused). Pages are served with a strict
+CSP, HSTS, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` and a `Permissions-Policy` that turns every
+device API off.
+
+The page has one main button whose job follows the plan: **Approve and sign** (the approval signature, then each
+step's transaction in turn, each shown by the wallet), **Continue** for an approved plan with steps left, and **Try
+again** when a step could not be prepared (for example the swap route service was briefly rate-limited; Jupiter calls
+retry 429/502/503 three times with backoff first). Risks and details are folded under "Details and risks"; Cancel is a
+plain link that asks for confirmation.
+
+Wallets are found through the Wallet Standard (any compliant Solana wallet), with the older injected objects as a
+fallback; with more than one wallet installed the page asks which one to use. On a phone without a wallet extension,
+the page offers to open itself in Phantom's, Solflare's or Backpack's in-app browser.
 
 **Phantom on a fork:** the page only asks your wallet to *sign*; the server broadcasts to the fork. Phantom may warn that it
 cannot simulate the transaction or that it targets an unknown network; that is expected for a fork. Make sure the wallet
@@ -166,6 +184,8 @@ then `python scripts/smoke_public.py http://127.0.0.1:8000`.
 | `SAFETY_LAYER` | `false` (always on in public mode) | enforce the guardrails above on direct writes |
 | `ENABLE_SIGN_LINKS` | `false` | serve the signing pages; writes return a link |
 | `SIGN_BASE_URL` | `EXTERNAL_BASE_URL` or `http://127.0.0.1:PORT` | where the user's browser reaches the pages |
+| `APPROVE_PAGE_URL` | empty | plan links open on the Vanna website's approve page (`{url}/{plan_id}`), e.g. `https://test.solana.vanna.finance/approve`; empty = this server's own `/plan/{id}` page |
+| `PLAN_PROXY_SECRET` | empty | shared with the website's plan proxy; with it, `/api/plan/*` rate limits count each end user, not the website |
 | `ENABLE_TEST_FAUCET` | `false` | `vanna_wallet action=faucet` and `vanna_predict action=faucet` (fork only) |
 | `APP_ACCESS_CODE` | empty | the app's site-wide access code; every call into the app logs in with it (an empty one gets 401 from a gated app) |
 | `PREDICT_API_URL` | `{PERPS_HELPER_URL or PRICE_KEEPER_URL}/api/predict` | the app that builds Predict trades |

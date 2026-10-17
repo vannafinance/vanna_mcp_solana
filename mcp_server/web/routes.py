@@ -9,10 +9,12 @@ and nothing moves without a signature from the plan's own wallet, which the serv
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -26,40 +28,74 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _STATIC_FILES = {
     "vanna.css": "text/css", "wallet.js": "application/javascript", "plan.js": "application/javascript",
     "connect.js": "application/javascript", "solana-web3-1.98.4.min.js": "application/javascript",
+    "vanna-icon.png": "image/png",
 }
 MAX_BODY_BYTES = 16 * 1024  # a signed v0 transaction is at most ~1.7 KB of base64
 
-# Scripts only from this origin; no inline script, no framing, no third-party anything.
+# Scripts only from this origin; no inline script, no framing, no plugins, no third-party anything.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
-       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+# HSTS only takes effect over https (the hosted service); a local http run ignores it. COOP keeps other sites from
+# holding a handle on this window but still lets a wallet open its own popup.
 _PAGE_HEADERS = {**_NO_STORE, "Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff",
-                 "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY"}
+                 "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
+                 "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                 "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+                 "Cross-Origin-Resource-Policy": "same-origin",
+                 "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), "
+                                       "bluetooth=(), hid=(), interest-cohort=()"}
 
 _SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>{title}</title><link rel="stylesheet" href="/static/vanna.css"></head>
-<body><main><header><div class="logo"></div><h1>{heading}</h1></header>{body}</main>
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>{title}</title>
+<link rel="icon" type="image/png" href="/static/vanna-icon.png"><link rel="stylesheet" href="/static/vanna.css"></head>
+<body><main id="app" data-site="{site}" data-network="{network}" data-test="{test}">
+<header><img class="logo" src="/static/vanna-icon.png" alt="" width="36" height="36"><div class="brand"><div class="name">Vanna Finance</div><div class="muted small">{heading}</div></div><span id="network" class="badge" hidden></span></header>
+<div id="site-bad" class="notice bad" hidden></div>{body}
+<footer class="muted small"><span class="lock"></span><span><span id="site-host" class="mono"></span> · Vanna never holds your keys. Your wallet shows every transaction before you sign it.</span></footer></main>
 <script src="/static/solana-web3-1.98.4.min.js"></script><script src="/static/wallet.js"></script><script src="/static/{script}"></script></body></html>"""
 
-_PLAN_BODY = """<div id="msg" class="notice" hidden></div>
-<div class="card"><div class="row"><span id="status"></span></div><h2 id="summary" class="mt"></h2>
-<div class="muted">Wallet <span id="wallet" class="mono"></span></div><div id="sim" class="muted mt"></div>
-<ul id="warnings" class="plain muted"></ul><ol id="steps" class="steps"></ol></div>
-<div id="current" class="card" hidden></div>
-<div class="row"><button id="approve" hidden>Approve plan with wallet</button><button id="run" hidden>Start / continue</button><button id="cancel" class="secondary" hidden>Cancel plan</button></div>
-<p class="muted">Vanna never holds your keys. Your wallet shows each transaction before you sign it, and nothing is sent without your signature.</p>"""
+_PICKER = """<div id="picker" class="card" hidden><h2>Choose your wallet</h2><div id="picker-list" class="wallets"></div>
+<div id="picker-mobile" hidden><p class="muted">No wallet in this browser. On a phone, open this page in your wallet's browser:</p><div id="picker-links" class="wallets"></div></div>
+<div class="row mt"><button id="picker-cancel" class="secondary">Back</button></div></div>"""
+
+_PLAN_BODY = """<div id="loading" class="card muted">Loading…</div>
+<section id="plan" class="card" hidden>
+<div class="row spread"><span id="status"></span><span id="countdown" class="small muted"></span></div>
+<h2 id="summary" class="title"></h2>
+<div id="hf" class="hf" hidden><div><div class="muted small">Health factor now</div><div id="hf-now" class="big"></div></div>
+<div class="arrow muted">→</div><div><div class="muted small">After (worst case)</div><div id="hf-after" class="big"></div></div></div>
+<ol id="steps" class="steps"></ol>
+<details id="details" class="details"><summary>Details and risks</summary><ul id="warnings" class="plain muted small"></ul>
+<div class="kv small"><span class="muted">Wallet</span><span id="wallet" class="mono"></span></div></details>
+</section>
+<div id="msg" class="notice" hidden></div>
+<div id="current" class="card focus" hidden></div>""" + _PICKER + """
+<div class="actions"><button id="primary" hidden></button><button id="cancel" class="link" hidden>Cancel plan</button></div>"""
 
 _CONNECT_BODY = """<div id="msg" class="notice" hidden></div>
 <div id="panel" class="card" hidden><h2>Connect your wallet to <span id="client"></span></h2>
 <p class="muted">This app will return to <strong id="host" class="mono"></strong>. Only continue if you started this connection and recognise it.</p>
 <p class="muted">It will be able to:</p><ul id="scopes" class="plain"></ul>
 <p class="muted">It can never sign or send anything: every transaction still needs your approval in your wallet. Signing the next message proves you own the wallet and costs nothing.</p>
-<div class="row"><button id="allow">Connect wallet and approve</button><button id="deny" class="secondary">Decline</button></div></div>"""
+<div class="row actions"><button id="allow">Connect wallet and approve</button><button id="deny" class="secondary">Decline</button></div></div>""" + _PICKER
+
+
+def _shell_values() -> dict[str, str]:
+    """What the page needs to know about where it should live: the signing host and the network, from the settings."""
+    from mcp_server.web.setup import sign_base_url
+    from vanna_core.config import get_settings
+
+    settings = get_settings()
+    site = urlparse(sign_base_url(settings)).netloc
+    network = "Test network (test funds only)" if settings.is_fork else f"Solana {settings.solana_cluster_label}"
+    return {"site": html.escape(site), "network": html.escape(network), "test": "1" if settings.is_fork else "0"}
 
 
 def _page(title: str, heading: str, body: str, script: str) -> HTMLResponse:
-    return HTMLResponse(_SHELL.format(title=title, heading=heading, body=body, script=script), headers=_PAGE_HEADERS)
+    page = _SHELL.format(title=title, heading=heading, body=body, script=script, **_shell_values())
+    return HTMLResponse(page, headers=_PAGE_HEADERS)
 
 
 def _json(payload: dict[str, Any], status: int = 200) -> JSONResponse:
@@ -86,8 +122,19 @@ def _engine():
     return engine
 
 
+def _same_origin(request: Request) -> bool:
+    """A browser names the page that sent a POST in `Origin`; only this site's own pages may approve, prepare, submit
+    or cancel. A request without `Origin` is not a cross-site browser request (a browser always sends it on POST)."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    return origin != "null" and urlparse(origin).netloc.lower() == request.headers.get("host", "").lower()
+
+
 def _guard(handler):
     async def endpoint(request: Request) -> Response:
+        if request.method == "POST" and not _same_origin(request):
+            return _json({"error": "forbidden_origin", "message": "This request did not come from the Vanna signing page."}, 403)
         try:
             return _json(await handler(request))
         except PlanError as exc:

@@ -79,8 +79,104 @@ async def test_pages_are_static_files_under_a_strict_csp(web: TestClient) -> Non
     assert web.get("/sign/abc", follow_redirects=False).headers["location"] == "/plan/abc"
 
 
+def test_pages_carry_the_hardening_headers_and_name_their_site(web: TestClient) -> None:
+    page = web.get("/plan/anything")
+    h = page.headers
+    assert "max-age=31536000" in h["strict-transport-security"] and h["referrer-policy"] == "no-referrer"
+    assert h["cross-origin-opener-policy"] == "same-origin-allow-popups" and h["cross-origin-resource-policy"] == "same-origin"
+    assert "camera=()" in h["permissions-policy"] and "object-src 'none'" in h["content-security-policy"]
+    # The page knows the host it should be served from, so it can warn the user on any other one.
+    assert 'data-site="127.0.0.1:8000"' in page.text and 'id="picker"' in page.text
+    assert 'id="picker"' in web.get("/connect").text
+    # One main action on the plan page (its label follows the plan's state), and the Vanna logo from this origin.
+    assert 'id="primary"' in page.text and 'id="approve"' not in page.text and 'id="run"' not in page.text
+    assert 'src="/static/vanna-icon.png"' in page.text
+    logo = web.get("/static/vanna-icon.png")
+    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png" and logo.content[:4] == b"\x89PNG"
+
+
+def test_hidden_always_wins_in_the_page_css() -> None:
+    """Buttons are display:flex; without this rule a hidden button shows (two actions at once)."""
+    from pathlib import Path
+
+    css = (Path(main.__file__).parent / "web" / "static" / "vanna.css").read_text(encoding="utf8")
+    assert "[hidden]{display:none !important}" in css
+
+
+def test_a_busy_route_service_reads_as_a_retryable_sentence() -> None:
+    from mcp_server.planning.preflight import humanize
+
+    text = humanize("Jupiter swap-instructions failed: {'code': 429, 'message': '[API Gateway] Too many requests'}")
+    assert "busy" in text and "Nothing was sent" in text and "429" not in text
+
+
+async def test_jupiter_retries_a_rate_limit_with_backoff(monkeypatch) -> None:
+    import httpx
+
+    from vanna_core.contracts import jupiter
+
+    calls, slept = [], []
+
+    class FakeHttp:
+        async def request(self, method, url, **kw):
+            calls.append(url)
+            if len(calls) < 3:
+                return httpx.Response(429, headers={"retry-after": "2"}, json={"code": 429})
+            return httpx.Response(200, json={"ok": True})
+
+    class Pool:
+        async def __aenter__(self):
+            return FakeHttp()
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(jupiter, "pooled_http", lambda *_a, **_k: Pool())
+    monkeypatch.setattr(jupiter.asyncio, "sleep", fake_sleep)
+    client = jupiter.JupiterClient.__new__(jupiter.JupiterClient)
+    client._settings = get_settings()
+    monkeypatch.setattr(jupiter.JupiterClient, "_proxy", property(lambda self: None))
+    resp = await client._send("GET", "quote")
+    assert resp.status_code == 200 and len(calls) == 3
+    assert slept == [2.0, 2.5]  # the server's Retry-After, never less than the step's own pause
+
+
+async def test_a_cross_site_page_cannot_post_to_the_plan_api(monkeypatch, web: TestClient) -> None:
+    chain(monkeypatch, collateral={"SOL": 10}, debt={"USDC": 100.0}, wallet_tokens={"USDC": 300.0}, sol_balance=5.0)
+    engine_with()
+    drawn = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "USDC", "amount": "50"}])
+    api = f"/api/plan/{drawn['plan_id']}"
+    view = web.get(api).json()
+    for origin in ("https://evil.example", "null"):
+        r = web.post(f"{api}/cancel", json={}, headers={"Origin": origin})
+        assert r.status_code == 403 and r.json()["error"] == "forbidden_origin"
+        r = web.post(f"{api}/approve", json={"wallet": WALLET, "signature": approval_sig(view)}, headers={"Origin": origin})
+        assert r.status_code == 403
+    assert web.get(api).json()["status"] == "awaiting_approval"  # nothing happened
+    same = web.post(f"{api}/approve", json={"wallet": WALLET, "signature": approval_sig(view)}, headers={"Origin": "http://testserver"})
+    assert same.status_code == 200 and same.json()["status"] == "approved"
+
+
+async def test_the_approval_message_names_the_signing_site(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 10}, debt={"USDC": 100.0}, wallet_tokens={"USDC": 300.0}, sol_balance=5.0)
+    eng, _ = engine_with()
+    drawn = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "USDC", "amount": "50"}])
+    view = await eng.get(drawn["plan_id"])
+    assert "\nSite: 127.0.0.1:8000\n" in view["approval_message"] and view["site"] == "127.0.0.1:8000"
+    # A plan saved before the site was recorded keeps its original message, so its approval still verifies.
+    rec = await eng.store.get(f"plan:{drawn['plan_id']}")
+    rec.pop("site")
+    from mcp_server.planning.engine import approval_message
+
+    assert "Site:" not in approval_message(rec)
+
+
 def test_static_files_are_whitelisted_and_the_vendored_library_is_intact(web: TestClient) -> None:
-    for name, kind in (("vanna.css", "text/css"), ("wallet.js", "javascript"), ("plan.js", "javascript"), ("connect.js", "javascript")):
+    for name, kind in (("vanna.css", "text/css"), ("wallet.js", "javascript"), ("plan.js", "javascript"), ("connect.js", "javascript"),
+                       ("vanna-icon.png", "image/png")):
         r = web.get(f"/static/{name}")
         assert r.status_code == 200 and kind in r.headers["content-type"] and r.headers["x-content-type-options"] == "nosniff"
     lib = web.get("/static/solana-web3-1.98.4.min.js")
@@ -193,6 +289,7 @@ async def test_plan_tool_draws_lever_with_a_link_and_refuses_what_it_should(monk
     assert ask["ok"] is False and ask["options"]
     assert (await vanna_plan(action="lever", authority=WALLET, asset="SOL", leverage=9, borrow_asset="USDC"))["ok"] is False
     assert (await vanna_plan(action="lever", authority=WALLET, leverage=2))["error"] == "invalid_input"
+    assert (await vanna_plan(action="leverage_borrow", authority=WALLET, asset="SOL"))["error"] == "invalid_input"  # no multiple
     assert (await vanna_plan(action="unwind"))["error"] == "invalid_input"  # no wallet
     assert (await vanna_plan(action="status", authority=WALLET))["error"] == "invalid_input"
 
@@ -399,3 +496,32 @@ async def test_faucet_is_capped_per_wallet_per_day(monkeypatch) -> None:
     third = await s.consume_faucet(WALLET)
     assert not third.ok and third.to_error()["error"] == "limit_exceeded" and third.retry_after_s > 0
     assert (await s.consume_faucet(str(Keypair().pubkey()))).ok
+
+
+def test_plan_links_point_at_the_website_approve_page_when_configured(monkeypatch) -> None:
+    from mcp_server.web.setup import plan_link_base
+
+    s = get_settings()
+    monkeypatch.setattr(s, "approve_page_url", "")
+    monkeypatch.setattr(s, "sign_base_url", "http://127.0.0.1:8000")
+    assert plan_link_base(s) == "http://127.0.0.1:8000/plan"
+    monkeypatch.setattr(s, "approve_page_url", "https://test.solana.vanna.finance/approve/")
+    assert plan_link_base(s) == "https://test.solana.vanna.finance/approve"
+    monkeypatch.setattr(s, "approve_page_url", "http://localhost:3000/approve")
+    assert plan_link_base(s) == "http://localhost:3000/approve"
+    for bad in ("http://evil.example/approve", "https://test.solana.vanna.finance/approve?x=1", "javascript:alert(1)"):
+        monkeypatch.setattr(s, "approve_page_url", bad)
+        with pytest.raises(RuntimeError):
+            plan_link_base(s)
+
+
+async def test_a_website_link_names_the_website_in_the_approval(monkeypatch) -> None:
+    chain(monkeypatch, collateral={"SOL": 10}, debt={"USDC": 100.0}, wallet_tokens={"USDC": 300.0}, sol_balance=5.0)
+    net = Net()
+    eng = PlanEngine(MemoryRecordStore(), safety.get_safety(), net.send, net.statuses, lambda: BASE,
+                     link_base=lambda: "https://test.solana.vanna.finance/approve")
+    set_engine(eng)
+    drawn = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "USDC", "amount": "50"}])
+    assert drawn["plan_url"] == f"https://test.solana.vanna.finance/approve/{drawn['plan_id']}"
+    view = await eng.get(drawn["plan_id"])
+    assert "\nSite: test.solana.vanna.finance\n" in view["approval_message"] and view["site"] == "test.solana.vanna.finance"

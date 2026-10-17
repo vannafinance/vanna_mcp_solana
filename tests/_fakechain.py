@@ -140,6 +140,8 @@ class FakeChain:
         asset, amount = a.get("asset"), float(a.get("amount") or 0)
         usd = amount * self.prices.get(asset, 0)
         if action == "can_borrow":
+            if amount > self.pool_liquidity.get(asset, 0.0):  # the program checks the pool before health
+                return {"allowed": False, "reason": "insufficient pool liquidity"}
             c, d = self.c + usd, self.d + usd
             hf = c / d
             ok = hf > 1.10

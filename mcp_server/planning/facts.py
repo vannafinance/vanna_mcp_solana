@@ -213,11 +213,27 @@ class Sized:
     hf_after: float | None = None
     protocol_max: str | None = None
     reason: str = ""
+    # Which limit set the amount: "health" (the floor), "pool" (the pool's free liquidity) or "" (not sized).
+    limited_by: str = ""
 
 
-async def size_safe_borrow(wallet: str, asset: str, hint: HealthResult | None = None) -> Sized:
-    """Largest borrow that keeps HF >= the floor, verified through the program's own `can_borrow`."""
-    floor = get_settings().min_health_factor
+# A borrow sized to the pool's free liquidity leaves this share of it, so interest accrued between the read and the
+# borrow landing can't turn an exact fit into a refusal (the Copilot's POOL_HEADROOM).
+POOL_HEADROOM = 0.99
+
+
+async def pool_available(asset: str) -> float | None:
+    """Units of `asset` the Vanna pool can lend right now (the program's own `accounted_liquidity_assets`), or None."""
+    try:
+        return risk.num((await internal.call("vanna_earn_market", action="pool_stats", asset=asset)).get("available_liquidity"))
+    except ToolError:
+        return None
+
+
+async def size_safe_borrow(wallet: str, asset: str, hint: HealthResult | None = None, floor: float | None = None) -> Sized:
+    """Largest borrow that keeps HF >= the floor AND fits the pool's free liquidity, verified through the program's
+    own `can_borrow` (the Copilot's `sizeSafeBorrow`). Whichever limit binds is reported in `limited_by`."""
+    floor = max(get_settings().min_health_factor, floor or 0.0)
     h = hint or await load_health(wallet)
     if h.kind == "no_account":
         return Sized(False, reason="You don't have a margin account yet.")
@@ -228,6 +244,13 @@ async def size_safe_borrow(wallet: str, asset: str, hint: HealthResult | None = 
         return Sized(False, reason=f"The {asset} price is unavailable right now.")
     c, d = h.health.collateral_usd, h.health.debt_usd
     units = float(risk.usd_to_units(risk.max_borrow_usd(c, d, floor, True) * 0.995, price.usd, asset))
+    limited_by = "health"
+    available = await pool_available(asset)
+    if available is not None:
+        if not available > 0:
+            return Sized(False, reason=f"The {asset} pool has nothing available to borrow right now.", limited_by="pool")
+        if available * POOL_HEADROOM < units:
+            units, limited_by = available * POOL_HEADROOM, "pool"
     for _ in range(8):
         if not units > 0:
             break
@@ -245,11 +268,19 @@ async def size_safe_borrow(wallet: str, asset: str, hint: HealthResult | None = 
                 protocol_max = m.get("max_amount") if isinstance(m.get("max_amount"), str) else None
             except Exception:  # noqa: BLE001 — informational only
                 pass
-            return Sized(True, amount, float(amount) * price.usd, can.projected_hf, protocol_max)
-        if can and not can.allowed and can.reason and "breach" not in can.reason.lower():
+            return Sized(True, amount, float(amount) * price.usd, can.projected_hf, protocol_max, limited_by=limited_by)
+        reason = (can.reason or "").lower() if can else ""
+        # The two refusals that only mean "a bit less": the floor, and pool liquidity that moved since the read.
+        # Anything else (paused reserve, stale price, slot limit) is final and said as it is.
+        if can and not can.allowed and reason and "breach" not in reason and "liquidity" not in reason:
             return Sized(False, reason=can.reason)
+        if "liquidity" in reason:
+            limited_by = "pool"
         units *= 0.97
-    return Sized(False, reason=f"There is no room to borrow {asset} while keeping your health factor at {floor:.2f} or above.")
+    if limited_by == "pool":
+        return Sized(False, reason=f"The {asset} pool does not have enough free liquidity for a borrow right now.", limited_by="pool")
+    return Sized(False, reason=f"There is no room to borrow {asset} while keeping your health factor at {floor:.2f} or above.",
+                 limited_by="health")
 
 
 async def size_safe_withdraw(wallet: str, asset: str, hint: HealthResult | None = None) -> Sized:

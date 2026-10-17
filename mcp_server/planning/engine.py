@@ -32,6 +32,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from solders.transaction import VersionedTransaction
 
@@ -96,10 +97,22 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def site_of(base_url: str) -> str:
+    """The host the signing pages are served from (what the user should see in the address bar)."""
+    return urlparse(base_url).netloc or base_url
+
+
+def _site_line(rec: dict[str, Any]) -> str:
+    """The page's own address, so the message the wallet shows names where it is being signed. A plan saved before
+    this field existed keeps its original message (its approval must stay verifiable)."""
+    return f"Site: {rec['site']}\n" if rec.get("site") else ""
+
+
 def resume_message(rec: dict[str, Any]) -> str:
     """Signed to take over an approved plan in another browser (or after the page lost its run token)."""
     return (
         "Vanna Finance — continue this approved plan in this browser\n"
+        f"{_site_line(rec)}"
         f"Wallet: {rec['wallet']}\n"
         f"Plan: {rec['id']}\n"
         f"Digest: {rec['digest']}\n"
@@ -112,6 +125,7 @@ def approval_message(rec: dict[str, Any]) -> str:
     expires = datetime.fromtimestamp(rec["approval_expires_at"], tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return (
         "Vanna Finance — approve this plan\n"
+        f"{_site_line(rec)}"
         f"Wallet: {rec['wallet']}\n"
         f"Plan: {rec['id']}\n"
         f"Digest: {rec['digest']}\n"
@@ -126,12 +140,14 @@ def approval_message(rec: dict[str, Any]) -> str:
 class PlanEngine:
     def __init__(self, store: RecordStore, safety: Safety, sender: signing.Sender,
                  status_reader: signing.StatusReader, base_url: Callable[[], str],
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, link_base: Callable[[], str] | None = None) -> None:
         self.store = store
         self.safety = safety
         self._send = sender
         self._statuses = status_reader
         self._base_url = base_url
+        # Where plan links point (the website's approve page, or this server's /plan page by default).
+        self._link_base = link_base or (lambda: f"{self._base_url().rstrip('/')}/plan")
         self._clock = clock
 
     # ------------------------------------------------------------------ creation
@@ -150,7 +166,7 @@ class PlanEngine:
             steps.append(step)
         plan_id = secrets.token_urlsafe(32)
         rec = {
-            "id": plan_id, "kind": kind, "wallet": wallet, "summary": drawn["summary"],
+            "id": plan_id, "kind": kind, "wallet": wallet, "site": site_of(self._link_base()), "summary": drawn["summary"],
             "warnings": drawn.get("warnings", []), "simulation": drawn.get("simulation"),
             "hf_floor": drawn["hf_floor"], "steps": steps, "digest": plan_digest(wallet, drawn["hf_floor"], drawn["steps"]),
             "status": "awaiting_approval", "created_at": now,
@@ -183,7 +199,7 @@ class PlanEngine:
         await self.store.put(f"plan:{rec['id']}", rec, remaining)
 
     def plan_url(self, plan_id: str) -> str:
-        return f"{self._base_url().rstrip('/')}/plan/{plan_id}"
+        return f"{self._link_base().rstrip('/')}/{plan_id}"
 
     def view(self, rec: dict[str, Any]) -> dict[str, Any]:
         """What is safe to show anyone holding the link and what the model needs: no transactions, no secrets."""
@@ -200,7 +216,7 @@ class PlanEngine:
                  "error": s.get("error")}
                 for i, s in enumerate(rec["steps"])
             ],
-            "plan_url": self.plan_url(rec["id"]),
+            "plan_url": self.plan_url(rec["id"]), "site": rec.get("site") or site_of(self._link_base()),
             "approval_message": approval_message(rec) if rec["status"] == "awaiting_approval" else None,
             "resume_message": resume_message(rec) if rec["status"] in ("approved", "running", "paused") else None,
         }

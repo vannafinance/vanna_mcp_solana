@@ -25,30 +25,17 @@ async def vanna_margin_status(
     asset: str | None = None,
     amount: str | None = None,
 ) -> dict[str, Any]:
-    """Read-only margin account position and risk data.
+    """Low-level margin reads, mirroring the program's own checks (the 1.10 liquidation line).
 
-    Args:
-        action: "collateral" — all open collateral positions, USD-priced.
-            "debt" — all outstanding borrows, USD-priced. "can_borrow" — would
-            borrowing `amount` of `asset` stay within the 1.10 health-factor
-            threshold and pass every other gate (operating mode, reserve
-            status, caps, slot limit)? Fails closed. "can_withdraw" — same
-            question for withdrawing `amount` of `asset`. "max_borrow" /
-            "max_withdraw" — the largest `asset` amount that still passes that
-            same check (closed-form headroom, then verified); use these for
-            sizing so "max" in chat equals what the write will accept.
-            "liquidation_snapshot"
-            — is this account liquidatable (debt > 0, health factor <= 1.10,
-            fresh prices)? Liquidation is whole-account: a liquidator repays
-            every debt in full and receives every collateral balance (no close
-            factor, no bonus); `estimated_reward_usd` is collateral minus debt.
-            Eligibility read only; no execution path here.
-        authority: Base58 wallet address (the margin account's owner).
-        asset: Required for "can_borrow"/"can_withdraw"/"max_borrow"/"max_withdraw".
-        amount: Human-readable amount, required for "can_borrow"/"can_withdraw".
+    For "how much can I safely borrow / withdraw" use vanna_risk capacity (the product's 1.15 floor and the pool); the
+    max_* actions here are the program's looser limits, for reference only.
 
-    On error: {"error": "contract_error" | "invalid_input" | "account_not_found"
-        | "unpricable_position", "message": "..."}
+    Actions:
+      collateral / debt — every position, USD-priced.
+      can_borrow / can_withdraw — would `amount` of `asset` pass the program's checks.
+      max_borrow / max_withdraw — the program's limit for `asset` (1.10, not the safe floor).
+      liquidation_snapshot — is the account liquidatable now (read only; liquidating is refused).
+    authority: the wallet (omit when logged in).
     """
     ctx = get_context()
     authority_pubkey = Pubkey.from_string(authority)

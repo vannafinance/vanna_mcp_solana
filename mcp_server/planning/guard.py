@@ -108,12 +108,16 @@ def predict_spend_usd(args: dict[str, Any]) -> float:
     from vanna_core.contracts.predict import validate_legs
     from mcp_server.dispatchers.predict import _legs
 
-    legs = validate_legs(_legs(args.get("legs"), args.get("market"), args.get("outcome"), args.get("side"), args.get("amount")))
-    return float(sum(leg["amount"] for leg in legs if leg["side"] == "buy"))
+    raw = _legs(args.get("legs"), args.get("market"), args.get("outcome"), args.get("side"), args.get("amount"))
+    # Only buys are valued; a sell or deposit may say "all" / "50%" (resolved from the holding when the trade is built).
+    buys = [leg for leg in raw if isinstance(leg, dict) and str(leg.get("side") or "buy").lower() == "buy"]
+    return float(sum(leg["amount"] for leg in validate_legs(buys))) if buys else 0.0
 
 
 def check_amounts(tool: str, args: dict[str, Any]) -> str | None:
     """A typed amount that cannot be used as written is refused here, never rounded or reinterpreted."""
+    if tool == "vanna_predict":
+        return None  # Predict legs are checked by their own validator (6 decimals, CASH bounds, "all"/"N%" on sells)
     pairs: list[tuple[Any, str | None]] = [
         (args.get("amount"), args.get("asset") or args.get("underlying") or args.get("from_asset")),
         (args.get("deposit_amount"), args.get("deposit_asset")),

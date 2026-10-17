@@ -57,7 +57,10 @@ def _policy() -> dict[str, Any]:
             "Health factor = margin collateral USD / debt USD. At or below 1.10 the account can be liquidated; with no debt there is no health factor.",
             "Actions that can lower health (borrow, withdraw, margin swap) are refused below the 1.15 floor and flagged when close to it.",
             "Borrowed funds stay in the margin account and count as collateral.",
-            "Amounts are exact decimal strings; an amount with more decimals than the token has is refused, never rounded.",
+            "A typed amount is an exact decimal string; one with more decimals than the token has is refused, never rounded.",
+            "Amounts the server sizes (vanna_plan): all / max, N%, usd:N, leverage:N (borrow), health:H, previous, out:N (swap).",
+            "Deposit X and borrow Y at Nx (vanna_plan leverage_borrow): borrow (N-1) x the deposit and keep it in the margin account. No swap.",
+            "Lever X Nx on its own (vanna_plan lever): borrow a stable and swap it into X inside the margin account (a leveraged long).",
         ],
     }
 
@@ -83,8 +86,9 @@ async def vanna_risk(
               program's own pre-flight. `protocol_max` is the looser program-level maximum (1.10) for reference only.
             "what_if" — "can I borrow 500 USDC?" / "what will my HF be if I withdraw 1 SOL?" / "how much to repay to reach
               HF 2?": `op` borrow|withdraw|repay, `asset`, and an `amount` OR a `target_hf`. Nothing is built.
-            "max_leverage" — the highest leverage on `amount` of `asset` (omit = the existing margin balance) that holds the
-              floor at the swap's worst price, for a deposit-if-needed lever; plus a table of 1.5x..10x.
+            "max_leverage" — "how much leverage can I take on 10 SOL?": the highest multiple at the floor for both
+              vanna_plan actions — lever (borrow and swap into `asset`) and leverage_borrow (deposit `amount`, borrow
+              and keep it) — plus a 1.5x..10x table with the health factor each leaves.
             "liquidation_distance" — how far collateral can fall (as a %) before the account reaches 1.10.
             "funding_check" — can the wallet pay for the `steps` of a plan (same step shape as vanna_plan custom).
             "policy" — the product's rules: floor, limits, assets, what is refused. Read it before advising.
@@ -147,6 +151,8 @@ async def vanna_risk(
             row: dict[str, Any] = {"asset": a}
             if s.ok:
                 row.update(safe_amount=s.amount, usd=round(s.usd, 2), health_factor_after=s.hf_after, protocol_max=s.protocol_max)
+                if s.limited_by == "pool":
+                    row["limited_by"] = "pool liquidity (the health floor would allow more)"
             else:
                 row.update(safe_amount="0", reason=s.reason)
             sized.append(row)
@@ -237,26 +243,43 @@ async def vanna_risk(
         if p is None:
             return {"error": "price_unavailable", "message": f"The {a} price is unavailable right now."}
         margin_units = health.collateral_row(a).units if health.collateral_row(a) else 0.0
+        parsed: str | None = None
         if amount is not None:
             parsed, issue = risk.parse_amount(amount, a)
             if issue:
                 return {"error": "invalid_input", "message": issue.message}
-            equity_units = float(parsed)
-            deposit_units = max(0.0, equity_units - margin_units)
-        else:
-            equity_units, deposit_units = margin_units, 0.0
-        if not equity_units > 0:
-            return {"error": "invalid_input", "message": f"There is no {a} to lever. Pass an 'amount' to deposit from the wallet."}
-        top = risk.max_leverage(collateral_usd=c, debt_usd=d, equity_usd=equity_units * p.usd,
-                                deposit_usd=deposit_units * p.usd, floor=floor, slippage_bps=risk.DEFAULT_SLIPPAGE_BPS)
+        # Two products, two bases (the same as the two vanna_plan actions):
+        #  lever            "lever 10 SOL 2x": `amount` is the units levered (deposited only past what is held); the borrow
+        #                   is swapped into the asset, sized at the swap's worst price.
+        #  leverage_borrow  "deposit 10 SOL and borrow at 2x": `amount` is a NEW deposit and the base; the borrow is kept
+        #                   in the margin account, no swap.
+        lever_units = float(parsed) if parsed else margin_units
+        lever_deposit = max(0.0, lever_units - margin_units)
+        borrow_units = float(parsed) if parsed else margin_units
+        borrow_deposit = float(parsed) if parsed else 0.0
+        if not lever_units > 0:
+            return {"error": "invalid_input", "message": f"There is no {a} in the margin account. Pass an 'amount' to deposit from the wallet."}
+
+        def sized(units: float, deposit: float, slippage: int, lev: float) -> risk.LeverSize:
+            return risk.size_lever(collateral_usd=c, debt_usd=d, equity_usd=units * p.usd, deposit_usd=deposit * p.usd,
+                                   leverage=lev, floor=floor, slippage_bps=slippage)
+
+        top_lever = risk.max_leverage(collateral_usd=c, debt_usd=d, equity_usd=lever_units * p.usd, deposit_usd=lever_deposit * p.usd,
+                                      floor=floor, slippage_bps=risk.DEFAULT_SLIPPAGE_BPS)
+        top_borrow = risk.max_leverage(collateral_usd=c, debt_usd=d, equity_usd=borrow_units * p.usd, deposit_usd=borrow_deposit * p.usd,
+                                       floor=floor, slippage_bps=0)
         table = []
         for lev in (1.5, 2, 3, 4, 5, 6, 8, 10):
-            s = risk.size_lever(collateral_usd=c, debt_usd=d, equity_usd=equity_units * p.usd, deposit_usd=deposit_units * p.usd,
-                                leverage=lev, floor=floor)
-            table.append({"leverage": lev, "allowed": s.ok, "worst_case_hf": s.hf_after if s.ok else None})
-        return {"asset": a, "equity_units": risk.floor_decimals(equity_units, risk.token_decimals(a)), "floor": floor,
-                "max_leverage": round(math_floor_1(top), 1), "table": table,
-                "note": "Sized with the swap at its worst allowed price (1% slippage) so the floor holds even on a bad fill."}
+            lv, bw = sized(lever_units, lever_deposit, risk.DEFAULT_SLIPPAGE_BPS, lev), sized(borrow_units, borrow_deposit, 0, lev)
+            table.append({"leverage": lev, "allowed": lv.ok, "worst_case_hf": lv.hf_after if lv.ok else None,
+                          "deposit_borrow_allowed": bw.ok, "deposit_borrow_hf": bw.hf_after if bw.ok else None})
+        # `max_leverage` / `allowed` / `worst_case_hf` keep their meaning (lever); the deposit + borrow figures are added.
+        return {"asset": a, "equity_units": risk.floor_decimals(lever_units, risk.token_decimals(a)), "floor": floor,
+                "max_leverage": round(math_floor_1(top_lever), 1),
+                "max_leverage_deposit_borrow": round(math_floor_1(top_borrow), 1), "table": table,
+                "note": "max_leverage: vanna_plan lever (borrow a stable, swap it into the asset; sized at the swap's worst "
+                        "price). max_leverage_deposit_borrow: vanna_plan leverage_borrow (deposit `amount`, borrow (N-1) x it "
+                        "and keep it; no swap). Pool liquidity and the per-action limit can lower these; the plan says so."}
 
     return {"error": "invalid_input", "message": f"Unknown action {action!r} for vanna_risk."}
 

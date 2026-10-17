@@ -33,43 +33,21 @@ async def vanna_margin_trade(
     borrow_asset: str | None = None,
     borrow_amount: str | None = None,
 ) -> dict[str, Any]:
-    """Build an unsigned margin-account collateral/borrow/repay transaction.
+    """One margin action with an EXACT amount the user typed: deposit, withdraw, borrow, repay.
 
-    Args:
-        action: "deposit" — deposit `amount` of `asset` as collateral. "withdraw"
-            — withdraw `amount` of `asset` (fails closed if it would breach the
-            1.10 health threshold). "close_collateral" — reclaim the rent of an
-            emptied collateral vault. "borrow" — borrow `amount` of `asset` into the
-            margin vault (the first borrow of an asset opens its debt position itself).
-            "close_debt" — reclaim the rent of a fully repaid debt position. "repay" —
-            repay from the margin account's own vault (`amount`, or all debt
-            if `repay_all`). "repay_from_wallet" — repay from the OWNER's wallet: the
-            tokens are deposited into the margin vault and repaid in the same
-            transaction (a repay-all deposits the debt plus a 0.2% accrual buffer,
-            which stays as collateral). Only the owner can repay now, so `payer`
-            must be the owner.
-        authority: Base58 wallet address that owns the margin account.
-        asset: Required for every action except "repay_from_wallet" doesn't
-            need `authority` to sign (see `payer`).
-        amount: Human-readable amount; required for deposit/withdraw/borrow,
-            optional for repay/repay_from_wallet when `repay_all=True`.
-        repay_all: For "repay"/"repay_from_wallet" — repay the full
-            outstanding debt instead of a capped `amount`.
-        payer: For "repay_from_wallet" only — the wallet paying; must equal `authority`.
-        deposit_asset, deposit_amount, borrow_asset, borrow_amount: For
-            "deposit_and_borrow" only — deposit `deposit_amount` of
-            `deposit_asset`, then borrow `borrow_amount` of `borrow_asset`
-            (same or different asset), in one transaction.
+    Any amount the server must size — "max", "50%", "$500", "3x leverage", "to health 2", "deposit and borrow at 2x" —
+    goes to vanna_plan instead (lever or custom). Never compute an amount for this tool.
 
-    "close_position" takes no extra args — it re-reads real on-chain state
-    on every call and returns the single next applicable transaction (repay
-    all debt, then withdraw each collateral position one at a time, then
-    reclaim the rent of any empty vault / closed debt position, then close
-    the margin account) — call it repeatedly until `summary.next_step == "done"`.
-
-    Returns: the schema-v1 write envelope.
-    On error: {"error": "contract_error" | "invalid_input" | "account_not_found"
-        | "simulation_failed", "message": "..."}
+    Actions:
+      deposit / withdraw / borrow — `asset`, `amount`. Borrowed funds stay in the margin account as collateral.
+      repay — from the margin balance: `amount`, or repay_all=true.
+      repay_from_wallet — from the owner's wallet (payer = the owner): `amount` or repay_all (adds a 0.2% buffer
+        that stays as collateral).
+      deposit_and_borrow — deposit_asset + deposit_amount, borrow_asset + borrow_amount, in one transaction.
+      close_collateral / close_debt — reclaim the rent of an emptied vault / repaid debt position.
+      close_position — the single next step to empty and close the account; call again until
+        summary.next_step == "done".
+    authority: the wallet (omit when logged in). Returns an unsigned transaction and a link for the user to sign.
     """
     ctx = get_context()
     trade = ctx.margin_trade

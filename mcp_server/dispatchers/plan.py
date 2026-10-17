@@ -14,34 +14,35 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from mcp_server import internal
 from mcp_server.error_handling import tool_safe
-from mcp_server.planning import facts, strategies
+from mcp_server.planning import amounts, facts, strategies
 from mcp_server.planning.engine import PlanError, get_engine
 from mcp_server.planning.funding import check_funding
-from mcp_server.planning.preflight import OUT_PREFIX, resolve_percent, validate_steps
+from mcp_server.planning.preflight import OUT_PREFIX, validate_steps
 from vanna_core import risk
 from vanna_core.config import get_settings
 
-PlanAction = Literal["lever", "unwind", "swap_exact_out", "custom", "status", "cancel"]
+PlanAction = Literal["lever", "leverage_borrow", "unwind", "swap_exact_out", "custom", "status", "cancel"]
 
 
 def _error(code: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"error": code, "message": message, **extra}
 
 
-async def _normalize_custom(wallet: str, raw_steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Model-friendly steps -> frozen specs. Amounts are validated, percentages resolved once, never rounded."""
+async def _normalize_custom(wallet: str, raw_steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None, list[str]]:
+    """Model-friendly steps -> frozen specs. Every amount form (`planning/amounts.py`) is resolved here by the server:
+    exact, all, percent, usd, leverage, health target, previous, out. Returns (steps, problem, notes)."""
     steps: list[dict[str, Any]] = []
+    notes: list[str] = []
+    book = amounts.Book(wallet)
     for i, s in enumerate(raw_steps):
         if not isinstance(s, dict) or not isinstance(s.get("op"), str):
-            return None, f"Step {i + 1} needs an 'op'."
+            return None, f"Step {i + 1} needs an 'op'.", notes
         op = s["op"]
         if op == "report":
             steps.append(strategies.report_step())
             continue
         asset = s.get("asset")
-        amount = s.get("amount")
         slots: dict[str, Any] = {}
         if op == "swap":
             slots = {"to_asset": s.get("to_asset"), "mode": "margin" if s.get("source") == "margin" else "wallet",
@@ -50,34 +51,14 @@ async def _normalize_custom(wallet: str, raw_steps: list[dict[str, Any]]) -> tup
                 slots["provider"] = s["provider"]
         if op == "repay":
             slots = {"source": "margin" if s.get("source") == "margin" else "wallet"}
-        if isinstance(amount, str) and amount.strip().lower() in ("all", "max", "maximum"):
-            amount = "all"
-        elif isinstance(amount, str) and amount.strip().endswith("%"):
-            try:
-                pct = float(amount.strip()[:-1])
-            except ValueError:
-                return None, f"Step {i + 1}: {amount!r} is not a valid percentage."
-            if not 0 < pct <= 100:
-                return None, f"Step {i + 1}: percentages must be between 0 and 100."
-            if pct >= 100:
-                amount = "all"
-            else:
-                r = await resolve_percent(wallet, op, str(asset), pct, margin=op == "swap" and slots.get("mode") == "margin")
-                if not r["ok"]:
-                    return None, f"Step {i + 1}: {r['message']}"
-                amount = r["amount"]
-        elif isinstance(amount, str) and amount.startswith(OUT_PREFIX):
-            parsed, issue = risk.parse_amount(amount[len(OUT_PREFIX):], slots.get("to_asset"))
-            if issue:
-                return None, f"Step {i + 1}: {issue.message}"
-            amount = OUT_PREFIX + str(parsed)
-        elif amount is not None:
-            parsed, issue = risk.parse_amount(amount, asset if asset in facts.PRODUCT_ASSETS else None)
-            if issue:
-                return None, f"Step {i + 1}: {issue.message}"
-            amount = parsed
-        steps.append(strategies.write_step(op, asset, amount, **slots))
-    return steps, None
+        r = await amounts.resolve(book, op, asset, s.get("amount"), slots, steps, s)
+        if not r.ok:
+            return None, f"Step {i + 1}: {r.message}", notes
+        notes.extend(r.notes)
+        step = strategies.write_step(op, asset, r.amount, **slots)
+        steps.append(step)
+        await book.apply(step)
+    return steps, None, notes
 
 
 @tool_safe
@@ -99,39 +80,47 @@ async def vanna_plan(
     steps: list[dict[str, Any]] | None = None,
     plan_id: str | None = None,
 ) -> dict[str, Any]:
-    """Draw, show and run multi-step plans with exact amounts, a worst-case health factor and the user's approval.
+    """Plan and run anything with more than one step, or any amount the server has to size. The main write tool.
 
-    Use this for anything beyond a single plain action: leverage, closing positions, "swap SOL to get 100 USDC", or a
-    chain of steps. The numbers come from this tool, never from you: do not compute amounts yourself.
+    You never compute an amount: pass the user's words in the amount vocabulary below and the server sizes it.
+
+    Pick the action from what the user says:
+      DEPOSIT + BORROW at a leverage: "deposit 10 SOL and borrow USDC at 3x" / "take a 2x loan of USDC against
+        depositing 1 JitoSOL" / "borrow USDC at 2x against my SOL"
+          -> action="leverage_borrow": asset, amount (to deposit now; omit = borrow against what is already in margin),
+             leverage, borrow_asset. It deposits, then borrows (N-1) x the deposit's value, which STAYS in the margin
+             account. NO swap.
+      LEVER an asset on its own: "lever my SOL 2x" / "go 3x long SOL" / "lever 5 JitoSOL 3x"
+          -> action="lever": asset, leverage, borrow_asset (a stable), amount (units of asset to lever; omit = what is
+             in margin; deposited first if not there). It borrows a stable and SWAPS it into the asset (a leveraged long),
+             sized so the floor holds at the swap's worst price.
+      Ask for borrow_asset only if the user named none.
+      "close everything" / "exit my positions" -> action="unwind" (scope all | margin | earn | farm).
+      "swap SOL to get 100 USDC" -> action="swap_exact_out".
+      any other chain (up to 8 steps) -> action="custom".
+      "is it done?" -> action="status"; "cancel it" -> action="cancel" (no signature needed).
+
+    Amount vocabulary (custom steps; leverage_borrow's `amount`):
+      "10" exact | "all" / "max" (a borrow or withdraw: the most the health floor and the pool allow) | "50%" |
+      "usd:500" | "leverage:3" (borrow only; base = this plan's deposits, else `base_asset`+`base_amount` on the step,
+      else the account's equity) | "health:2" (borrow / withdraw / repay sized to land on that health factor) |
+      "previous" (the step before's amount) | "out:100" (swap: receive at least 100).
 
     Args:
-        action:
-            "lever" — "lever my SOL 2x": deposit `asset` if it is not already margin collateral, borrow a stable
-              (`borrow_asset` USDC or USDT; if omitted the tool returns the choices — ask the user), swap it into
-              `asset` inside the margin account, report the final health factor. Sized so health holds the floor even
-              at the swap's worst price. `amount` is units of `asset` to lever (omit = the existing margin balance);
-              `min_hf` raises the floor (never lowers it); `leverage` is the multiple (above 1, at most 10).
-            "unwind" — "close everything": redeem Kamino, repay every debt (swapping other collateral in if short),
-              withdraw collateral, redeem Earn — in an order where health only improves. `scope`: all | margin | earn
-              | farm; `close_account=true` also closes the emptied margin account (only when asked).
-            "swap_exact_out" — "swap SOL to get 100 USDC": the input is sized from live quotes so the minimum received
-              covers `receive_amount` of `to_asset`; `source` "margin" swaps collateral inside the margin account,
-              "wallet" swaps from the wallet.
-            "custom" — a chain you composed (at most 8 steps). `steps` is a list of {op, asset, amount, to_asset?,
-              source?, provider?}: provider ("jupiter" | "titan") picks a swap's route (omitted = the better quote); op is one of create_account, earn_supply, earn_redeem, deposit, withdraw, borrow, repay, swap,
-              farm_deposit, farm_redeem, close_account, report. `amount` is an exact decimal string, "all", a percent
-              like "50%", or for swaps "out:100" (receive at least 100). repay `source` is "wallet" or "margin".
-            "status" — the plan's state and each step's (pending, built, submitted, confirmed, skipped, failed,
-              uncertain). Poll this after the user starts signing; report only confirmed steps as done.
-            "cancel" — stop a plan that has not finished.
-        authority: The wallet. Optional when logged in with a wallet: it is the logged-in wallet.
-        plan_id: For status/cancel.
+        action: leverage_borrow | lever | unwind | swap_exact_out | custom | status | cancel.
+        authority: The wallet. Omit when logged in with a wallet.
+        asset, amount, leverage, borrow_asset, min_hf: for leverage_borrow and lever. min_hf raises the 1.15 floor.
+        scope, close_account: for unwind (close_account only when the user asks to close the account).
+        from_asset, to_asset, receive_amount, source ("wallet" | "margin"), slippage_bps: for swap_exact_out.
+        steps: for custom, [{op, asset, amount, to_asset?, source?, provider?, base_asset?, base_amount?}]. op: deposit,
+            withdraw, borrow, repay (source wallet | margin), swap (to_asset; source margin = inside the margin
+            account), earn_supply, earn_redeem, farm_deposit, farm_redeem, create_account, close_account, report.
+        plan_id: for status / cancel.
 
-    Returns, for a drawn plan: {ok, plan_id, summary, steps, warnings, simulation (hf before/after), hf_floor, digest,
-        approve_within_seconds, plan_url, approval_message}. Tell the user the summary and warnings, then ask them to
-        open `plan_url`: they review and approve with their wallet there, and sign each step. A plan is valid for
-        approval for 5 minutes, then it must be drawn again from fresh data.
-    A refusal: {ok: false, message, options?} — explain it plainly; never work around it.
+    Returns {ok, summary, steps, warnings, simulation (health before / after), plan_url, ...}. Tell the user the summary,
+    the health factor and the warnings, then send them to plan_url to approve and sign with their own wallet. Report a
+    step as done only when status says confirmed. A refusal is {ok: false, message, options?}: say it plainly and offer
+    the options it gives; do not work around it.
     """
     engine = get_engine()
     settings = get_settings()
@@ -153,6 +142,10 @@ async def vanna_plan(
         if asset is None or leverage is None:
             return _error("invalid_input", "'asset' and 'leverage' are required for action=lever")
         drawn = await strategies.plan_lever(authority, asset, float(leverage), borrow_asset, amount, min_hf)
+    elif action == "leverage_borrow":
+        if leverage is None:
+            return _error("invalid_input", "'leverage' (the multiple, e.g. 2) is required for action=leverage_borrow")
+        drawn = await strategies.plan_leverage_borrow(authority, asset, float(leverage), borrow_asset, amount, min_hf)
     elif action == "unwind":
         drawn = await strategies.plan_unwind(authority, scope, close_account)
     elif action == "swap_exact_out":
@@ -171,7 +164,7 @@ async def vanna_plan(
     elif action == "custom":
         if not steps:
             return _error("invalid_input", "'steps' is required for action=custom")
-        norm, problem = await _normalize_custom(authority, steps)
+        norm, problem, notes = await _normalize_custom(authority, steps)
         if problem or norm is None:
             return {"ok": False, "message": problem}
         problem = validate_steps(norm)
@@ -181,13 +174,14 @@ async def vanna_plan(
         if short:
             return {"ok": False, "message": short}
         drawn = {"ok": True, "summary": "Plan: " + ", then ".join(strategies.label_for(s)[0].lower() + strategies.label_for(s)[1:] for s in norm) + ".",
-                 "steps": norm, "warnings": strategies.plan_warnings(norm), "simulation": None, "hf_floor": settings.min_health_factor}
+                 "steps": norm, "warnings": strategies.plan_warnings(norm, notes), "simulation": await strategies.simulate(authority, norm),
+                 "hf_floor": settings.min_health_factor}
     else:
         return _error("invalid_input", f"Unknown action {action!r} for vanna_plan.")
 
     if not drawn.get("ok"):
         return drawn
-    if action in ("lever", "unwind", "swap_exact_out"):
+    if action in ("lever", "leverage_borrow", "unwind", "swap_exact_out"):
         short = await check_funding(authority, drawn["steps"])
         if short:
             return {"ok": False, "message": short}

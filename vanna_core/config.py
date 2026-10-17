@@ -273,6 +273,14 @@ class VannaSettings(BaseSettings):
     # Origin of the pages above as the user's browser reaches it (e.g. http://127.0.0.1:8000 locally). Defaults to
     # EXTERNAL_BASE_URL, else the local bind address.
     sign_base_url: str = ""
+    # Where plan links send the user: the Vanna website's approve page (e.g. https://test.solana.vanna.finance/approve),
+    # which proxies this server's /api/plan/* and signs with the site's own wallet connection. A link is
+    # `{APPROVE_PAGE_URL}/{plan_id}`. Empty = this server's own /plan/{id} page (kept as the fallback either way).
+    approve_page_url: str = ""
+    # Shared with the website's plan proxy (its PLAN_PROXY_SECRET). Every website user reaches /api/plan/* from the
+    # website's own address, so with this header matching, the per-IP plan limit counts the end user's address the
+    # website forwards instead. Never trusted without the secret. A secret: Secret Manager / .env only.
+    plan_proxy_secret: str = ""
     sign_intent_ttl_seconds: int = Field(default=900, ge=60)
 
     # Per-caller token bucket on POST /mcp (mcp_server/rate_limit.py).
