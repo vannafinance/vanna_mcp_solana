@@ -40,7 +40,7 @@ before the change keep verifying until they expire (15 minutes).
 ```
 gcloud builds submit . --project=solana-mcp --region=us-central1 --config=<build-only config> --substitutions=_TAG=<tag> --service-account=projects/solana-mcp/serviceAccounts/vanna-mcp-builder@solana-mcp.iam.gserviceaccount.com
 
-gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --image=us-central1-docker.pkg.dev/solana-mcp/vanna-credit/mcp-solana:<tag> --service-account=vanna-mcp-public@solana-mcp.iam.gserviceaccount.com --env-vars-file=deploy/public-service.env.yaml --set-secrets=OAUTH_SIGNING_KEY_PEM=vanna-mcp-oauth-signing-key:latest --allow-unauthenticated --ingress=all --min-instances=1 --max-instances=5 --timeout=300 --cpu-boost --quiet
+gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --image=us-central1-docker.pkg.dev/solana-mcp/vanna-credit/mcp-solana:<tag> --service-account=vanna-mcp-public@solana-mcp.iam.gserviceaccount.com --env-vars-file=deploy/public-service.env.yaml --set-secrets=OAUTH_SIGNING_KEY_PEM=vanna-mcp-oauth-signing-key:latest,PLAN_PROXY_SECRET=plan-proxy-secret:latest --allow-unauthenticated --ingress=all --min-instances=1 --max-instances=5 --timeout=300 --cpu-boost --quiet
 ```
 
 The build-only config is the one the private service uses (`build` + `push`, `logging: CLOUD_LOGGING_ONLY`).
@@ -50,13 +50,20 @@ issued token names it, and the connect / sign pages are served on it. Today it i
 
 ## Approvals on the Vanna website (`APPROVE_PAGE_URL`)
 
-Plan links can open on the website's approve page instead of this service's own `/plan/<id>` (which stays as the
-fallback). Deploy the website with the page first (`MCP_PLAN_API_URL` = this service's origin, `PLAN_PROXY_SECRET` from
-Secret Manager), then point the links at it:
+Plan links open on the website's approve page instead of this service's own `/plan/<id>` (which stays as the
+fallback). Live since 2026-10-21: `APPROVE_PAGE_URL` is in `deploy/public-service.env.yaml`; the website has
+`MCP_PLAN_API_URL` = this service's origin. Both services mount `PLAN_PROXY_SECRET` from a Secret Manager secret
+`plan-proxy-secret` (one value, a copy in each project: `solana-mcp` read by `vanna-mcp-public@`,
+`vanna-credit-solana-test` read by `vanna-credit-runtime@`), so the plan rate limit counts each website user, not the
+website. A mismatch is harmless (the limit falls back to the website's address). To set it up again:
 
 ```
+# website first (the page answers 503 without it), then this service
+gcloud run services update vanna-credit-solana-test --project=vanna-credit-solana-test --region=us-central1 --update-env-vars=MCP_PLAN_API_URL=https://vanna-mcp-solana-public-398807408840.us-central1.run.app
 gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=APPROVE_PAGE_URL=https://test.solana.vanna.finance/approve
-# and the shared secret, from Secret Manager, on both this service and the website: PLAN_PROXY_SECRET
+# same random value into plan-proxy-secret in both projects (gcloud secrets create ... --data-file), grant
+# roles/secretmanager.secretAccessor to each runtime account, then on both services:
+#   --update-secrets=PLAN_PROXY_SECRET=plan-proxy-secret:latest
 ```
 
 The website's access gate applies to the page (a visitor without the code sees the gate first).
