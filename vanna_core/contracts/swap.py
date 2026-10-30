@@ -59,8 +59,9 @@ MARGIN_SWAP_COMPUTE_UNITS = EXEC_COMPUTE_UNITS
 # The core program also runs out of heap on long routes next to the position and oracle segments, so the
 # app asks Jupiter for at most 20 accounts (`MARGIN_SWAP_MAX_ACCOUNTS`); this list ends there too.
 MARGIN_ROUTE_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 40, 32, 26, 20)
-# A Titan margin route that doesn't fit is quoted again this many times (its route can change between quotes).
-TITAN_REQUOTES = 2
+# Titan route account caps for a margin swap (`accountsLimitTotal`), tried in order until the route fits one
+# transaction with the margin instruction, as MARGIN_ROUTE_ACCOUNT_CAPS does for Jupiter. None = Titan's own route.
+TITAN_MARGIN_ACCOUNT_CAPS: tuple[int | None, ...] = (None, 32, 24, 20)
 
 Provider = Literal["jupiter", "titan"]
 PROVIDERS: tuple[str, ...] = ("jupiter", "titan")
@@ -158,6 +159,24 @@ class SwapContract:
             raise jerr or ContractCallError("No route found")
         return "jupiter", None
 
+    async def _titan_margin_fitting(
+        self, authority: Pubkey, from_asset, to_asset, raw_amount: int, slippage_bps: int, registry, quote: TitanQuote
+    ) -> TitanQuote | None:
+        """The first Titan route that fits one margin transaction: the quote given, then re-quotes under each
+        TITAN_MARGIN_ACCOUNT_CAPS cap. None when no cap gives a route that fits."""
+        margin = str(margin_pda(authority, self._client.program_id)[0])
+        for cap in TITAN_MARGIN_ACCOUNT_CAPS:
+            if cap is not None:
+                try:
+                    quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, margin, slippage_bps, "margin", max_accounts=cap)
+                except Exception:  # noqa: BLE001 - a tight cap can leave Titan with no route
+                    continue
+            if await self._titan_margin_fits(authority, from_asset, to_asset, registry, quote):
+                if cap is not None:
+                    logger.info("Titan margin route fits under accountsLimitTotal=%s", cap)
+                return quote
+        return None
+
     async def _titan_margin_fits(self, authority: Pubkey, from_asset, to_asset, registry, quote: TitanQuote) -> bool:
         """Whether this Titan route fits one margin transaction (built, not simulated). Unknown (an error) counts as
         fitting: the build reports it with its own reason."""
@@ -200,9 +219,12 @@ class SwapContract:
         if authority is not None:
             user_key = str(margin_pda(authority, self._client.program_id)[0]) if mode == "margin" else str(authority)
         jq, tq, titan_status, jerr = await self._quotes(from_asset, to_asset, raw_amount, slippage_bps, user_key, mode)
-        if tq is not None and mode == "margin" and authority is not None and not await self._titan_margin_fits(authority, from_asset, to_asset, registry, tq):
-            # Offered only if it can be built: Titan's route plus the margin instruction must fit one transaction.
-            tq, titan_status = None, "too-large"
+        if tq is not None and mode == "margin" and authority is not None:
+            # Offered only if it can be built: Titan's route plus the margin instruction must fit one transaction. A
+            # route that doesn't is quoted again with a tighter account cap (a little price, never safety).
+            tq = await self._titan_margin_fitting(authority, from_asset, to_asset, raw_amount, slippage_bps, registry, tq)
+            if tq is None:
+                titan_status = "too-large"
         providers: list[dict] = []
         if jq is not None:
             providers.append({
@@ -463,12 +485,15 @@ class SwapContract:
         missing atlas token accounts first, then the margin calls Titan; Titan's own minimum out bounds the price.
 
         Titan's route can change from one quote to the next. A route that doesn't fit one transaction with the margin
-        instruction is quoted again (at most TITAN_REQUOTES more times) before the swap is refused."""
+        instruction is quoted again under each TITAN_MARGIN_ACCOUNT_CAPS cap before the swap is refused."""
         full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
-        for _ in range(TITAN_REQUOTES):
+        for cap in TITAN_MARGIN_ACCOUNT_CAPS[1:]:
             if fits:
                 break
-            quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, str(margin), slippage_bps, "margin")
+            try:
+                quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, str(margin), slippage_bps, "margin", max_accounts=cap)
+            except ContractCallError:  # a tight cap can leave Titan with no route
+                continue
             full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
         if not fits:
             raise ContractCallError(

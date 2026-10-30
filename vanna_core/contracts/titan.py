@@ -72,7 +72,10 @@ class TitanClient:
         user_public_key: str,
         slippage_bps: int,
         mode: Literal["wallet", "margin"],
+        max_accounts: int | None = None,
     ) -> TitanQuote:
+        """`max_accounts` caps the accounts Titan's route may use (`accountsLimitTotal`), as `maxAccounts` does for
+        Jupiter: a margin route has to share one transaction with the margin instruction's own accounts."""
         if not self.configured:
             raise TitanUnavailableError("Titan is not configured on this server (no TITAN_API_KEY or TITAN_API_URL)")
         params = {
@@ -93,6 +96,8 @@ class TitanClient:
             )
         else:
             params["createOutputTokenAccount"] = "true"
+        if max_accounts is not None:
+            params["accountsLimitTotal"] = str(max_accounts)
         params["dexes"] = self._settings.titan_fork_dexes
         key = self._settings.titan_api_key
         headers = {"Accept": "application/json", **({"x-api-key": key, "Authorization": f"Bearer {key}"} if key else {})}

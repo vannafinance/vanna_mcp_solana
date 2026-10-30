@@ -1,4 +1,5 @@
-"""A Titan margin route is only offered when it fits one transaction, and a pinned one is re-quoted before it is refused."""
+"""A Titan margin route is only offered when it fits one transaction (re-quoted under tighter account caps first), and a
+pinned one is re-quoted the same way before it is refused."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ import pytest
 from solders.pubkey import Pubkey
 
 from vanna_core.contracts import swap as swap_mod
-from vanna_core.contracts.swap import TITAN_REQUOTES, SwapContract
+from vanna_core.contracts.swap import TITAN_MARGIN_ACCOUNT_CAPS, SwapContract
 from vanna_core.types import ContractCallError
 
 WALLET = Pubkey.from_string("4FYMXgPzrvGQxKmbTTkZXfZABKTeUFTuDhyi8W73ETUL")
@@ -47,9 +48,18 @@ async def test_a_margin_quote_leaves_out_a_titan_route_that_cannot_fit(monkeypat
     async def fits(*_a):
         return False
 
+    caps: list[int | None] = []
+
+    async def titan_quote(*_a, max_accounts=None):
+        caps.append(max_accounts)
+        return tq
+
+    c._titan = SimpleNamespace(get_quote=titan_quote)
     c._quotes, c._titan_margin_fits = quotes, fits
     q = await c.quote("SOL", "USDC", "5", authority=WALLET, mode="margin")
     assert [p["provider"] for p in q["providers"]] == ["jupiter"] and q["titan_status"] == "too-large"
+    # Every tighter cap was tried before Titan was left out.
+    assert caps == [c for c in TITAN_MARGIN_ACCOUNT_CAPS if c is not None]
 
     async def fits_ok(*_a):
         return True
@@ -66,8 +76,8 @@ async def test_a_pinned_titan_route_is_requoted_then_refused_pointing_to_jupiter
     c = contract(monkeypatch)
     quotes: list[str] = []
 
-    async def get_quote(*_a):
-        quotes.append("q")
+    async def get_quote(*_a, max_accounts=None):
+        quotes.append(max_accounts)
         return SimpleNamespace()
 
     c._titan = SimpleNamespace(get_quote=get_quote)
@@ -80,7 +90,7 @@ async def test_a_pinned_titan_route_is_requoted_then_refused_pointing_to_jupiter
     c._titan_margin_build = build
     with pytest.raises(ContractCallError, match="Jupiter can build this swap"):
         await c._margin_titan(WALLET, WALLET, SOL, USDC, 5_000_000_000, "5", None, SimpleNamespace())
-    assert len(quotes) == TITAN_REQUOTES and len(built) == TITAN_REQUOTES + 1
+    assert quotes == list(TITAN_MARGIN_ACCOUNT_CAPS[1:]) and len(built) == len(TITAN_MARGIN_ACCOUNT_CAPS)
 
     # A re-quoted route that fits is built.
     attempts = iter([False, True])
@@ -94,8 +104,29 @@ async def test_a_pinned_titan_route_is_requoted_then_refused_pointing_to_jupiter
     c._titan_margin_build = build_second
     c._client = SimpleNamespace(program_id=c._client.program_id, build_write_envelope=envelope)
     quote = SimpleNamespace(out_amount=1, min_out=1)
-    c._titan = SimpleNamespace(get_quote=lambda *_a: _async(quote))
+    c._titan = SimpleNamespace(get_quote=lambda *_a, **_k: _async(quote))
     assert await c._margin_titan(WALLET, WALLET, SOL, USDC, 5_000_000_000, "5", None, quote) == "envelope"
+
+
+async def test_a_route_that_fits_only_under_a_cap_is_offered(monkeypatch) -> None:
+    c = contract(monkeypatch)
+    jq = {"outAmount": "557000000", "otherAmountThreshold": "551000000", "routePlan": []}
+    wide = SimpleNamespace(out_amount=557_900_000, min_out=552_300_000, labels=["Titan"], accounts=40)
+    tight = SimpleNamespace(out_amount=557_700_000, min_out=552_100_000, labels=["Titan"], accounts=20)
+
+    async def quotes(*_a):
+        return jq, wide, "quoted", None
+
+    async def titan_quote(*_a, max_accounts=None):
+        return tight
+
+    async def fits(_auth, _f, _t, _r, quote):
+        return quote.accounts <= 20
+
+    c._quotes, c._titan_margin_fits = quotes, fits
+    c._titan = SimpleNamespace(get_quote=titan_quote)
+    q = await c.quote("SOL", "USDC", "5", authority=WALLET, mode="margin")
+    assert q["titan_status"] == "quoted" and q["provider"] == "titan" and q["out_amount"] == "557.7"
 
 
 async def _async(v):
