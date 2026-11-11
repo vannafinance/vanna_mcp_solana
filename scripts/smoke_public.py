@@ -112,6 +112,8 @@ async def browser_run(plan_id: str, label: str) -> bool:
         if r.status_code != 200:
             print("   approve failed", r.text[:200])
             return False
+        # The run token the approval returns: like the page, every prepare / submit carries it (a copied link cannot).
+        http.headers["X-Plan-Token"] = r.json()["run_token"]
         for _ in range(40):
             n = (await http.post(f"{api}/next")).json()
             if n.get("done"):
@@ -123,6 +125,9 @@ async def browser_run(plan_id: str, label: str) -> bool:
                 continue
             if n.get("ok") is False:
                 print(f"   [{label}] step refused:", n.get("code"), n.get("reason"))
+                return False
+            if "transactions" not in n:
+                print(f"   [{label}] unexpected answer:", str(n)[:200])
                 return False
             for tx in n["transactions"]:
                 s = await http.post(f"{api}/submit", json={"tx_id": tx["id"], "signed": sign_tx(tx["unsignedTransaction"])})

@@ -1,6 +1,6 @@
 # The pages (/connect, /plan/<id>): web/pages -> mcp_server/web/static/app (the Stellar MCP's page components, Tailwind, and
 # the email / social wallet through Dynamic).
-FROM node:20-slim AS pages
+FROM node:24-slim AS pages
 WORKDIR /build/web/pages
 COPY web/pages/package.json web/pages/package-lock.json ./
 RUN npm ci --no-audit --no-fund --ignore-scripts
