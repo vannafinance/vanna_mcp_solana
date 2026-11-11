@@ -58,6 +58,16 @@ async def _normalize_custom(wallet: str, raw_steps: list[dict[str, Any]]) -> tup
         step = strategies.write_step(op, asset, r.amount, **slots)
         steps.append(step)
         await book.apply(step)
+    # A first margin deposit needs the account: open it first, as leverage_borrow and lever do, instead of a plan whose
+    # deposit can never be built ("There is no margin account yet").
+    first_deposit = next((i for i, s in enumerate(steps) if s.get("op") == "deposit"), None)
+    if first_deposit is not None and not any(s.get("op") == "create_account" for s in steps[:first_deposit]):
+        problem = await book.load()
+        if problem:
+            return None, problem, notes
+        if not book.has_account:
+            steps.insert(0, strategies.write_step("create_account"))
+            notes.append("There is no margin account yet, so the plan opens one first.")
     return steps, None, notes
 
 

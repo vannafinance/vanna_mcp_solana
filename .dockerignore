@@ -7,3 +7,5 @@ tests
 handoff
 *.md
 *.pdf
+**/node_modules
+mcp_server/web/static/app

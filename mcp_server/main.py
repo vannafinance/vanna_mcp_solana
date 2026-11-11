@@ -357,6 +357,26 @@ for _path, _handler in (
     mcp.custom_route(_path, methods=["GET"])(_handler)
 
 
+def _plan_requester(provider: Any) -> Any:
+    """The MCP client behind the current call, by its registered name and where its sign-in returns (what the plan
+    review page shows as "Requested by …"), and the kind of wallet it signed in with (the page connects that one)."""
+    from mcp_server.identity import caller_client_id
+    from mcp_server.oauth.consent import provider_key, wallet_provider
+    from mcp_server.oauth.provider import redirect_display, sanitize_client_name
+
+    async def requester(wallet: str) -> dict[str, str | None] | None:
+        cid = caller_client_id()
+        client = await provider.get_client(cid) if cid else None
+        if client is None:
+            return None
+        uris = [str(u) for u in (client.redirect_uris or [])]
+        kind = await provider.store.get(provider_key(cid, wallet)) if cid else None
+        return {"name": sanitize_client_name(client.client_name), "host": redirect_display(uris[0]) if uris else "",
+                "provider": wallet_provider((kind or {}).get("provider"))}
+
+    return requester
+
+
 def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGIApp:
     """The public connector: this process is its own OAuth authorization server (wallet-as-login).
 
@@ -397,7 +417,8 @@ def build_public_app(store: Any = None, server: MCPServer | None = None) -> ASGI
     # The public connector always runs the safety layer and the signing pages (same store as the OAuth state).
     from mcp_server.web.setup import attach_to_app, configure_signing
 
-    configure_signing(settings, store)
+    engine = configure_signing(settings, store)
+    engine.set_requester(_plan_requester(provider))
 
     # Stateless: any instance can answer any request, so there is no session to lose on a scale-out or restart.
     app = (server or mcp).streamable_http_app(host=settings.mcp_http_host, stateless_http=True)

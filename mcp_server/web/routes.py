@@ -9,9 +9,11 @@ and nothing moves without a signature from the plan's own wallet, which the serv
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -25,16 +27,34 @@ from mcp_server.planning.engine import PlanError, get_engine
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+# The pages themselves: built from web/pages (`npm run build` there, and in the Dockerfile) into static/app/.
+APP_DIR = STATIC_DIR / "app"
 _STATIC_FILES = {
-    "vanna.css": "text/css", "wallet.js": "application/javascript", "plan.js": "application/javascript",
-    "connect.js": "application/javascript", "solana-web3-1.98.4.min.js": "application/javascript",
-    "vanna-icon.png": "image/png",
+    "vanna-icon.png": "image/png", "vanna-wordmark.png": "image/png", "vanna-wordmark-white.png": "image/png",
+    "agent-codex.png": "image/png", "plus-jakarta-sans.woff2": "font/woff2",
 }
+_APP_FILE = re.compile(r"^[A-Za-z0-9_-]{1,64}\.(js|css)$")
 MAX_BODY_BYTES = 16 * 1024  # a signed v0 transaction is at most ~1.7 KB of base64
 
 # Scripts only from this origin; no inline script, no framing, no plugins, no third-party anything.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
-       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
+       "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
+# With the email / social wallet on (DYNAMIC_ENVIRONMENT_ID), the pages also talk to Dynamic: its API and assets, the
+# embedded wallet's signing frame and WebAssembly, and its injected styles. Still no inline script and no framing of
+# these pages; everything else stays this origin only.
+_DYNAMIC_HOSTS = "https://*.dynamicauth.com https://*.dynamic-static-assets.com"
+
+
+def _csp(dynamic_rpc: str | None) -> str:
+    if dynamic_rpc is None:
+        return CSP
+    rpc = f" {dynamic_rpc}" if dynamic_rpc else ""
+    return (f"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
+            f"connect-src 'self' {_DYNAMIC_HOSTS} wss://*.dynamicauth.com{rpc}; img-src 'self' data: {_DYNAMIC_HOSTS}; "
+            f"frame-src {_DYNAMIC_HOSTS}; worker-src 'self' blob:; font-src 'self' data: {_DYNAMIC_HOSTS}; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
+
+
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 # HSTS only takes effect over https (the hosted service); a local http run ignores it. COOP keeps other sites from
 # holding a handle on this window but still lets a wallet open its own popup.
@@ -46,56 +66,67 @@ _PAGE_HEADERS = {**_NO_STORE, "Content-Security-Policy": CSP, "X-Content-Type-Op
                  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), "
                                        "bluetooth=(), hid=(), interest-cohort=()"}
 
+# An empty shell: the page is rendered by the app bundle from the values on #root (web/pages/src/lib/runtime.ts). Every
+# value is escaped; the layout and theme are the Stellar MCP's pages (web/pages/src/components).
 _SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>{title}</title>
-<link rel="icon" type="image/png" href="/static/vanna-icon.png"><link rel="stylesheet" href="/static/vanna.css"></head>
-<body><main id="app" data-site="{site}" data-network="{network}" data-test="{test}">
-<header><img class="logo" src="/static/vanna-icon.png" alt="" width="36" height="36"><div class="brand"><div class="name">Vanna Finance</div><div class="muted small">{heading}</div></div><span id="network" class="badge" hidden></span></header>
-<div id="site-bad" class="notice bad" hidden></div>{body}
-<footer class="muted small"><span class="lock"></span><span><span id="site-host" class="mono"></span> · Vanna never holds your keys. Your wallet shows every transaction before you sign it.</span></footer></main>
-<script src="/static/solana-web3-1.98.4.min.js"></script><script src="/static/wallet.js"></script><script src="/static/{script}"></script></body></html>"""
+<link rel="icon" type="image/png" href="/static/vanna-icon.png"><link rel="stylesheet" href="/static/app/app.css?v={version}"></head>
+<body class="min-h-full flex flex-col antialiased"><div id="root" class="flex min-h-screen flex-col" data-page="{page}" data-site="{site}" data-network="{network}" data-test="{test}" data-rpc="{rpc}"{dynamic}></div>
+<noscript><p>This page needs JavaScript to talk to your wallet.</p></noscript>
+<script type="module" src="/static/app/main.js?v={version}"></script></body></html>"""
 
-_PICKER = """<div id="picker" class="card" hidden><h2>Choose your wallet</h2><div id="picker-list" class="wallets"></div>
-<div id="picker-mobile" hidden><p class="muted">No wallet in this browser. On a phone, open this page in your wallet's browser:</p><div id="picker-links" class="wallets"></div></div>
-<div class="row mt"><button id="picker-cancel" class="secondary">Back</button></div></div>"""
-
-_PLAN_BODY = """<div id="loading" class="card muted">Loading…</div>
-<section id="plan" class="card" hidden>
-<div class="row spread"><span id="status"></span><span id="countdown" class="small muted"></span></div>
-<h2 id="summary" class="title"></h2>
-<div id="hf" class="hf" hidden><div><div class="muted small">Health factor now</div><div id="hf-now" class="big"></div></div>
-<div class="arrow muted">→</div><div><div class="muted small">After (worst case)</div><div id="hf-after" class="big"></div></div></div>
-<ol id="steps" class="steps"></ol>
-<details id="details" class="details"><summary>Details and risks</summary><ul id="warnings" class="plain muted small"></ul>
-<div class="kv small"><span class="muted">Wallet</span><span id="wallet" class="mono"></span></div></details>
-</section>
-<div id="msg" class="notice" hidden></div>
-<div id="current" class="card focus" hidden></div>""" + _PICKER + """
-<div class="actions"><button id="primary" hidden></button><button id="cancel" class="link" hidden>Cancel plan</button></div>"""
-
-_CONNECT_BODY = """<div id="msg" class="notice" hidden></div>
-<div id="panel" class="card" hidden><h2>Connect your wallet to <span id="client"></span></h2>
-<p class="muted">This app will return to <strong id="host" class="mono"></strong>. Only continue if you started this connection and recognise it.</p>
-<p class="muted">It will be able to:</p><ul id="scopes" class="plain"></ul>
-<p class="muted">It can never sign or send anything: every transaction still needs your approval in your wallet. Signing the next message proves you own the wallet and costs nothing.</p>
-<div class="row actions"><button id="allow">Connect wallet and approve</button><button id="deny" class="secondary">Decline</button></div></div>""" + _PICKER
+_ENV_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def _shell_values() -> dict[str, str]:
-    """What the page needs to know about where it should live: the signing host and the network, from the settings."""
+def page_rpc(settings: Any) -> str:
+    """This server's network for the page (Dynamic reads the Solana chain from it; transaction links point at it). An RPC
+    URL carrying credentials (query string, user info) never reaches a page: then the page gets none."""
+    rpc = urlparse(settings.solana_rpc_url)
+    plain = rpc.scheme == "https" and rpc.netloc and not (rpc.query or rpc.username or rpc.password or rpc.fragment)
+    return f"https://{rpc.netloc}{rpc.path}".rstrip("/") if plain else ""
+
+
+def dynamic_page_config(settings: Any) -> tuple[str, str] | None:
+    """(environment id, RPC URL for Dynamic) when the email wallet is on: DYNAMIC_ENVIRONMENT_ID is a Dynamic id."""
+    env_id = settings.dynamic_environment_id.strip()
+    if not env_id:
+        return None
+    if not _ENV_ID.match(env_id):
+        logger.warning("DYNAMIC_ENVIRONMENT_ID is not a Dynamic environment id; the email wallet stays off")
+        return None
+    return env_id, page_rpc(settings)
+
+
+_version: tuple[float, str] = (0.0, "")
+
+
+def _build_version() -> str:
+    """A short hash of the built main.js and app.css, in their URLs, so a new build is never served from a stale cache."""
+    global _version
+    mtime = max((APP_DIR / n).stat().st_mtime for n in ("main.js", "app.css"))
+    if _version[0] != mtime:
+        digest = hashlib.sha256((APP_DIR / "main.js").read_bytes() + (APP_DIR / "app.css").read_bytes()).hexdigest()[:12]
+        _version = (mtime, digest)
+    return _version[1]
+
+
+def _page(title: str, page: str) -> Response:
     from mcp_server.web.setup import sign_base_url
     from vanna_core.config import get_settings
 
+    if not ((APP_DIR / "main.js").is_file() and (APP_DIR / "app.css").is_file()):
+        logger.error("The pages are not built (web/pages: npm ci && npm run build)")
+        return HTMLResponse("<!doctype html><title>Vanna</title><p>This page is not available right now.</p>", status_code=503,
+                            headers=_PAGE_HEADERS)
     settings = get_settings()
-    site = urlparse(sign_base_url(settings)).netloc
+    dynamic = dynamic_page_config(settings)
     network = "Test network (test funds only)" if settings.is_fork else f"Solana {settings.solana_cluster_label}"
-    return {"site": html.escape(site), "network": html.escape(network), "test": "1" if settings.is_fork else "0"}
-
-
-def _page(title: str, heading: str, body: str, script: str) -> HTMLResponse:
-    page = _SHELL.format(title=title, heading=heading, body=body, script=script, **_shell_values())
-    return HTMLResponse(page, headers=_PAGE_HEADERS)
+    attrs = f' data-dynamic-env="{html.escape(dynamic[0])}"' if dynamic else ""
+    body = _SHELL.format(title=html.escape(title), page=page, site=html.escape(urlparse(sign_base_url(settings)).netloc),
+                         network=html.escape(network), test="1" if settings.is_fork else "0",
+                         rpc=html.escape(page_rpc(settings)), dynamic=attrs, version=_build_version())
+    return HTMLResponse(body, headers={**_PAGE_HEADERS, "Content-Security-Policy": _csp(dynamic[1] if dynamic else None)})
 
 
 def _json(payload: dict[str, Any], status: int = 200) -> JSONResponse:
@@ -182,8 +213,27 @@ async def _static(request: Request) -> Response:
     return FileResponse(STATIC_DIR / name, media_type=kind, headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"})
 
 
+async def _app_static(request: Request) -> Response:
+    """The built pages: main.js, its chunks (content-hashed names) and app.css."""
+    name = request.path_params["name"]
+    path = APP_DIR / name
+    if not _APP_FILE.match(name) or not path.is_file():
+        return Response(status_code=404)
+    kind = "text/css" if name.endswith(".css") else "application/javascript"
+    # Chunks are named by their content and main.js / app.css are linked with their build hash (`_build_version`).
+    cache = "public, max-age=31536000, immutable" if name.startswith("chunk-") or request.query_params.get("v") else "no-cache"
+    headers = {"Cache-Control": cache, "X-Content-Type-Options": "nosniff", "Vary": "Accept-Encoding"}
+    # The build writes brotli and gzip copies beside each file: send the smallest one the browser accepts.
+    accepted = {e.split(";")[0].strip().lower() for e in request.headers.get("accept-encoding", "").split(",")}
+    for encoding, suffix in (("br", ".br"), ("gzip", ".gz")):
+        packed = APP_DIR / f"{name}{suffix}"
+        if encoding in accepted and packed.is_file():
+            return FileResponse(packed, media_type=kind, headers={**headers, "Content-Encoding": encoding})
+    return FileResponse(path, media_type=kind, headers=headers)
+
+
 async def _plan_page(_request: Request) -> Response:
-    return _page("Vanna — review and sign", "Review and sign", _PLAN_BODY, "plan.js")
+    return _page("Review · Vanna", "plan")
 
 
 async def _sign_alias(request: Request) -> Response:
@@ -191,7 +241,7 @@ async def _sign_alias(request: Request) -> Response:
 
 
 async def _connect_page(_request: Request) -> Response:
-    return _page("Vanna — connect your wallet", "Connect your wallet", _CONNECT_BODY, "connect.js")
+    return _page("Sign in · Vanna", "connect")
 
 
 def build_web_routes() -> list[Route]:
@@ -199,6 +249,7 @@ def build_web_routes() -> list[Route]:
         Route("/plan/{plan_id}", _plan_page, methods=["GET"]),
         Route("/sign/{plan_id}", _sign_alias, methods=["GET"]),
         Route("/connect", _connect_page, methods=["GET"]),
+        Route("/static/app/{name}", _app_static, methods=["GET"]),
         Route("/static/{name}", _static, methods=["GET"]),
         Route("/api/plan/{plan_id}", _guard(_view), methods=["GET"]),
         Route("/api/plan/{plan_id}/approve", _guard(_approve), methods=["POST"]),

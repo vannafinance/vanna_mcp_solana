@@ -275,7 +275,8 @@ def build_oauth_routes(provider: VannaOAuthProvider) -> list[Route]:
     async def complete(request: Request) -> dict[str, Any]:
         body = await _body(request)
         redirect = await consent.complete(
-            str(body.get("req", "")), str(body.get("wallet", "")), body.get("nonce", ""), body.get("signature", "")
+            str(body.get("req", "")), str(body.get("wallet", "")), body.get("nonce", ""), body.get("signature", ""),
+            provider=body.get("provider"),
         )
         return {"redirect_url": redirect}
 

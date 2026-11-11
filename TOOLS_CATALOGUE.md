@@ -521,9 +521,11 @@ with their own wallet, and signs each step. Each step is pre-flighted again agai
 and daily USD caps, funding), then built and simulated by the existing write dispatchers; a step that would breach the
 floor **pauses** the plan. Exactly-once per step; an unclear send is `uncertain` and never retried; a transaction that
 never lands is rebuilt. The server checks the signed bytes equal its own build and relays them. Needs `ENABLE_SIGN_LINKS`;
-without it a drawn plan is a preview (`executable: false`). With `APPROVE_PAGE_URL` set, `plan_url` (and every write's
-`sign_url`) is `{APPROVE_PAGE_URL}/{plan_id}` on the Vanna website, whose approve page proxies this server's plan API;
-the approval message's `Site:` line names that site.
+without it a drawn plan is a preview (`executable: false`). `plan_url` (and every write's `sign_url`) is this server's
+own `/plan/{plan_id}` page, where the plan's wallet (an extension, or the website's email / social login through Dynamic)
+approves and signs; the view names the agent that asked (`client_name`, `client_host`). `APPROVE_PAGE_URL` can still
+point links at the website's approve page instead (`{APPROVE_PAGE_URL}/{plan_id}`), but the public connector keeps them
+here, as the Stellar MCP does; the approval message's `Site:` line names whichever site the link opens.
 
 ### 3.17 `vanna_risk` — advisor reads (the Copilot's capacity / what-if / liquidation answers)
 

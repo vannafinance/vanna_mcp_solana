@@ -149,6 +149,23 @@ class PlanEngine:
         # Where plan links point (the website's approve page, or this server's /plan page by default).
         self._link_base = link_base or (lambda: f"{self._base_url().rstrip('/')}/plan")
         self._clock = clock
+        # Who asked for a plan (public mode: the OAuth client), so the review page can say "Requested by …".
+        self._requester: Any = None
+
+    def set_requester(self, requester: Any) -> None:
+        """`requester(wallet)` -> {"name", "host", "provider"} of the MCP client making the current call (and the kind of
+        wallet it signed in with), or None."""
+        self._requester = requester
+
+    async def _who_asked(self, wallet: str) -> dict[str, Any] | None:
+        if self._requester is None:
+            return None
+        try:
+            who = await self._requester(wallet)
+        except Exception:  # never let a display detail stop a plan
+            logger.debug("plan requester lookup failed", exc_info=True)
+            return None
+        return who if isinstance(who, dict) else None
 
     # ------------------------------------------------------------------ creation
 
@@ -171,6 +188,7 @@ class PlanEngine:
             "hf_floor": drawn["hf_floor"], "steps": steps, "digest": plan_digest(wallet, drawn["hf_floor"], drawn["steps"]),
             "status": "awaiting_approval", "created_at": now,
             "approval_expires_at": now + settings.plan_approval_ttl_seconds, "approved_at": None, "run_until": None,
+            "client": await self._who_asked(wallet),
         }
         await self.store.put(f"plan:{plan_id}", rec, RECORD_TTL_SECONDS)
         return self.view(rec)
@@ -217,6 +235,9 @@ class PlanEngine:
                 for i, s in enumerate(rec["steps"])
             ],
             "plan_url": self.plan_url(rec["id"]), "site": rec.get("site") or site_of(self._link_base()),
+            "client_name": (rec.get("client") or {}).get("name"), "client_host": (rec.get("client") or {}).get("host"),
+            # The wallet the agent signed in with ("dynamic" or an extension's name): the page connects it by itself.
+            "provider": (rec.get("client") or {}).get("provider"),
             "approval_message": approval_message(rec) if rec["status"] == "awaiting_approval" else None,
             "resume_message": resume_message(rec) if rec["status"] in ("approved", "running", "paused") else None,
         }

@@ -281,6 +281,10 @@ class VannaSettings(BaseSettings):
     # website's own address, so with this header matching, the per-IP plan limit counts the end user's address the
     # website forwards instead. Never trusted without the secret. A secret: Secret Manager / .env only.
     plan_proxy_secret: str = ""
+    # Vanna's email / social wallet on the connect and plan pages: the website's Dynamic environment id (its
+    # NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID, a public value), so the same email, Google, X or GitHub login opens the same
+    # Solana wallet as on the website. Empty = the option is hidden and only extension wallets are offered.
+    dynamic_environment_id: str = ""
     sign_intent_ttl_seconds: int = Field(default=900, ge=60)
 
     # Per-caller token bucket on POST /mcp (mcp_server/rate_limit.py).

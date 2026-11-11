@@ -60,11 +60,26 @@ def engine_with(net: Net | None = None) -> tuple[PlanEngine, Net]:
 
 
 @pytest.fixture
-def web():
+def web(tmp_path, monkeypatch):
+    # The pages are a built bundle (web/pages: npm run build). The routes only need it to exist, so a stand-in does.
+    from mcp_server.web import routes
+
+    (tmp_path / "main.js").write_text("// main")
+    (tmp_path / "app.css").write_text("/* css */")
+    (tmp_path / "chunk-ABC123.js").write_text("// chunk")
+    import gzip
+
+    (tmp_path / "chunk-ABC123.js.gz").write_bytes(gzip.compress(b"// chunk"))
+    monkeypatch.setattr(routes, "APP_DIR", tmp_path)
     return TestClient(Starlette(routes=build_web_routes()))
 
 
-async def test_pages_are_static_files_under_a_strict_csp(web: TestClient) -> None:
+async def test_pages_are_static_files_under_a_strict_csp(web: TestClient, monkeypatch) -> None:
+    # Without the email wallet (its own CSP is in tests/test_email_wallet_pages.py), whatever the local .env says.
+    from vanna_core import config
+
+    real = config.get_settings()
+    monkeypatch.setattr(config, "get_settings", lambda: real.model_copy(update={"dynamic_environment_id": ""}))
     page = web.get("/plan/anything")
     assert page.status_code == 200
     csp = page.headers["content-security-policy"]
@@ -73,9 +88,11 @@ async def test_pages_are_static_files_under_a_strict_csp(web: TestClient) -> Non
     html = page.text
     assert "<script>" not in html and "onclick" not in html  # no inline script anywhere
     assert "style=" not in html and "<style" not in html  # nor inline style: the CSP would block it
-    assert 'src="/static/plan.js"' in html and "solana-web3" in html
+    # An empty shell: the built app renders the page (the Stellar MCP's page components), linked by its build hash.
+    assert '<script type="module" src="/static/app/main.js?v=' in html and 'href="/static/app/app.css?v=' in html
+    assert 'data-page="plan"' in html
     connect = web.get("/connect")
-    assert connect.status_code == 200 and "connect.js" in connect.text
+    assert connect.status_code == 200 and 'data-page="connect"' in connect.text
     assert web.get("/sign/abc", follow_redirects=False).headers["location"] == "/plan/abc"
 
 
@@ -86,21 +103,18 @@ def test_pages_carry_the_hardening_headers_and_name_their_site(web: TestClient) 
     assert h["cross-origin-opener-policy"] == "same-origin-allow-popups" and h["cross-origin-resource-policy"] == "same-origin"
     assert "camera=()" in h["permissions-policy"] and "object-src 'none'" in h["content-security-policy"]
     # The page knows the host it should be served from, so it can warn the user on any other one.
-    assert 'data-site="127.0.0.1:8000"' in page.text and 'id="picker"' in page.text
-    assert 'id="picker"' in web.get("/connect").text
-    # One main action on the plan page (its label follows the plan's state), and the Vanna logo from this origin.
-    assert 'id="primary"' in page.text and 'id="approve"' not in page.text and 'id="run"' not in page.text
-    assert 'src="/static/vanna-icon.png"' in page.text
+    assert 'data-site="127.0.0.1:8000"' in page.text
+    assert 'href="/static/vanna-icon.png"' in page.text
     logo = web.get("/static/vanna-icon.png")
     assert logo.status_code == 200 and logo.headers["content-type"] == "image/png" and logo.content[:4] == b"\x89PNG"
 
 
-def test_hidden_always_wins_in_the_page_css() -> None:
-    """Buttons are display:flex; without this rule a hidden button shows (two actions at once)."""
-    from pathlib import Path
+def test_unbuilt_pages_say_so_instead_of_a_blank_page(tmp_path, monkeypatch) -> None:
+    from mcp_server.web import routes
 
-    css = (Path(main.__file__).parent / "web" / "static" / "vanna.css").read_text(encoding="utf8")
-    assert "[hidden]{display:none !important}" in css
+    monkeypatch.setattr(routes, "APP_DIR", tmp_path)
+    r = TestClient(Starlette(routes=build_web_routes())).get("/connect")
+    assert r.status_code == 503 and "not available" in r.text
 
 
 def test_a_busy_route_service_reads_as_a_retryable_sentence() -> None:
@@ -174,28 +188,41 @@ async def test_the_approval_message_names_the_signing_site(monkeypatch) -> None:
     assert "Site:" not in approval_message(rec)
 
 
-def test_static_files_are_whitelisted_and_the_vendored_library_is_intact(web: TestClient) -> None:
-    for name, kind in (("vanna.css", "text/css"), ("wallet.js", "javascript"), ("plan.js", "javascript"), ("connect.js", "javascript"),
-                       ("vanna-icon.png", "image/png")):
+def test_static_files_are_whitelisted(web: TestClient) -> None:
+    for name, kind in (("vanna-icon.png", "image/png"), ("vanna-wordmark.png", "image/png"), ("vanna-wordmark-white.png", "image/png"),
+                       ("agent-codex.png", "image/png"), ("plus-jakarta-sans.woff2", "font/woff2")):
         r = web.get(f"/static/{name}")
         assert r.status_code == 200 and kind in r.headers["content-type"] and r.headers["x-content-type-options"] == "nosniff"
-    lib = web.get("/static/solana-web3-1.98.4.min.js")
-    assert lib.status_code == 200 and lib.text.startswith("var solanaWeb3=")
-    import hashlib
-
-    assert hashlib.sha256(lib.content).hexdigest() == "09cdbea951b2ed0e11bcbe3aeb1ee9f035f9fb51ed212aca645475ae82688cc3"
+    for name, kind in (("main.js", "javascript"), ("app.css", "text/css"), ("chunk-ABC123.js", "javascript")):
+        r = web.get(f"/static/app/{name}")
+        assert r.status_code == 200 and kind in r.headers["content-type"] and r.headers["x-content-type-options"] == "nosniff"
+    # Content-named chunks and hash-linked main.js / app.css are cached for good; the bare names always revalidate.
+    assert "immutable" in web.get("/static/app/chunk-ABC123.js").headers["cache-control"]
+    assert "immutable" in web.get("/static/app/main.js?v=abc").headers["cache-control"]
+    assert web.get("/static/app/main.js").headers["cache-control"] == "no-cache"
+    # The build's compressed copy goes to a browser that accepts it; one that does not gets the plain file.
+    packed = web.get("/static/app/chunk-ABC123.js", headers={"Accept-Encoding": "gzip"})
+    assert packed.headers["content-encoding"] == "gzip" and packed.text == "// chunk" and "javascript" in packed.headers["content-type"]
+    plain = web.get("/static/app/chunk-ABC123.js", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.text == "// chunk"
+    assert web.get("/static/app/chunk-ABC123.js.gz").status_code == 404  # only through the encoding, never by name
     for bad in ("../routes.py", "..%2froutes.py", "secret.js", "routes.py", "plan.js/../../routes.py"):
         assert web.get(f"/static/{bad}").status_code == 404
+    for bad in ("../routes.py", "..%2f..%2froutes.py", "missing.js", "main.py", "x.html"):
+        assert web.get(f"/static/app/{bad}").status_code == 404
 
 
-def test_page_scripts_never_use_innerhtml_or_eval() -> None:
-    """The pages render server text with textContent only; a regression here would be an XSS hole."""
+def test_page_sources_never_use_innerhtml_or_eval() -> None:
+    """The pages render server text as React text nodes only; a regression here would be an XSS hole."""
     from pathlib import Path
 
-    for name in ("plan.js", "connect.js", "wallet.js"):
-        src = (Path(main.__file__).parent / "web" / "static" / name).read_text(encoding="utf8")
-        for forbidden in ("innerHTML", "outerHTML", "eval(", "document.write", "insertAdjacentHTML", "new Function"):
-            assert forbidden not in src, (name, forbidden)
+    src = Path(main.__file__).parent.parent / "web" / "pages" / "src"
+    files = list(src.rglob("*.ts")) + list(src.rglob("*.tsx"))
+    assert files
+    for f in files:
+        text = f.read_text(encoding="utf8")
+        for forbidden in ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "eval(", "document.write", "insertAdjacentHTML", "new Function"):
+            assert forbidden not in text, (f.name, forbidden)
 
 
 def test_public_path_helper() -> None:
@@ -372,6 +399,23 @@ async def test_risk_max_leverage_table(monkeypatch) -> None:
     assert out["max_leverage"] > 1 and {r["leverage"]: r["allowed"] for r in out["table"]}[1.5] is True
     assert {r["leverage"]: r["allowed"] for r in out["table"]}[10] is False
     assert (await vanna_risk(action="max_leverage", authority=WALLET, asset="JitoSOL"))["error"] == "invalid_input"
+
+
+async def test_a_first_margin_deposit_opens_the_account_first(monkeypatch) -> None:
+    """A new wallet (e.g. a first email / Google login) asking "deposit 1 SOL into margin" gets the account opened first,
+    as leverage_borrow and lever do; before, the plan was drawn and its deposit could never be built."""
+    chain(monkeypatch, has_account=False, wallet_tokens={}, sol_balance=20.0)
+    engine_with()
+    drawn = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "SOL", "amount": "1"}])
+    assert drawn["ok"], drawn
+    assert [s["label"] for s in drawn["steps"]][:2] == ["Open your margin account", "Deposit 1 SOL as margin collateral"]
+    # An existing account, or a plan that already opens one, is left as it is.
+    chain(monkeypatch, collateral={"SOL": 10}, wallet_tokens={}, sol_balance=20.0)
+    again = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "SOL", "amount": "1"}])
+    assert [s["label"] for s in again["steps"]] == ["Deposit 1 SOL as margin collateral"]
+    chain(monkeypatch, has_account=False, wallet_tokens={}, sol_balance=20.0)
+    own = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "create_account"}, {"op": "deposit", "asset": "SOL", "amount": "1"}])
+    assert [s["label"] for s in own["steps"]] == ["Open your margin account", "Deposit 1 SOL as margin collateral"]
 
 
 async def test_risk_reads_fail_closed_without_an_account(monkeypatch) -> None:

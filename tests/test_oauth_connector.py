@@ -958,3 +958,48 @@ def test_provider_is_independent_of_the_transport() -> None:
     provider = VannaOAuthProvider(MemoryRecordStore(), KeySet.ephemeral(), config)
     assert config.resource == RESOURCE and config.consent_origin == CONSENT_ORIGIN and config.consent_domain == "app.test"
     assert provider.keys.jwks()["keys"]
+
+
+def test_sign_in_remembers_which_wallet_signed_in(connector: Connector) -> None:
+    """As the Stellar MCP keeps its wallet selection: the page says which wallet signed in, so the plans this agent draws
+    open with that wallet ready. A display / reconnect hint only; anything odd is dropped, never stored."""
+    import asyncio
+
+    from mcp_server.oauth.consent import provider_key, wallet_provider
+
+    assert wallet_provider("Backpack") == "Backpack" and wallet_provider("dynamic") == "dynamic"
+    assert wallet_provider(" Phantom ") == "Phantom"
+    for bad in (None, "", "<script>", "x" * 40, 7, "Back\npack"):
+        assert wallet_provider(bad) is None
+
+    client = connector.register()
+    _, challenge_ = connector.pkce()
+    req = connector.authorize(client["client_id"], challenge_)
+    data = connector.challenge(req).json()
+    done = connector.client.post(
+        "/oauth/consent/complete",
+        json={"req": req, "wallet": str(connector.wallet.pubkey()), "nonce": data["nonce"],
+              "signature": connector.sign(connector.wallet, data["message"]), "provider": "Backpack"},
+        headers=connector.consent_headers(),
+    )
+    assert done.status_code == 200, done.text
+    kept = asyncio.run(connector.store.get(provider_key(client["client_id"], str(connector.wallet.pubkey()))))
+    assert kept == {"provider": "Backpack"}
+
+
+async def test_a_plan_names_the_wallet_its_agent_signed_in_with(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp_server.planning.engine import PlanEngine
+
+    async def requester(wallet: str):
+        assert wallet == "W1"
+        return {"name": "Claude Code", "host": "127.0.0.1:9", "provider": "Backpack"}
+
+    eng = PlanEngine(MemoryRecordStore(), None, None, None, base_url=lambda: "http://localhost:3000")  # type: ignore[arg-type]
+    eng.set_requester(requester)
+    assert await eng._who_asked("W1") == {"name": "Claude Code", "host": "127.0.0.1:9", "provider": "Backpack"}
+
+    async def broken(wallet: str):
+        raise RuntimeError("store down")
+
+    eng.set_requester(broken)
+    assert await eng._who_asked("W1") is None  # a display detail never stops a plan

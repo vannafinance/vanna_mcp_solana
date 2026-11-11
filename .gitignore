@@ -11,3 +11,8 @@ build/
 .mypy_cache/
 .coverage
 htmlcov/
+node_modules
+
+# The pages (web/pages): built by npm run build there, and in the Dockerfile
+web/pages/node_modules/
+mcp_server/web/static/app/

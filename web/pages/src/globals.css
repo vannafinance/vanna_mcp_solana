@@ -1,0 +1,190 @@
+/*
+ * The Stellar MCP's page theme (Vanna_MCP sign-service/web/app/globals.css), copied as is so both MCPs' pages look the same.
+ * Only additions: the self-hosted Plus Jakarta Sans (the Stellar pages load it through next/font) and Tailwind's source path.
+ */
+@import "tailwindcss" source("./");
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url("/static/plus-jakarta-sans.woff2") format("woff2-variations");
+}
+:root { --font-jakarta: "Plus Jakarta Sans"; }
+
+/* `dark:` follows the `html.dark` class (set from the device theme in the layout), not the media query alone. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Two palettes, both copied from the Vanna website so these pages read as part of it:
+ * - the sign-in dialog's tokens (`--bg`, `--card`, `--line`, `--violet` ...), for the wallet page;
+ * - the Copilot's tokens (`--g*`, `--cp-*`, `--bar-track`), for the execution card on the review page.
+ * Light by default; `html.dark` switches both.
+ */
+:root {
+  --bg: #f7f7f7; --card: #ffffff; --field: #ffffff;
+  --line: #e8e8e8; --line-2: #e2e2e2;
+  --title: #181822; --text: #111111; --label: #777777; --quiet: #9ca3af;
+  --violet: #703ae6; --violet-ink: #6635d1; --violet-soft: rgba(112, 58, 230, 0.1);
+  --grad: linear-gradient(135deg, #fc5457 10%, #703ae6 80%);
+  --ok: #0b7a63; --danger: #c9333b; --menu-hover: #f5f5f5; --shadow: rgba(0, 0, 0, 0.08);
+
+  --surface: #ffffff;
+  --g50: #f7f8fa; --g100: #e2e2e2; --g200: #cfcfcf; --g300: #9ca3af; --g400: #6b7280;
+  --g500: #4b5563; --g600: #374151; --g700: #1f2937; --g800: #1f1f1f; --g900: #111111;
+  --violet-500: #703ae6; --violet-600: #6635d1; --imperial-500: #fc5457;
+  --emerald: #10b981; --amber: #f59e0b;
+  --ok-fg: #0b7a63; --warn-fg: #8a5a06; --warn-bg: rgba(245, 158, 11, 0.1); --danger-fg: #c9333b;
+  --bar-track: #ececf0;
+  --cp-gradient: var(--grad); --cp-emerald: var(--emerald); --cp-amber: var(--amber);
+  --cp-ok-fg: var(--ok-fg); --cp-warn-fg: var(--warn-fg); --cp-warn-bg: var(--warn-bg); --cp-danger-fg: var(--danger-fg);
+  color-scheme: light;
+}
+
+html.dark {
+  --bg: #111111; --card: #1a1a1a; --field: #111111;
+  --line: #2a2a2a; --line-2: #333333;
+  --title: #ffffff; --text: #ffffff; --label: #a7a7a7; --quiet: #9ca3af;
+  --violet-ink: #b69bf5; --violet-soft: rgba(154, 114, 240, 0.16);
+  --ok: #3fc0a3; --danger: #f0666e; --menu-hover: #1e1e1e; --shadow: rgba(0, 0, 0, 0.5);
+
+  --surface: #1c1c24;
+  --g50: #27272a; --g100: #333333; --g200: #52525b; --g300: #8b8b96; --g400: #a1a1aa;
+  --g500: #c8c8d0; --g600: #d4d4d8; --g700: #e4e4e7; --g800: #f4f4f5; --g900: #fafafa;
+  --violet-500: #9a72f0; --violet-600: #ab8af4;
+  --emerald: #3fc0a3; --amber: #dfa24a;
+  --ok-fg: #3fc0a3; --warn-fg: #e0ac5c; --warn-bg: rgba(223, 162, 74, 0.09); --danger-fg: #f0666e;
+  --bar-track: #2c2c34;
+  color-scheme: dark;
+}
+
+/* The Copilot writes its card with `vgray-*`, `violet-*` and `surface` utilities: the same names resolve here. */
+@theme inline {
+  --color-surface: var(--surface);
+  --color-vgray-50: var(--g50);
+  --color-vgray-100: var(--g100);
+  --color-vgray-200: var(--g200);
+  --color-vgray-300: var(--g300);
+  --color-vgray-400: var(--g400);
+  --color-vgray-500: var(--g500);
+  --color-vgray-600: var(--g600);
+  --color-vgray-700: var(--g700);
+  --color-vgray-800: var(--g800);
+  --color-vgray-900: var(--g900);
+  --color-violet-500: var(--violet-500);
+  --color-violet-600: var(--violet-600);
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ── Execution card motion, as in the Copilot ─────────────────────────────── */
+@keyframes cp-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes cp-exec-travel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes cp-exec-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes cp-exec-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  70% { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes cp-exec-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.cp-exec-live {
+  background-image: linear-gradient(90deg, var(--violet-500) 0%, var(--imperial-500) 50%, var(--violet-500) 100%);
+  background-size: 200% 100%;
+  animation: cp-exec-travel 1.6s linear infinite;
+}
+.cp-exec-fill { transform-origin: left center; animation: cp-exec-fill 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.cp-exec-pop { animation: cp-exec-pop 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.cp-exec-rise { animation: cp-in 320ms ease-out both; }
+.cp-exec-breathe { animation: cp-exec-breathe 1.4s ease-in-out infinite; }
+@keyframes cp-exec-draw { to { stroke-dashoffset: 0; } }
+@keyframes cp-exec-ringfade { to { opacity: 0; } }
+@keyframes cp-exec-walletcard {
+  0%, 12% { transform: translateY(-1.5px); }
+  50%, 66% { transform: translateY(5px); }
+  100% { transform: translateY(-1.5px); }
+}
+.cp-exec-tick { stroke-dasharray: 24; stroke-dashoffset: 24; animation: cp-exec-draw 400ms ease-out forwards; }
+.cp-exec-tick-after { stroke-dasharray: 16; stroke-dashoffset: 16; animation: cp-exec-draw 300ms 300ms ease-out forwards; }
+.cp-exec-ring { stroke-dasharray: 57; stroke-dashoffset: 57; animation: cp-exec-draw 340ms ease-out forwards, cp-exec-ringfade 220ms 340ms ease-out forwards; }
+.cp-exec-cross { stroke-dasharray: 34; stroke-dashoffset: 34; animation: cp-exec-draw 400ms 60ms ease-out forwards; }
+.cp-exec-wallet-card { animation: cp-exec-walletcard 2200ms ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cp-exec-live, .cp-exec-fill, .cp-exec-pop, .cp-exec-rise, .cp-exec-breathe, .cp-exec-wallet-card { animation: none; }
+  .cp-exec-tick, .cp-exec-tick-after, .cp-exec-cross { animation: none; stroke-dashoffset: 0; }
+  .cp-exec-ring { animation: none; opacity: 0; }
+}
+
+/* ── Review done: the review hands over to the close-tab card ─ ─────── */
+@keyframes rv-leave { to { opacity: 0; transform: scale(0.97); filter: blur(2px); } }
+@keyframes rv-card { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes rv-fill { 0% { transform: scale(0); } 70% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes rv-ripple { 0% { transform: scale(0.9); opacity: 0.28; } 100% { transform: scale(1.9); opacity: 0; } }
+.rv-leave { animation: rv-leave 260ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+.rv-card { animation: rv-card 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.rv-ring { stroke-dasharray: 183; stroke-dashoffset: 183; transform: rotate(-90deg); transform-origin: center; animation: cp-exec-draw 520ms 240ms cubic-bezier(0.65, 0, 0.35, 1) forwards; }
+.rv-fill { transform: scale(0); transform-origin: center; animation: rv-fill 380ms 680ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+.rv-tick { stroke-dasharray: 40; stroke-dashoffset: 40; animation: cp-exec-draw 340ms 860ms cubic-bezier(0.65, 0, 0.35, 1) forwards; }
+.rv-cross-a, .rv-cross-b { stroke-dasharray: 26; stroke-dashoffset: 26; }
+.rv-cross-a { animation: cp-exec-draw 220ms 860ms cubic-bezier(0.65, 0, 0.35, 1) forwards; }
+.rv-cross-b { animation: cp-exec-draw 220ms 1000ms cubic-bezier(0.65, 0, 0.35, 1) forwards; }
+.rv-ripple { opacity: 0; animation: rv-ripple 900ms 900ms ease-out forwards; }
+.rv-rise { animation: cp-in 360ms ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .rv-leave { animation: none; opacity: 0; }
+  .rv-card, .rv-rise, .rv-ripple { animation: none; }
+  .rv-ring, .rv-tick, .rv-cross-a, .rv-cross-b { animation: none; stroke-dashoffset: 0; }
+  .rv-fill { animation: none; transform: none; }
+}
+
+/* ── Sign-in card, as the website's "Sign in to Vanna" dialog ─────────────── */
+.si { width: min(420px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 24px 64px var(--shadow); display: flex; flex-direction: column; }
+.si-main { display: flex; flex-direction: column; min-width: 0; }
+.si-body { padding: 20px 22px 16px; flex: 1; }
+/* Wide card: who is asking on the left, the sign-in on the right; stacked on a phone. */
+.si.si-wide { width: min(880px, 100%); display: grid; grid-template-columns: 1fr; overflow: hidden; }
+.si-request { padding: 16px 18px; border-bottom: 1px solid var(--line); background: var(--violet-soft); }
+.si-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--violet-ink); }
+.si-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--label); }
+.si-return { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 19px; color: var(--label); }
+.si-return b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+@media (min-width: 768px) {
+  .si.si-wide { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); }
+  .si-request { padding: 32px 30px; border-bottom: 0; border-right: 1px solid var(--line); }
+  .si-return { margin-top: 18px; padding-top: 14px; }
+  .si-wide .si-body { padding: 32px 32px 20px; }
+}
+.si-body h1 { font-size: 20px; font-weight: 700; line-height: 26px; color: var(--title); }
+.si-sub { font-size: 13px; color: var(--label); margin-top: 2px; }
+.si-email { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.si-field { display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 12px; border: 1.5px solid var(--line-2); border-radius: 10px; background: var(--field); color: var(--label); transition: border-color 0.12s; }
+.si-field:focus-within { border-color: var(--violet); }
+.si-field input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: 0; font: inherit; font-size: 14px; color: var(--text); }
+.si-code input { letter-spacing: 0.5em; font-variant-numeric: tabular-nums; text-align: center; font-size: 18px; font-weight: 600; }
+.si-go { height: 42px; border-radius: 10px; font-size: 14px; font-weight: 600; color: #fff; background: var(--grad); cursor: pointer; }
+.si-go:disabled { background: var(--field); color: var(--quiet); border: 1px solid var(--line); cursor: default; }
+.si-sent { font-size: 13px; color: var(--label); }
+.si-sent b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.si-links { display: flex; justify-content: space-between; gap: 12px; }
+.si-links button { font-size: 12px; font-weight: 600; color: var(--violet-ink); cursor: pointer; }
+.si-err { margin-top: 8px; font-size: 12px; line-height: 18px; color: var(--danger); }
+.si-social { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.si-soc { display: flex; align-items: center; justify-content: center; gap: 6px; height: 40px; border: 1px solid var(--line-2); border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; }
+.si-soc:hover { border-color: var(--violet); background: var(--violet-soft); }
+.si-or { display: flex; align-items: center; gap: 10px; margin: 16px 0 2px; font-size: 12px; color: var(--label); }
+.si-or::before, .si-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.si-wallets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.si-w { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: 76px; border: 1px solid var(--line-2); border-radius: 12px; font-size: 13px; font-weight: 600; color: var(--text); transition: border-color 0.12s, background-color 0.12s; }
+.si-w img { width: 30px; height: 30px; border-radius: 8px; }
+.si-w.live { border-color: var(--violet); cursor: pointer; }
+.si-w.live:hover { background: var(--violet-soft); }
+.si-w:disabled { cursor: not-allowed; color: var(--label); }
+.si-w:disabled img { opacity: 0.45; filter: grayscale(0.4); }
+.si-soon { position: absolute; top: -7px; right: 6px; padding: 0 5px; border-radius: 5px; font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; line-height: 14px; background: var(--violet-soft); color: var(--violet-ink); border: 1px solid var(--line); }
+.si-foot { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 11px; border-top: 1px solid var(--line); font-size: 12px; color: var(--label); }
+@media (max-width: 639px) { .si-body { padding: 18px 14px 14px; } .si-w { height: 72px; } .si-soc { font-size: 12px; gap: 5px; } }

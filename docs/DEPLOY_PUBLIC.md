@@ -40,18 +40,33 @@ before the change keep verifying until they expire (15 minutes).
 ```
 gcloud builds submit . --project=solana-mcp --region=us-central1 --config=<build-only config> --substitutions=_TAG=<tag> --service-account=projects/solana-mcp/serviceAccounts/vanna-mcp-builder@solana-mcp.iam.gserviceaccount.com
 
-gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --image=us-central1-docker.pkg.dev/solana-mcp/vanna-credit/mcp-solana:<tag> --service-account=vanna-mcp-public@solana-mcp.iam.gserviceaccount.com --env-vars-file=deploy/public-service.env.yaml --set-secrets=OAUTH_SIGNING_KEY_PEM=vanna-mcp-oauth-signing-key:latest,PLAN_PROXY_SECRET=plan-proxy-secret:latest --allow-unauthenticated --ingress=all --min-instances=1 --max-instances=5 --timeout=300 --cpu-boost --quiet
+# Routine deploy: a new image only; every setting and secret on the service stays as it is
+gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --image=us-central1-docker.pkg.dev/solana-mcp/vanna-credit/mcp-solana:<tag> --quiet
+# Changing one setting: --update-env-vars=KEY=value (or --remove-env-vars=KEY) on the same command
+
+# Full (re)creation only: --env-vars-file REPLACES every variable, so the ones not in the file (APP_ACCESS_CODE, kept out
+# of git) must be passed again, and every secret mounted
+gcloud run deploy vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --image=us-central1-docker.pkg.dev/solana-mcp/vanna-credit/mcp-solana:<tag> --service-account=vanna-mcp-public@solana-mcp.iam.gserviceaccount.com --env-vars-file=deploy/public-service.env.yaml --update-env-vars=APP_ACCESS_CODE=<code> --set-secrets=OAUTH_SIGNING_KEY_PEM=vanna-mcp-oauth-signing-key:latest,TITAN_API_KEY=titan-api-key:latest,PLAN_PROXY_SECRET=plan-proxy-secret:latest --allow-unauthenticated --ingress=all --min-instances=1 --max-instances=5 --timeout=300 --cpu-boost --quiet
 ```
 
 The build-only config is the one the private service uses (`build` + `push`, `logging: CLOUD_LOGGING_ONLY`).
 `EXTERNAL_BASE_URL` in the env file must be the https URL users reach the service on: it is the OAuth issuer, every
-issued token names it, and the connect / sign pages are served on it. Today it is Cloud Run's own URL
-(`https://vanna-mcp-solana-public-398807408840.us-central1.run.app`); it moves to the custom domain below once mapped.
+issued token names it, and the connect / sign pages are served on it: `https://mcp.solana.vanna.finance` (the custom
+domain below). Cloud Run's own URL (`https://vanna-mcp-solana-public-398807408840.us-central1.run.app`) still answers,
+but its OAuth metadata names the domain, so clients use the domain.
 
-## Approvals on the Vanna website (`APPROVE_PAGE_URL`)
+The image builds the pages (`web/pages`, a Node stage in the Dockerfile) and serves them with brotli / gzip copies; no
+extra step. The connect and plan pages offer the website's email / Google / X / GitHub login through Dynamic
+(`DYNAMIC_ENVIRONMENT_ID` in the env file, the website's public `NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID`). Dynamic answers only
+the origins its dashboard allows (Security → Allowed origins): the service's address must be listed there, or the email
+option says it is unavailable and only wallet extensions work.
 
-Plan links open on the website's approve page instead of this service's own `/plan/<id>` (which stays as the
-fallback). Live since 2026-10-21: `APPROVE_PAGE_URL` is in `deploy/public-service.env.yaml`; the website has
+## Approvals on the Vanna website (`APPROVE_PAGE_URL`) — retired with the custom domain
+
+From 2026-10-21 plan links opened on the website's approve page. With the move to `mcp.solana.vanna.finance` the
+public connector signs on its **own** pages again, as the Stellar MCP does on `mcp.vanna.finance`:
+`deploy/public-service.env.yaml` sets `APPROVE_PAGE_URL` empty. The website's `/approve` page and its `MCP_PLAN_API_URL`
+can stay as they are (unused). How it was set up, should it be wanted again: `APPROVE_PAGE_URL` set, and the website's
 `MCP_PLAN_API_URL` = this service's origin. Both services mount `PLAN_PROXY_SECRET` from a Secret Manager secret
 `plan-proxy-secret` (one value, a copy in each project: `solana-mcp` read by `vanna-mcp-public@`,
 `vanna-credit-solana-test` read by `vanna-credit-runtime@`), so the plan rate limit counts each website user, not the
@@ -68,32 +83,33 @@ gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region
 
 The website's access gate applies to the page (a visitor without the code sees the gate first).
 
-## Custom domain: `https://mcp.solana.vanna.finance` (pending)
+## Custom domain: `https://mcp.solana.vanna.finance`
 
-Not live yet (2026-10-16): the gcloud account deploying the service has no verified domain, and the `vanna.finance`
-zone sits in a project it cannot see, so a `vanna.finance` admin first makes that account a Search Console owner of
-`vanna.finance` (Settings → Users and permissions → Manage property owners → Add an owner) and adds the CNAME of step 3.
-Until then everything uses the run.app URL; nothing below has been applied.
+The connector and its pages live on a Vanna domain, as the Stellar MCP does on `mcp.vanna.finance` (a Cloud Run domain
+mapping, CNAME to `ghs.googlehosted.com`), so users and wallets' phishing lists can recognise them. **Only the public
+service is mapped**; the Copilot's private `vanna-mcp-solana` keeps its run.app URL (the website calls it with an IAM token
+for that URL).
 
-The connector and its signing pages should live on a Vanna domain, so users (and wallets' phishing lists) can recognise
-them. The site uses the same mechanism (`test.solana.vanna.finance` is a CNAME to `ghs.googlehosted.com`); `vanna.finance`
-DNS is on Google Cloud DNS.
+Mapped on 2026-11-11 (certificate active) and the service switched to it (`EXTERNAL_BASE_URL`). A domain mapping needs a
+Google account that is a verified owner of `vanna.finance` in Search Console; the deploying account is not, so the
+`vanna.finance` admin (who mapped `mcp.vanna.finance`) did steps 1–2 with their own account. They need `roles/run.admin` on `solana-mcp` for step 1. The `vanna.finance` DNS is managed outside
+these projects (nameservers `ns-cloud-e*.googledomains.com`).
 
 ```
-# 1. Once per account: the gcloud account must be a verified owner of vanna.finance (Search Console)
-gcloud domains list-user-verified
-
-# 2. Map the domain to the service (Cloud Run issues and renews the TLS certificate)
+# 1. (admin) Map the domain to the PUBLIC service; Cloud Run issues and renews the TLS certificate.
+#    Console: Cloud Run (project solana-mcp) → Manage custom domains → Add mapping → vanna-mcp-solana-public → mcp.solana
 gcloud beta run domain-mappings create --service=vanna-mcp-solana-public --domain=mcp.solana.vanna.finance --project=solana-mcp --region=us-central1
 
-# 3. The DNS record it asks for, in the vanna.finance zone
-gcloud dns record-sets create mcp.solana.vanna.finance. --zone=<vanna.finance zone> --project=<DNS project> --type=CNAME --ttl=300 --rrdatas=ghs.googlehosted.com.
+# 2. (admin) The DNS record it asks for, where vanna.finance's DNS is managed: host mcp.solana, CNAME, ghs.googlehosted.com.
 
-# 4. Wait until the certificate is ready (CertificateProvisioned = True), then check https://mcp.solana.vanna.finance/health
+# 3. Wait until the certificate is ready (CertificateProvisioned = True), then check https://mcp.solana.vanna.finance/health
 gcloud beta run domain-mappings describe --domain=mcp.solana.vanna.finance --project=solana-mcp --region=us-central1
 
-# 5. Only then switch the issuer (no rebuild) and set the same value in deploy/public-service.env.yaml; run the smoke test on it
-gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=EXTERNAL_BASE_URL=https://mcp.solana.vanna.finance
+# 4. Dynamic dashboard (website environment, Security → Allowed origins): add https://mcp.solana.vanna.finance
+#    (and the social-login redirect allowlist, if the environment has one).
+
+# 5. Only then deploy with deploy/public-service.env.yaml (EXTERNAL_BASE_URL is already the domain there), and run the
+#    smoke test on https://mcp.solana.vanna.finance
 ```
 
 Changing `EXTERNAL_BASE_URL` changes the OAuth issuer: tokens issued under the old URL stop verifying, so every client
@@ -125,7 +141,7 @@ with option 1 below. If the service is ever recreated in another project, the sa
 ## Verify
 
 ```
-python scripts/smoke_public.py https://vanna-mcp-solana-public-398807408840.us-central1.run.app
+python scripts/smoke_public.py https://mcp.solana.vanna.finance
 ```
 
 It performs the whole path with a throwaway wallet (discovery, wallet-signature login, tool list, scoping, faucet, a
@@ -141,7 +157,7 @@ those pools and rebuild by themselves (`vanna_core/fork_heal.py`, logged as `for
 Then connect a real client:
 
 ```
-claude mcp add --transport http vanna-solana https://vanna-mcp-solana-public-398807408840.us-central1.run.app/mcp
+claude mcp add --transport http vanna-solana https://mcp.solana.vanna.finance/mcp
 ```
 
 Use `/mcp` in Claude Code to start the login; the browser opens the Vanna connect page, you approve with your wallet

@@ -167,9 +167,14 @@ that anyone can add to Claude, Cursor or another MCP client. There is no separat
   alongside `FIRST_PARTY_CLIENT_IDS` or the fork tools.
 
 Status: live on the test fork since 2026-10-07 as the Cloud Run service `vanna-mcp-solana-public`
-(https://vanna-mcp-solana-public-398807408840.us-central1.run.app/mcp). It serves its own connect page and the
-signing pages, and keeps its state in Firestore (`mcp_state`). Deploy steps: `docs/DEPLOY_PUBLIC.md`; operator
-settings: `docs/CONNECTING_CLIENTS.md` §3.
+(https://mcp.solana.vanna.finance/mcp since 2026-11-11, as the Stellar MCP is on mcp.vanna.finance; the run.app address
+still answers but its sign-in names the domain). It serves its own sign-in and plan pages and keeps its
+state in Firestore (`mcp_state`). Deploy steps: `docs/DEPLOY_PUBLIC.md`; operator settings: `docs/CONNECTING_CLIENTS.md` §3.
+
+The pages (`/connect`, `/plan/<id>`) are a small React app in `web/pages`, built from the Stellar MCP's page components so
+both MCPs look and work the same, with sign-in by the website's own email / Google / X / GitHub login (Dynamic, same wallet
+as on the website) or a Solana wallet extension. Build it before running locally: `cd web/pages; npm ci; npm run build`
+(output `mcp_server/web/static/app/`, git-ignored; the Dockerfile builds it in a Node stage).
 
 Signing pages (`/plan/<id>`): a direct write is a one-step plan with its own link, vault, perps and Predict writes
 included (they are `raw` plan steps). A Predict trade is several transactions signed in **one** wallet approval

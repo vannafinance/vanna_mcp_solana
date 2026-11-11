@@ -17,6 +17,7 @@ The user may narrow the scopes (read-only) but never widen them past what the cl
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +38,19 @@ from mcp_server.oauth.verifier import is_wallet_address
 logger = logging.getLogger(__name__)
 
 _MAX_CHALLENGES_PER_REQUEST = 5
+_PROVIDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$")
+
+
+def wallet_provider(value: object) -> str | None:
+    """Which wallet the person signed in with, as the page names it: "dynamic" (the website's email / social login) or
+    an extension's own name ("Backpack", "Phantom" …). Display and reconnect hint only: it grants nothing, and every
+    signature is still checked against the wallet address itself."""
+    return value.strip() if isinstance(value, str) and _PROVIDER.match(value.strip()) else None
+
+
+def provider_key(client_id: str, wallet: str) -> str:
+    """Where the wallet kind of a sign-in is kept: per agent and wallet, as the Stellar MCP keeps its wallet selection."""
+    return f"walletkind:{client_id}:{wallet}"
 
 
 @dataclass
@@ -113,7 +127,7 @@ class ConsentService:
         )
         return {"message": message, "nonce": nonce, "expires_in": self._config.siws_ttl}
 
-    async def complete(self, request_id: str, wallet: str, nonce: str, signature: str) -> str:
+    async def complete(self, request_id: str, wallet: str, nonce: str, signature: str, *, provider: object = None) -> str:
         """Verify the wallet signature and return the redirect URL carrying the authorization code."""
         if not isinstance(nonce, str) or not isinstance(signature, str) or not is_wallet_address(wallet):
             raise ConsentError("invalid_request", "Missing or malformed sign-in fields.")
@@ -133,7 +147,13 @@ class ConsentService:
         code = await self._provider.issue_authorization_code(
             client_id=pending["client_id"], wallet=wallet, scopes=challenge["scopes"], pending=pending
         )
-        logger.info("oauth consent granted | client_id=%s wallet=%s scopes=%s", pending["client_id"], wallet, challenge["scopes"])
+        kind = wallet_provider(provider)
+        if kind:
+            # Remembered for this agent and wallet, so a plan it draws opens with that wallet already chosen (as the Stellar
+            # MCP's review page does); the page still only signs when the wallet's own address matches the plan.
+            await self._store.put(provider_key(pending["client_id"], wallet), {"provider": kind}, self._config.refresh_ttl)
+        logger.info("oauth consent granted | client_id=%s wallet=%s scopes=%s provider=%s", pending["client_id"], wallet,
+                    challenge["scopes"], kind or "-")
         return construct_redirect_uri(pending["redirect_uri"], code=code, state=pending["state"], iss=self._config.issuer)
 
     async def deny(self, request_id: str) -> str:

@@ -19,12 +19,17 @@ unsigned; the user reviews and signs in their own wallet (Phantom, Backpack, Sol
 **Prerequisites:** Python 3.11+, this repo's `.venv` (`pip install -r requirements.txt -c constraints.txt && pip install -e .`),
 a Solana wallet extension in your browser (Phantom, Backpack or Solflare), and Claude Code.
 
-**1. Start the server** (leave it running):
+**1. Build the pages once, then start the server** (leave it running):
 
 ```powershell
+cd D:\Projects\Vanna_MCP_Solana\web\pages
+npm ci; npm run build
 cd D:\Projects\Vanna_MCP_Solana
 .venv\Scripts\python scripts\run_local.py
 ```
+
+The sign-in and signing pages are a small React app in `web/pages` (the Stellar MCP's page components, so both MCPs look
+the same), built into `mcp_server/web/static/app/` (git-ignored; the Dockerfile builds it). Rebuild after changing it.
 
 It listens on `http://127.0.0.1:8000` with the safety layer, the signing pages and the test faucet on, against the hosted
 Surfpool fork. (`PORT=8765` to change the port; any value you set in the environment or `.env` wins over the defaults.)
@@ -83,21 +88,37 @@ page's prepare and submit calls carry it (`X-Plan-Token`), so a copied link cann
 plan in another browser asks the wallet to sign a short "continue here" message, which issues a new token and retires
 the old one. Logs name a plan by a hash (`plan_ref`), never by the id that makes up the link.
 
-The hosted pages live on `https://vanna-mcp-solana-public-398807408840.us-central1.run.app`. Each page shows that address and warns if it is opened
+The hosted pages live on `https://mcp.solana.vanna.finance`. Each page knows that address and warns if it is opened
 anywhere else, and the approve and continue messages the wallet shows start with `Site: <that host>`. Only the page's
 own origin may approve, prepare, submit or cancel (a cross-site `Origin` is refused). Pages are served with a strict
 CSP, HSTS, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` and a `Permissions-Policy` that turns every
 device API off.
 
-The page has one main button whose job follows the plan: **Approve and sign** (the approval signature, then each
-step's transaction in turn, each shown by the wallet), **Continue** for an approved plan with steps left, and **Try
-again** when a step could not be prepared (for example the swap route service was briefly rate-limited; Jupiter calls
-retry 429/502/503 three times with backoff first). Risks and details are folded under "Details and risks"; Cancel is a
-plain link that asks for confirmation.
+The page is laid out as the Stellar MCP's review page: who asked ("Requested by Claude Code", from the client's OAuth
+registration), the execution card with one row per step and **Approve** on the step that waits for the wallet (the first
+Approve is the approval signature, then each step's transaction in turn; **Cancel remaining** beside it), and "What
+changes" (health factor meter, margin collateral and debt before and after). A step that could not be prepared shows
+the reason and **Retry** (for example the swap route service was briefly rate-limited; Jupiter calls retry 429/502/503
+three times with backoff first). The plan's warnings sit under the card. Once every step is confirmed, or the rest is
+cancelled, the page turns into the close-tab card.
 
-Wallets are found through the Wallet Standard (any compliant Solana wallet), with the older injected objects as a
-fallback; with more than one wallet installed the page asks which one to use. On a phone without a wallet extension,
-the page offers to open itself in Phantom's, Solflare's or Backpack's in-app browser.
+**Signing in** (the connect page, and a plan opened in a browser with no wallet connected yet): with the **same email,
+Google, X or GitHub login as the website** (Dynamic; `DYNAMIC_ENVIRONMENT_ID` = the website's
+`NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID`), which opens the same Solana wallet and so the same Vanna account; a person who
+signed up on Stellar gets their Solana wallet created on the spot. Or with a wallet extension: Phantom, Backpack, Solflare
+and any other Wallet Standard wallet, with the older injected objects as a fallback. On a phone without an extension the
+wallet buttons open the page in Phantom's, Solflare's or Backpack's in-app browser. Dynamic only signs; the server issues
+every message and transaction and checks every signature. Dynamic answers only the origins listed in its dashboard
+(Security → Allowed origins): every address the pages are served from must be there (locally `http://localhost:3000` is
+already allowed; `http://localhost:8000` has to be added).
+
+**The plan page opens with the sign-in's wallet ready**, as the Stellar MCP's review page does: the connect page tells
+the server which wallet signed in (`dynamic` for the email / social wallet, else the extension's name), kept per agent and
+wallet (`walletkind:<client>:<wallet>`), and every plan that agent draws carries it (`provider` in the plan view, shown in
+the wallet badge). On opening the link, an email / social login is picked up from the browser's Dynamic session, and an
+extension is connected silently (Wallet Standard `silent`, the older `onlyIfTrusted`: no popup) when it has already been
+allowed on the site; either way only if its address is the plan's. Otherwise the page asks, listing the sign-in's wallet
+first. The hint grants nothing: every signature is still checked against the plan's wallet.
 
 **Phantom on a fork:** the page only asks your wallet to *sign*; the server broadcasts to the fork. Phantom may warn that it
 cannot simulate the transaction or that it targets an unknown network; that is expected for a fork. Make sure the wallet
@@ -146,14 +167,15 @@ The same server runs as `PUBLIC_MODE=true`: it is its own OAuth authorization se
 (Sign-In-With-Solana), so a client adds one URL and the user connects a wallet once.
 
 ```bash
-claude mcp add --transport http vanna-solana https://vanna-mcp-solana-public-398807408840.us-central1.run.app/mcp
+claude mcp add --transport http vanna-solana https://mcp.solana.vanna.finance/mcp
 ```
 
 Any client that speaks MCP over streamable HTTP with OAuth (Claude Code, Claude Desktop, Cursor, Windsurf, an agent
 harness using the MCP SDK's OAuth client) uses that same URL.
 
-1. The client discovers the login and registers itself; the browser opens this service's own `/connect` page, which shows
-   who is asking and where it will return, lets the user choose read-only or full access, and has the wallet sign a message
+1. The client discovers the login and registers itself; the browser opens this service's own `/connect` page (laid out as
+   the Stellar MCP's sign-in), which shows who is asking, where it will return and what it can and can't do; the person
+   signs in with their website email / Google / X / GitHub login or a wallet extension, and that wallet signs a message
    the server issued.
 2. After that every call acts as that wallet (defaults `authority`; any other wallet is refused with `wallet_mismatch`).
 3. Writes work exactly as above: plan or sign link, approve and sign in the wallet.
@@ -184,7 +206,8 @@ then `python scripts/smoke_public.py http://127.0.0.1:8000`.
 | `SAFETY_LAYER` | `false` (always on in public mode) | enforce the guardrails above on direct writes |
 | `ENABLE_SIGN_LINKS` | `false` | serve the signing pages; writes return a link |
 | `SIGN_BASE_URL` | `EXTERNAL_BASE_URL` or `http://127.0.0.1:PORT` | where the user's browser reaches the pages |
-| `APPROVE_PAGE_URL` | empty | plan links open on the Vanna website's approve page (`{url}/{plan_id}`), e.g. `https://test.solana.vanna.finance/approve`; empty = this server's own `/plan/{id}` page |
+| `DYNAMIC_ENVIRONMENT_ID` | empty | the website's Dynamic environment: email / Google / X / GitHub sign-in on the connect and plan pages (same login, same wallet as the website); empty = wallet extensions only |
+| `APPROVE_PAGE_URL` | empty | plan links open on the Vanna website's approve page (`{url}/{plan_id}`) instead; empty = this server's own `/plan/{id}` page (the public connector keeps it empty, as the Stellar MCP signs on its own pages) |
 | `PLAN_PROXY_SECRET` | empty | shared with the website's plan proxy; with it, `/api/plan/*` rate limits count each end user, not the website |
 | `ENABLE_TEST_FAUCET` | `false` | `vanna_wallet action=faucet` and `vanna_predict action=faucet` (fork only) |
 | `APP_ACCESS_CODE` | empty | the app's site-wide access code; every call into the app logs in with it (an empty one gets 401 from a gated app) |
