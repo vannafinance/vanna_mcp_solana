@@ -131,3 +131,28 @@ async def test_a_route_that_fits_only_under_a_cap_is_offered(monkeypatch) -> Non
 
 async def _async(v):
     return v
+
+
+async def test_titan_margin_fitting_uses_planned_wallet_alt_and_parallel_caps(monkeypatch) -> None:
+    """When wallet_table is absent, quote-time fitting includes the planned wallet ALT and tries caps in parallel."""
+    c = contract(monkeypatch)
+    seen_flags: list[bool] = []
+    seen_caps: list[int | None] = []
+    wide = SimpleNamespace(out_amount=557_900_000, min_out=552_300_000, labels=["Titan"], max_accounts=None)
+
+    async def titan_quote(*_a, max_accounts=None):
+        seen_caps.append(max_accounts)
+        return SimpleNamespace(out_amount=557_700_000, min_out=552_100_000, labels=["Titan"], max_accounts=max_accounts)
+
+    async def fake_build(_auth, _margin, _f, _t, _reg, quote, *, include_planned_wallet_alt=False):
+        seen_flags.append(include_planned_wallet_alt)
+        fits = quote.max_accounts == 24
+        return [], [], fits
+
+    c._titan = SimpleNamespace(get_quote=titan_quote)
+    c._titan_margin_build = fake_build
+
+    best = await c._titan_margin_fitting(WALLET, SOL, USDC, 5_000_000_000, 100, SimpleNamespace(), wide)
+    assert best is not None and best.max_accounts == 24
+    assert seen_caps == [c for c in TITAN_MARGIN_ACCOUNT_CAPS if c is not None]
+    assert seen_flags and all(flag is True for flag in seen_flags)

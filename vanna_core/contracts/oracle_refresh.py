@@ -219,9 +219,21 @@ async def refresh_via_keeper(settings: VannaSettings) -> dict | None:
         headers = {"Content-Type": "application/json"}
         if settings.price_keeper_secret:
             headers["Authorization"] = f"Bearer {settings.price_keeper_secret}"
-        url = f"{settings.price_keeper_url.rstrip('/')}/api/prices/refresh"
-        async with pooled_http(60.0) as http:
-            resp = await app_request(http, settings, "POST", url, headers=headers)
+        paths = getattr(refresh_via_keeper, "_paths", None)
+        if paths is None:
+            paths = {}
+            setattr(refresh_via_keeper, "_paths", paths)
+        base = settings.price_keeper_url.rstrip("/")
+        path = paths.get(base, "/api/prices/refresh")
+        # 30 s: a write that cannot get fresh prices fails closed on the stale-price check and can be retried, which is better
+        # than waiting a minute and then another for a cold app (see `keep_app_awake` in app_gate.py).
+        async with pooled_http(30.0) as http:
+            resp = await app_request(http, settings, "POST", f"{base}{path}", headers=headers)
+            if resp.status_code == 404 and path == "/api/prices/refresh":
+                alt = "/api/solana/prices/refresh"
+                resp = await app_request(http, settings, "POST", f"{base}{alt}", headers=headers)
+                if resp.status_code != 404:
+                    paths[base] = alt
         try:
             body = resp.json()
         except ValueError:

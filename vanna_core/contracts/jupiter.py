@@ -55,9 +55,20 @@ def _retry_delay(resp: httpx.Response, attempt: int) -> float:
     return min(max(asked, default), _RETRY_AFTER_CAP_SECS)
 
 
+_JUPITER_PROXY_PREFIXES: dict[str, str] = {}
+
+
 class JupiterClient:
     def __init__(self, settings: VannaSettings) -> None:
         self._settings = settings
+
+    @property
+    def _derived_app_base(self) -> str | None:
+        s = self._settings
+        if s.jupiter_api_key or s.jupiter_proxy_url:
+            return None
+        app = s.perps_helper_url or s.price_keeper_url
+        return app.rstrip("/") if s.is_fork and app else None
 
     @property
     def _proxy(self) -> str | None:
@@ -67,8 +78,11 @@ class JupiterClient:
             return None
         if s.jupiter_proxy_url:
             return s.jupiter_proxy_url.rstrip("/")
-        app = s.perps_helper_url or s.price_keeper_url
-        return f"{app.rstrip('/')}/api/jupiter" if s.is_fork and app else None
+        base = self._derived_app_base
+        if not base:
+            return None
+        prefix = _JUPITER_PROXY_PREFIXES.get(base, "/api/jupiter")
+        return f"{base}{prefix}"
 
     def _url(self, endpoint: str) -> str:
         proxy = self._proxy
@@ -85,6 +99,15 @@ class JupiterClient:
             for attempt in range(len(_RETRY_DELAYS_SECS) + 1):
                 url = self._url(endpoint)
                 resp = await (app_request(http, self._settings, method, url, **kwargs) if self._proxy else http.request(method, url, **kwargs))
+                # Monorepo hosts Jupiter under /api/solana/jupiter; standalone apps use /api/jupiter.
+                base = self._derived_app_base
+                if (
+                    resp.status_code == 404
+                    and base
+                    and _JUPITER_PROXY_PREFIXES.get(base, "/api/jupiter") == "/api/jupiter"
+                ):
+                    _JUPITER_PROXY_PREFIXES[base] = "/api/solana/jupiter"
+                    resp = await app_request(http, self._settings, method, self._url(endpoint), **kwargs)
                 if resp.status_code not in _RETRY_STATUSES or attempt == len(_RETRY_DELAYS_SECS):
                     return resp
                 await asyncio.sleep(_retry_delay(resp, attempt))

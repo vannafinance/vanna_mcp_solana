@@ -11,6 +11,7 @@ means none.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from solders.pubkey import Pubkey
@@ -29,6 +30,15 @@ from vanna_core.phoenix import (
 from vanna_core.types import AccountNotFoundError
 
 logger = logging.getLogger(__name__)
+
+_HELPER_PREFIXES: dict[str, str] = {}
+
+
+def _resolve_helper_url(base: str, path: str) -> str:
+    prefix = _HELPER_PREFIXES.get(base, "")
+    if prefix and path.startswith("/api/") and not path.startswith("/api/solana/"):
+        return f"{base}{prefix}/{path[5:]}"
+    return f"{base}{path}"
 
 # Default worst-price protection for market orders, bps: 1% on crypto, 2% on the stock markets (thinner books).
 DEFAULT_SLIPPAGE_BPS = 100
@@ -326,7 +336,13 @@ class PerpsContract:
         base = (settings.perps_helper_url or settings.price_keeper_url).rstrip("/")
         try:
             async with pooled_http(30.0) as http:
-                resp = await app_request(http, settings, "POST", f"{base}{path}", json=body)
+                url = _resolve_helper_url(base, path)
+                resp = await app_request(http, settings, "POST", url, json=body)
+                if resp.status_code == 404 and path.startswith("/api/") and not path.startswith("/api/solana/") and base not in _HELPER_PREFIXES:
+                    solana_url = f"{base}/api/solana/{path[5:]}"
+                    resp = await app_request(http, settings, "POST", solana_url, json=body)
+                    if resp.status_code != 404:
+                        _HELPER_PREFIXES[base] = "/api/solana"
             return resp.json() if resp.status_code == 200 else None
         except Exception:  # noqa: BLE001 - a missing helper leaves the fork's own state; the simulation decides
             return None
@@ -420,9 +436,11 @@ class PerpsContract:
             ember_accounts, market_order_data, order_accounts, usd_to_ticks, validator_accounts,
         )
 
-        await maybe_refresh_prices(self._client, self._client.settings)
-        live_mark = await self._refresh_book(market)
-        snap, venue, registry, model = await self._context(authority)
+        _, live_mark, (snap, venue, registry, model) = await asyncio.gather(
+            maybe_refresh_prices(self._client, self._client.settings),
+            self._refresh_book(market),
+            self._context(authority),
+        )
         if await self._ensure_access(authority, venue):
             snap, venue, registry, model = await self._context(authority)
             if venue.trader is None or (venue.trader.capabilities & FULL_TRADER_CAPABILITIES) != FULL_TRADER_CAPABILITIES:
@@ -488,9 +506,11 @@ class PerpsContract:
         from vanna_core.pdas import margin_pda
         from vanna_core.phoenix import ASK, BID, PHOENIX_PROGRAM_ID, market_order_data, order_accounts, usd_to_ticks, validator_accounts
 
-        await maybe_refresh_prices(self._client, self._client.settings)
-        live_mark = await self._refresh_book(market)
-        snap, venue, registry, model = await self._context(authority)
+        _, live_mark, (snap, venue, registry, model) = await asyncio.gather(
+            maybe_refresh_prices(self._client, self._client.settings),
+            self._refresh_book(market),
+            self._context(authority),
+        )
         key = market_key(market)
         m = next((x for x in venue.markets if x.meta.key == key), None)
         if m is None:

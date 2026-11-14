@@ -87,14 +87,26 @@ def fits_one_transaction(instructions, fee_payer: Pubkey, lookup_tables, compute
 
 
 class SwapContract:
-    async def _margin_tables(self, authority: Pubkey) -> list:
-        """The protocol tables plus the wallet's own table (it carries the margin's vaults since 2026-10-09)."""
+    async def _margin_tables(self, authority: Pubkey, *, include_planned_wallet_alt: bool = False, registry=None) -> list:
+        """The protocol tables plus the wallet's own table (it carries the margin's vaults since 2026-10-09).
+        During a quote (`include_planned_wallet_alt=True`), if the wallet's lookup table doesn't exist on-chain yet,
+        simulate the stable keys in-memory so Titan isn't falsely marked `too-large` before the one-time setup runs."""
+        from solders.address_lookup_table_account import AddressLookupTableAccount
         from vanna_core import wallet_alt
         from vanna_core.protocol_alt import load_protocol_tables
 
         tables = list(await load_protocol_tables(self._client, self._client.settings.protocol_lookup_tables))
         wallet_table = await wallet_alt.load_wallet_table(self._client, authority)
-        return [*tables, wallet_table] if wallet_table is not None else tables
+        if wallet_table is not None:
+            return [*tables, wallet_table]
+        if include_planned_wallet_alt and registry is not None:
+            try:
+                stable = await wallet_alt.stable_keys(self._client, authority, registry)
+                if stable:
+                    return [*tables, AddressLookupTableAccount(key=Pubkey.default(), addresses=stable)]
+            except Exception:  # noqa: BLE001 - best-effort quote simulation
+                pass
+        return tables
 
     def __init__(self, client: SolanaClient) -> None:
         self._client = client
@@ -163,18 +175,26 @@ class SwapContract:
         self, authority: Pubkey, from_asset, to_asset, raw_amount: int, slippage_bps: int, registry, quote: TitanQuote
     ) -> TitanQuote | None:
         """The first Titan route that fits one margin transaction: the quote given, then re-quotes under each
-        TITAN_MARGIN_ACCOUNT_CAPS cap. None when no cap gives a route that fits."""
+        TITAN_MARGIN_ACCOUNT_CAPS cap in parallel. None when no cap gives a route that fits."""
         margin = str(margin_pda(authority, self._client.program_id)[0])
-        for cap in TITAN_MARGIN_ACCOUNT_CAPS:
-            if cap is not None:
-                try:
-                    quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, margin, slippage_bps, "margin", max_accounts=cap)
-                except Exception:  # noqa: BLE001 - a tight cap can leave Titan with no route
-                    continue
-            if await self._titan_margin_fits(authority, from_asset, to_asset, registry, quote):
-                if cap is not None:
-                    logger.info("Titan margin route fits under accountsLimitTotal=%s", cap)
-                return quote
+        if await self._titan_margin_fits(authority, from_asset, to_asset, registry, quote):
+            return quote
+        caps = [cap for cap in TITAN_MARGIN_ACCOUNT_CAPS if cap is not None]
+        if not caps:
+            return None
+        quoted = await asyncio.gather(
+            *(
+                self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, margin, slippage_bps, "margin", max_accounts=cap)
+                for cap in caps
+            ),
+            return_exceptions=True,
+        )
+        for cap, cand in zip(caps, quoted):
+            if isinstance(cand, Exception):
+                continue
+            if await self._titan_margin_fits(authority, from_asset, to_asset, registry, cand):
+                logger.info("Titan margin route fits under accountsLimitTotal=%s", cap)
+                return cand
         return None
 
     async def _titan_margin_fits(self, authority: Pubkey, from_asset, to_asset, registry, quote: TitanQuote) -> bool:
@@ -182,7 +202,7 @@ class SwapContract:
         fitting: the build reports it with its own reason."""
         try:
             margin = margin_pda(authority, self._client.program_id)[0]
-            return (await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote))[2]
+            return (await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote, include_planned_wallet_alt=True))[2]
         except Exception:  # noqa: BLE001
             logger.info("Titan margin fit check failed", exc_info=True)
             return True
@@ -461,17 +481,22 @@ class SwapContract:
             summary={"action": "margin_swap", "from": from_asset.symbol, "to": to_asset.symbol, "amount": str(amount_ui), "provider": "jupiter"},
         )
 
-    async def _titan_margin_build(self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, registry, quote: TitanQuote):
+    async def _titan_margin_build(
+        self, authority: Pubkey, margin: Pubkey, from_asset, to_asset, registry, quote: TitanQuote,
+        *, include_planned_wallet_alt: bool = False,
+    ):
         """The Titan margin transaction's instructions and lookup tables, and whether it fits one Solana transaction."""
         data, accounts = margin_swap_call(quote, margin)
-        atlas = await missing_atlas_accounts(self._client, authority, accounts, data[20])
-        instructions = await build_margin_execute_instructions(
-            self._client, authority, margin,
-            target_program=TITAN_PROGRAM_ID, spent=from_asset, received=to_asset,
-            cpi_accounts=accounts, data=data, registry=registry,
+        atlas, instructions, lookup_tables, protocol_tables = await asyncio.gather(
+            missing_atlas_accounts(self._client, authority, accounts, data[20]),
+            build_margin_execute_instructions(
+                self._client, authority, margin,
+                target_program=TITAN_PROGRAM_ID, spent=from_asset, received=to_asset,
+                cpi_accounts=accounts, data=data, registry=registry,
+            ),
+            fetch_lookup_tables(self._client, quote.address_lookup_tables),
+            self._margin_tables(authority, include_planned_wallet_alt=include_planned_wallet_alt, registry=registry),
         )
-        lookup_tables = await fetch_lookup_tables(self._client, quote.address_lookup_tables)
-        protocol_tables = await self._margin_tables(authority)
         route_keys = {t.key for t in lookup_tables}
         all_tables = [*lookup_tables, *(t for t in protocol_tables if t.key not in route_keys)]
         full = [*atlas, *instructions]
@@ -487,14 +512,27 @@ class SwapContract:
         Titan's route can change from one quote to the next. A route that doesn't fit one transaction with the margin
         instruction is quoted again under each TITAN_MARGIN_ACCOUNT_CAPS cap before the swap is refused."""
         full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
-        for cap in TITAN_MARGIN_ACCOUNT_CAPS[1:]:
-            if fits:
-                break
-            try:
-                quote = await self._titan.get_quote(from_asset.mint, to_asset.mint, raw_amount, str(margin), slippage_bps, "margin", max_accounts=cap)
-            except ContractCallError:  # a tight cap can leave Titan with no route
-                continue
-            full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
+        caps = TITAN_MARGIN_ACCOUNT_CAPS[1:]
+        if not fits and caps:
+            # Fetch tighter-cap Titan quotes concurrently; check transaction packing sequentially until the first fit.
+            requoted = await asyncio.gather(
+                *(
+                    self._titan.get_quote(
+                        from_asset.mint, to_asset.mint, raw_amount, str(margin), slippage_bps, "margin", max_accounts=cap,
+                    )
+                    for cap in caps
+                ),
+                return_exceptions=True,
+            )
+            for candidate in requoted:
+                if fits:
+                    break
+                if isinstance(candidate, BaseException):
+                    if isinstance(candidate, ContractCallError):  # a tight cap can leave Titan with no route
+                        continue
+                    raise candidate
+                quote = candidate
+                full, lookup_tables, fits = await self._titan_margin_build(authority, margin, from_asset, to_asset, registry, quote)
         if not fits:
             raise ContractCallError(
                 f"Transaction too large: Titan margin swap {from_asset.symbol}->{to_asset.symbol} exceeds {MAX_TX_BYTES} bytes. "
