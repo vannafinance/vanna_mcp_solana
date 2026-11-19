@@ -171,7 +171,7 @@ Use `/mcp` in Claude Code to start the login; the browser opens the Vanna connec
 - Roll back by routing traffic to the previous revision; the state format is the same across revisions.
 - A fork reset deletes the protocol lookup table: re-run `scripts/create_protocol_lookup_table.py` and update
   `PROTOCOL_LOOKUP_TABLES` in the env file and on the service. The current table is
-  `zEEeoScWGrV1YeVzyUGar6S6KKiWcBLxeuYdwjoX5fg` (includes the Phoenix and Titan accounts).
+  `GRDqHSapkeYNVqH4dwsQDSJpPpnwYQTSqYYisLFoLXb4` (2026-11-19: includes the Phoenix and Titan accounts, SKR and the validator rule books for Kamino Lend, Titan and Perena).
 - Per-wallet lookup tables (since the 2026-10-09 program upgrade): a wallet's first margin write returns a one-time
   setup transaction that creates its table. Its address is kept in the state store (`wallet_alt:<wallet>`) and named
   by a memo in the setup transaction, so any instance finds it again from the wallet's history after a restart.
