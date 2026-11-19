@@ -152,17 +152,23 @@ def parse_amount(raw: Any, symbol: str | None = None) -> tuple[str | None, Amoun
 # ------------------------------------------------------------------ sizing
 
 
-def max_borrow_usd(collateral: float, debt: float, floor: float, borrowed_is_collateral: bool = True) -> float:
-    """Largest USD borrow that keeps HF >= floor. Borrowed funds count as collateral when they stay in the vault."""
-    x = (collateral - floor * debt) / (floor - 1) if borrowed_is_collateral else collateral / floor - debt
+def max_borrow_usd(collateral: float, debt: float, floor: float, borrowed_is_collateral: bool | float = True) -> float:
+    """Largest USD borrow that keeps HF >= floor. Borrowed funds stay in the vault and count as collateral at weight w
+    (True = 1, False = 0, or the asset's borrow-line weight). Pass `collateral` on the same line (since the 2026-11
+    upgrade the borrow line: each holding at min(LTV x 1.1, 100%)): (C + w·x) / (D + x) = F  =>  x = (C − F·D) / (F − w)."""
+    w = float(borrowed_is_collateral) if not isinstance(borrowed_is_collateral, bool) else (1.0 if borrowed_is_collateral else 0.0)
+    x = (collateral - floor * debt) / (floor - w) if floor - w > 1e-9 else math.inf
     return max(0.0, x)
 
 
-def max_withdraw_usd(collateral: float, debt: float, floor: float) -> float:
-    """Largest USD of collateral that can leave while HF stays >= floor. With no debt everything can leave."""
+def max_withdraw_usd(collateral: float, debt: float, floor: float, weight: float = 1.0) -> float:
+    """Largest USD of an asset (borrow-line weight `weight`) that can leave while HF stays >= floor, `collateral` on the
+    same line: (C − w·x) / D = F  =>  x = (C − F·D) / w. With no debt, or an asset that weighs 0, everything can leave."""
     if debt <= 0:
         return collateral
-    return max(0.0, collateral - floor * debt)
+    if not weight > 0:
+        return math.inf
+    return max(0.0, (collateral - floor * debt) / weight)
 
 
 def hf_after(collateral: float, debt: float) -> float | None:
@@ -170,13 +176,16 @@ def hf_after(collateral: float, debt: float) -> float | None:
 
 
 def max_leverage(
-    *, collateral_usd: float, debt_usd: float, equity_usd: float, deposit_usd: float, floor: float, slippage_bps: int
+    *, collateral_usd: float, debt_usd: float, equity_usd: float, deposit_usd: float, floor: float, slippage_bps: int,
+    deposit_weight: float = 1.0, received_weight: float = 1.0,
 ) -> float:
-    """Highest leverage on `equity_usd` that holds HF >= floor given existing collateral/debt and swap slippage."""
+    """Highest leverage on `equity_usd` that holds HF >= floor given existing collateral/debt and swap slippage.
+    `collateral_usd` is on the borrow line; the deposit and what the borrow becomes (the swapped-into asset, or the
+    borrowed asset kept) count at their own borrow-line weights."""
     if not equity_usd > 0:
         return 1.0
-    s = 1 - slippage_bps / 10_000
-    c0 = collateral_usd + deposit_usd
+    s = (1 - slippage_bps / 10_000) * received_weight
+    c0 = collateral_usd + deposit_usd * deposit_weight
     denom = floor - s
     b = (c0 - floor * debt_usd) / denom if denom > 0 else math.inf
     if not b > 0:
@@ -202,6 +211,8 @@ def size_lever(
     leverage: float,
     floor: float,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    deposit_weight: float = 1.0,
+    received_weight: float = 1.0,
 ) -> LeverSize:
     """"Lever X Nx": borrow (N-1) x equity in a stable, swap it to X inside the margin account.
 
@@ -212,11 +223,13 @@ def size_lever(
         return LeverSize(False, reason="There is no balance of that asset to lever.")
     borrow_usd = (leverage - 1) * equity_usd
     s = 1 - slippage_bps / 10_000
-    worst = hf_after(collateral_usd + deposit_usd + borrow_usd * s, debt_usd + borrow_usd)
+    # borrow-line HF (2026-11 upgrade): the deposit and the received asset at their weights, debt in full
+    worst = hf_after(collateral_usd + deposit_usd * deposit_weight + borrow_usd * s * received_weight, debt_usd + borrow_usd)
     if worst is not None and worst < floor:
         top = max_leverage(
             collateral_usd=collateral_usd, debt_usd=debt_usd, equity_usd=equity_usd,
             deposit_usd=deposit_usd, floor=floor, slippage_bps=slippage_bps,
+            deposit_weight=deposit_weight, received_weight=received_weight,
         )
         safe = math.floor(top * 10) / 10  # round DOWN to one decimal so the offered figure is itself safe
         return LeverSize(

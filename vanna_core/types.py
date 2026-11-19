@@ -97,7 +97,8 @@ class PoolStats(BaseModel):
 
 class MarginHealth(BaseModel):
     """Account health — mirrors `math/health.rs::HealthSnapshot`, verified
-    against source. One account-wide threshold, no per-asset LTV weighting.
+    against source. One account-wide 1.10 threshold; since the 2026-11 upgrade collateral is weighted per asset
+    (`vanna_core/contracts/margin.py`: borrow line at min(LTV x 1.1, 100%), liquidation line at min(threshold x 1.1, 100%)).
 
     ``health_factor`` is ``None`` when there is no debt (the on-chain
     sentinel is `u128::MAX`; this is "no debt", never a floating-point

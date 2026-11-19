@@ -51,8 +51,10 @@ class Book:
     so "deposit 10 SOL, then borrow 3x" or "… then borrow to health 2" sizes against the account after the deposit."""
 
     wallet: str
-    collateral_usd: float = 0.0
+    collateral_usd: float = 0.0  # the borrow line (2026-11 upgrade): each holding at its borrow weight
     debt_usd: float = 0.0
+    value_usd: float = 0.0  # what the holdings are worth, unweighted (for "account equity")
+    weights: dict[str, tuple[float, float]] = field(default_factory=dict)
     has_account: bool = False
     holdings: dict[str, float] = field(default_factory=dict)  # margin collateral units, live
     deposits: list[tuple[str, float]] = field(default_factory=list)  # (asset, units) deposited earlier in this plan
@@ -68,7 +70,8 @@ class Book:
             return "The margin account could not be read just now, so this can't be sized. Try again in a moment."
         if h.kind == "ok" and h.health is not None:
             self.has_account = True
-            self.collateral_usd, self.debt_usd = h.health.collateral_usd, h.health.debt_usd
+            self.collateral_usd, self.debt_usd = h.health.borrow_line_usd, h.health.debt_usd
+            self.value_usd, self.weights = h.health.collateral_usd, h.health.weights
             self.holdings = {r.symbol: r.units for r in h.health.collateral}
         return None
 
@@ -79,6 +82,10 @@ class Book:
                 return None
             self.prices[asset] = p.usd
         return self.prices[asset]
+
+    def weight(self, asset: str) -> float:
+        """`asset`'s borrow-line weight (1 when unknown: the program's own check still decides)."""
+        return self.weights.get(asset, (1.0, 1.0))[0]
 
     async def apply(self, step: dict[str, Any]) -> None:
         """Fold an earlier step with an exact amount into the estimate (live-resolved "all" steps are skipped)."""
@@ -94,19 +101,24 @@ class Book:
         if px is None:
             return
         usd = units * px
+        weighted = usd * self.weight(asset)
         slots = step.get("slots") or {}
         if op == "deposit":
-            self.collateral_usd += usd
+            self.collateral_usd += weighted
+            self.value_usd += usd
             self.deposits.append((asset, units))
         elif op == "withdraw":
-            self.collateral_usd = max(0.0, self.collateral_usd - usd)
+            self.collateral_usd = max(0.0, self.collateral_usd - weighted)
+            self.value_usd = max(0.0, self.value_usd - usd)
         elif op == "borrow":
-            self.collateral_usd += usd  # borrowed funds stay in the margin account
+            self.collateral_usd += weighted  # borrowed funds stay in the margin account
+            self.value_usd += usd
             self.debt_usd += usd
         elif op == "repay":
             self.debt_usd = max(0.0, self.debt_usd - usd)
             if slots.get("source") == "margin":
-                self.collateral_usd = max(0.0, self.collateral_usd - usd)
+                self.collateral_usd = max(0.0, self.collateral_usd - weighted)
+                self.value_usd = max(0.0, self.value_usd - usd)
 
 
 def _floor_multiple(x: float) -> float:
@@ -148,8 +160,13 @@ async def size_leverage_borrow(book: Book, borrow_asset: str, multiple: float, *
         if px is None:
             return Resolved(False, message=f"The {asset} price is unavailable right now, so this can't be sized safely. Try again in a minute.")
         deposit_usd += units * px
-    # `book.collateral_usd` already includes this plan's earlier deposits; the leverage maths wants them apart.
-    collateral_before = book.collateral_usd - deposit_usd
+    # `book.collateral_usd` already includes this plan's earlier deposits (at their weights); the leverage maths wants
+    # them apart, at their own weight.
+    deposit_weighted = 0.0
+    for asset, units in book.deposits:
+        px_dep = await book.price(asset)
+        deposit_weighted += units * (px_dep or 0.0) * book.weight(asset)
+    collateral_before = book.collateral_usd - deposit_weighted
 
     if base_asset:
         want = parse_number(str(base_amount)) if base_amount is not None else None
@@ -167,12 +184,14 @@ async def size_leverage_borrow(book: Book, borrow_asset: str, multiple: float, *
         base_usd = deposit_usd
         basis = "your " + " + ".join(f"{risk.floor_decimals(u, 9)} {a}" for a, u in book.deposits) + " deposit"
     else:
-        base_usd, basis = book.collateral_usd - book.debt_usd, "your account equity"
+        base_usd, basis = book.value_usd - book.debt_usd, "your account equity"
     if not base_usd > 0:
         return Resolved(False, message="There is nothing to take a leverage multiple of. Deposit something first, or give an exact amount to borrow.")
 
     size = risk.size_lever(collateral_usd=collateral_before, debt_usd=book.debt_usd, equity_usd=base_usd,
-                           deposit_usd=deposit_usd, leverage=multiple, floor=floor, slippage_bps=0)
+                           deposit_usd=deposit_usd, leverage=multiple, floor=floor, slippage_bps=0,
+                           deposit_weight=deposit_weighted / deposit_usd if deposit_usd > 0 else 1.0,
+                           received_weight=book.weight(borrow_asset))
     if not size.ok:
         best = f" The most that holds the floor on {basis} is about {size.max_leverage:.1f}x." if size.max_leverage else " There is no room to borrow on it while keeping that floor."
         return Resolved(False, message=size.reason + best)
@@ -209,20 +228,23 @@ async def size_to_health(book: Book, op: str, asset: str, target: float, source:
     problem = await book.load()
     if problem:
         return Resolved(False, message=problem)
-    c, d = book.collateral_usd, book.debt_usd
+    # On the borrow line (2026-11 upgrade): c and each amount at its borrow weight w, debt in full.
+    c, d, w = book.collateral_usd, book.debt_usd, book.weight(asset)
     px = await book.price(asset)
     if px is None:
         return Resolved(False, message=f"The {asset} price is unavailable right now, so this can't be sized.")
     if op == "borrow":
-        usd = (c - target * d) / (target - 1)  # (c + x) / (d + x) = target
+        usd = (c - target * d) / (target - w)  # (c + w·x) / (d + x) = target
     elif op == "withdraw":
         if not d > 0:
             return Resolved(False, message="With no debt there is no health factor to aim for; say how much to withdraw.")
-        usd = c - target * d  # (c - x) / d = target
+        if not w > 0:
+            return Resolved(False, message=f"{asset} does not count toward the health factor, so withdrawing it can't move it; say how much to withdraw.")
+        usd = (c - target * d) / w  # (c - w·x) / d = target
     elif op == "repay":
         if not d > 0:
             return Resolved(False, message="There is no debt to repay.")
-        usd = (target * d - c) / (target - 1) if source == "margin" else d - c / target
+        usd = (target * d - c) / (target - w) if source == "margin" else d - c / target
     else:
         return Resolved(False, message=f"A target health factor applies to borrow, withdraw and repay, not {op}.")
     now = "no debt" if not d > 0 else f"{c / d:.2f}"

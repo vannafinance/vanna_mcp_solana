@@ -1,10 +1,14 @@
 """Margin account reads: resolve/get/health (`vanna_account`, TOOLS_CATALOGUE.md
 3.3) and the position-level reads `vanna_margin_status` builds on (3.4).
 
-Health valuation mirrors the program exactly: `math/health.rs::calculate_health`
-(vanna_core.math_utils) over prices from the oracle facade (vanna_core.pricing,
-a port of `oracle/*.rs`). USD values are nano-USD, collateral rounds down, debt
-rounds up, one account-wide 1.10 threshold. Every asset is priced from its own
+Health valuation mirrors the program: since the 2026-11 audit upgrade it has two weighted lines
+(`risk_engine.rs`), each collateral at min(bps x 1.1, 100%) of its value, debt at full value:
+  - the borrow line (LTV weights; 0 for an asset not collateral-enabled) gates every borrow, withdrawal and
+    margin_execute at > 1.10, so previews, max amounts and `is_healthy` use it;
+  - the liquidation line (liquidation-threshold weights) is the health factor shown, liquidatable at <= 1.10.
+Prices come from the oracle facade (vanna_core.pricing, a port of `oracle/*.rs`). USD values are nano-USD, collateral
+rounds down, debt rounds up. Row `usd_value` and `total_collateral_usd` stay unweighted (what the holdings are worth);
+the weighted totals are reported beside them. Every asset is priced from its own
 on-chain `OracleConfig` (Scope chain, Pyth fallback, klend receipt rate); a
 position that can't be priced makes the whole read fail closed
 (`PriceUnavailableError`) - never a partial or silently-skipped position.
@@ -36,7 +40,18 @@ from vanna_core.pricing import ALL_CHECKS, LIQUIDATION_CHECKS, OraclePrice, Pric
 # decode it opaquely rather than assume.
 _MARGIN_STATUS_NAMES: dict[int, str] = {0: "Active"}
 
-_INTERNAL_KEYS = {"usd_value_nano", "price_status_bits"}
+_INTERNAL_KEYS = {"usd_value_nano", "price_status_bits", "borrow_weight_bps", "liquidation_weight_bps"}
+
+
+def _weight_text(bps: int) -> str:
+    return str(Decimal(bps) / Decimal(10_000))
+
+
+def _line(rows: list[dict], debt_rows: list[dict], key: str) -> math_utils.HealthSnapshot:
+    """One weighted health line over valued rows (`key`: "borrow_weight_bps" or "liquidation_weight_bps")."""
+    return math_utils.calculate_weighted_health(
+        [(r["usd_value_nano"], r[key]) for r in rows], [r["usd_value_nano"] for r in debt_rows]
+    )
 
 
 @dataclass
@@ -46,8 +61,14 @@ class _Snapshot:
     registry: AssetRegistry
     collateral_rows: list[dict]
     debt_rows: list[dict]
-    health: math_utils.HealthSnapshot
+    health: math_utils.HealthSnapshot  # the liquidation line: the health factor shown, liquidatable at <= 1.10
     view: OracleView
+    borrow_health: math_utils.HealthSnapshot  # the borrow line: what borrow / withdraw / margin_execute keep > 1.10
+
+    @property
+    def collateral_value(self) -> int:
+        """Unweighted nano-USD of every holding (what it is worth)."""
+        return sum(r["usd_value_nano"] for r in self.collateral_rows)
 
     @property
     def price_status(self) -> int:
@@ -103,12 +124,21 @@ class MarginContract:
             "margin_account": str(snap.address),
             "collateral": [_strip_internal(r) for r in snap.collateral_rows],
             "debt": [_strip_internal(r) for r in snap.debt_rows],
-            "total_collateral_usd": math_utils.usd_value_ui(health.total_collateral_value),
+            "total_collateral_usd": math_utils.usd_value_ui(snap.collateral_value),
             "total_debt_usd": math_utils.usd_value_ui(health.total_debt_value),
+            # weighted (2026-11 upgrade): liquidation line = the health factor; borrow line = what actions must keep
+            "liquidation_collateral_usd": math_utils.usd_value_ui(health.total_collateral_value),
+            "borrow_collateral_usd": math_utils.usd_value_ui(snap.borrow_health.total_collateral_value),
             "health_factor": health.health_factor_str,
-            "is_healthy": health.is_borrow_healthy,
+            "borrow_health_factor": snap.borrow_health.health_factor_str,
+            "is_healthy": snap.borrow_health.is_borrow_healthy,
             "is_liquidatable": health.is_liquidatable,
             "price_checks_pass": snap.price_status == ALL_CHECKS,
+            # Each registered asset's weights (fractions), held or not: what a deposit, borrow or swap into it counts.
+            "line_weights": {
+                a.symbol: {"borrow": _weight_text(a.borrow_weight_bps), "liquidation": _weight_text(a.liquidation_weight_bps)}
+                for a in snap.registry.all(include_unoffered=True)
+            },
         }
 
     async def list_collateral(self, authority: Pubkey) -> dict:
@@ -135,9 +165,9 @@ class MarginContract:
             "health_at_or_below_threshold": health.is_liquidatable,
             "prices_fresh": fresh,
             "health_factor": health.health_factor_str,
-            "total_collateral_usd": math_utils.usd_value_ui(health.total_collateral_value),
+            "total_collateral_usd": math_utils.usd_value_ui(snap.collateral_value),
             "total_debt_usd": math_utils.usd_value_ui(health.total_debt_value),
-            "estimated_reward_usd": _signed_usd(health.total_collateral_value - health.total_debt_value),
+            "estimated_reward_usd": _signed_usd(snap.collateral_value - health.total_debt_value),
             "debt_to_repay": [_strip_internal(r) for r in snap.debt_rows],
             "collateral_to_seize": [_strip_internal(r) for r in snap.collateral_rows],
         }
@@ -154,7 +184,6 @@ class MarginContract:
         await registry.load()
         asset = registry.by_symbol(asset_symbol)
         snap = await self._snapshot(authority, registry=registry, extra_assets=[asset])
-        current = snap.health
 
         if not asset.borrow_enabled:
             return {"allowed": False, "reason": f"{asset.symbol} is not borrow_enabled"}
@@ -190,25 +219,17 @@ class MarginContract:
         new_debt_raw = (existing_debt["raw_debt"] if existing_debt else 0) + raw_amount
         new_debt_values.append(price.value_of(new_debt_raw, asset.decimals, True))
 
-        new_collateral_values = [r["usd_value_nano"] for r in snap.collateral_rows if r["symbol"] != asset.symbol or not asset.collateral_enabled]
+        rows = [r for r in snap.collateral_rows if r["symbol"] != asset.symbol or not asset.collateral_enabled]
         if asset.collateral_enabled:
             existing_balance = next((r["raw_balance"] for r in snap.collateral_rows if r["symbol"] == asset.symbol), 0)
-            new_collateral_values.append(price.value_of(existing_balance + raw_amount, asset.decimals, False))
-        projected = math_utils.calculate_health(new_collateral_values, new_debt_values)
-
-        return {
-            "allowed": projected.is_borrow_healthy,
-            "reason": None if projected.is_borrow_healthy else "would breach the 1.10 health-factor threshold",
-            "current_health_factor": current.health_factor_str,
-            "projected_health_factor": projected.health_factor_str,
-        }
+            rows.append(weighted_row(asset, price.value_of(existing_balance + raw_amount, asset.decimals, False)))
+        return preview_verdict(snap.collateral_rows, rows, new_debt_values, [r["usd_value_nano"] for r in snap.debt_rows])
 
     async def preview_withdraw(self, authority: Pubkey, asset_symbol: str, amount_ui: "Decimal | str") -> dict:
         registry = AssetRegistry(self._client)
         await registry.load()
         asset = registry.by_symbol(asset_symbol, allow_unoffered=True)
         snap = await self._snapshot(authority, registry=registry, extra_assets=[asset])
-        current = snap.health
 
         row = next((r for r in snap.collateral_rows if r["symbol"] == asset.symbol), None)
         if row is None:
@@ -227,8 +248,10 @@ class MarginContract:
             return {
                 "allowed": True,
                 "reason": None,
-                "current_health_factor": current.health_factor_str,
-                "projected_health_factor": current.health_factor_str,
+                "current_health_factor": None,
+                "projected_health_factor": None,
+                "current_liquidation_health_factor": None,
+                "projected_liquidation_health_factor": None,
             }
 
         price = snap.view.price(asset)
@@ -238,17 +261,8 @@ class MarginContract:
             return {"allowed": False, "reason": str(exc)}
 
         remaining_value = price.value_of(row["raw_balance"] - raw_amount, asset.decimals, False)
-        new_collateral_values = [
-            remaining_value if r["symbol"] == asset.symbol else r["usd_value_nano"] for r in snap.collateral_rows
-        ]
-        projected = math_utils.calculate_health(new_collateral_values, [r["usd_value_nano"] for r in snap.debt_rows])
-
-        return {
-            "allowed": projected.is_borrow_healthy,
-            "reason": None if projected.is_borrow_healthy else "would breach the 1.10 health-factor threshold",
-            "current_health_factor": current.health_factor_str,
-            "projected_health_factor": projected.health_factor_str,
-        }
+        rows = [{**r, "usd_value_nano": remaining_value} if r["symbol"] == asset.symbol else r for r in snap.collateral_rows]
+        return preview_verdict(snap.collateral_rows, rows, [r["usd_value_nano"] for r in snap.debt_rows])
 
     async def max_borrow(self, authority: Pubkey, asset_symbol: str) -> dict:
         """Largest amount of `asset` that `preview_borrow` will accept: the closed-form health
@@ -268,11 +282,11 @@ class MarginContract:
         if blocking and "would breach" not in blocking and blocking != "insufficient pool liquidity":
             return {**zero, "reason": blocking}
 
-        collateral = snap.health.total_collateral_value
-        debt = snap.health.total_debt_value
-        # (C + x) / (D + x) > 1.10  =>  x < 10*C - 11*D   (borrowed funds count as collateral)
-        # C / (D + x) > 1.10        =>  x < C/1.1 - D     (asset is not collateral-enabled)
-        headroom_usd = 10 * collateral - 11 * debt if asset.collateral_enabled else collateral * 10 // 11 - debt
+        collateral = snap.borrow_health.total_collateral_value  # borrow line: Σ value x min(LTV x 1.1, 100%)
+        debt = snap.borrow_health.total_debt_value
+        # (C + w·x) / (D + x) > 1.10, w = the borrowed asset's borrow weight (borrowed funds stay as collateral; 0 when
+        # it is not collateral-enabled)  =>  x < (C − 1.1·D) / (1.1 − w) = (10·C − 11·D) · 1000 / (11000 − w_bps)
+        headroom_usd = (10 * collateral - 11 * debt) * 1000 // (11_000 - asset.borrow_weight_bps)
         if headroom_usd <= 0:
             return {**zero, "reason": "no borrowing headroom at the 1.10 health-factor threshold"}
 
@@ -293,7 +307,8 @@ class MarginContract:
                     "max_amount": math_utils.ui_amount(raw, asset.decimals),
                     "raw_max_amount": raw,
                     "reason": None,
-                    "current_health_factor": snap.health.health_factor_str,
+                    "current_health_factor": snap.borrow_health.health_factor_str,
+                    "current_liquidation_health_factor": snap.health.health_factor_str,
                 }
             raw = raw - max(1, raw // 1000)  # step down 0.1% (strict-inequality / rounding edge)
         return {**zero, "reason": "no borrowable amount passes the health check"}
@@ -311,9 +326,11 @@ class MarginContract:
             return {**zero, "reason": f"no active {asset.symbol} collateral position"}
 
         raw = row["raw_balance"]
-        debt = snap.health.total_debt_value
-        if snap.margin.debt_count > 0:
-            headroom_usd = snap.health.total_collateral_value - (11 * debt) // 10  # C - w > 1.1 * D
+        debt = snap.borrow_health.total_debt_value
+        # An asset weighing 0 on the borrow line (not collateral-enabled) leaves it unchanged: all of it can go.
+        if snap.margin.debt_count > 0 and asset.borrow_weight_bps > 0:
+            # (C − w·x) / D > 1.10  =>  x < (C − 1.1·D) / w   (C, w on the borrow line)
+            headroom_usd = (snap.borrow_health.total_collateral_value - (11 * debt) // 10) * 10_000 // asset.borrow_weight_bps
             if headroom_usd <= 0:
                 return {**zero, "reason": "no withdrawable headroom at the 1.10 health-factor threshold"}
             price = snap.view.price(asset)
@@ -329,7 +346,8 @@ class MarginContract:
                     "max_amount": math_utils.ui_amount(raw, asset.decimals),
                     "raw_max_amount": raw,
                     "reason": None,
-                    "current_health_factor": snap.health.health_factor_str,
+                    "current_health_factor": snap.borrow_health.health_factor_str,
+                    "current_liquidation_health_factor": snap.health.health_factor_str,
                 }
             raw = raw - max(1, raw // 1000)
         return {**zero, "reason": "no withdrawable amount passes the health check"}
@@ -373,11 +391,10 @@ class MarginContract:
             ),
             asyncio.gather(*(self._value_debt(address, a, view) for a in debt_assets)),
         )
-        health = math_utils.calculate_health(
-            [row["usd_value_nano"] for row in collateral_rows],
-            [row["usd_value_nano"] for row in debt_rows],
-        )
-        return _Snapshot(address, margin, registry, list(collateral_rows), list(debt_rows), health, view)
+        collateral_rows = [_with_weights(row, asset) for row, asset in zip(collateral_rows, collateral_assets, strict=True)]
+        health = _line(collateral_rows, list(debt_rows), "liquidation_weight_bps")
+        borrow_health = _line(collateral_rows, list(debt_rows), "borrow_weight_bps")
+        return _Snapshot(address, margin, registry, collateral_rows, list(debt_rows), health, view, borrow_health)
 
     async def _value_collateral(self, margin_address: Pubkey, asset: DiscoveredAsset, view: OracleView) -> dict:
         token_program = Pubkey.from_string(asset.token_program)
@@ -491,6 +508,40 @@ class MarginContract:
         except Exception:  # noqa: BLE001 - no account yet == zero balance
             return 0
         return int.from_bytes(data[64:72], "little")
+
+
+def _with_weights(row: dict, asset: DiscoveredAsset) -> dict:
+    """A valued collateral row with its two line weights: bps for the maths, fractions for readers."""
+    return {
+        **row,
+        "borrow_weight_bps": asset.borrow_weight_bps,
+        "liquidation_weight_bps": asset.liquidation_weight_bps,
+        "borrow_weight": _weight_text(asset.borrow_weight_bps),
+        "liquidation_weight": _weight_text(asset.liquidation_weight_bps),
+    }
+
+
+def weighted_row(asset: DiscoveredAsset, usd_value_nano: int) -> dict:
+    """A projected holding for the preview maths."""
+    return {"symbol": asset.symbol, "usd_value_nano": usd_value_nano, "borrow_weight_bps": asset.borrow_weight_bps,
+            "liquidation_weight_bps": asset.liquidation_weight_bps}
+
+
+def preview_verdict(current_rows: list[dict], rows: list[dict], debt_values: list[int], current_debt: list[int] | None = None) -> dict:
+    """A borrow / withdraw / swap verdict from the holdings now (`current_rows`) and projected (`rows`), each a valued
+    row with its line weights. `allowed` and `*_health_factor` are the borrow line (the program's check, which the
+    product floor also applies to); the liquidation line (the health factor shown) is reported beside them."""
+    debt_after = [{"usd_value_nano": v} for v in debt_values]
+    debt_now = debt_after if current_debt is None else [{"usd_value_nano": v} for v in current_debt]
+    borrow_line = _line(rows, debt_after, "borrow_weight_bps")
+    return {
+        "allowed": borrow_line.is_borrow_healthy,
+        "reason": None if borrow_line.is_borrow_healthy else "would breach the 1.10 health-factor threshold",
+        "current_health_factor": _line(current_rows, debt_now, "borrow_weight_bps").health_factor_str,
+        "projected_health_factor": borrow_line.health_factor_str,
+        "current_liquidation_health_factor": _line(current_rows, debt_now, "liquidation_weight_bps").health_factor_str,
+        "projected_liquidation_health_factor": _line(rows, debt_after, "liquidation_weight_bps").health_factor_str,
+    }
 
 
 def _strip_internal(row: dict) -> dict:

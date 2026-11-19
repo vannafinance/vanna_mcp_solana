@@ -76,8 +76,8 @@ _ASSET_CONFIG_HEAD = (
     "token_program" / PUBKEY,
     "reserve" / PUBKEY,
     "max_collateral_per_margin" / borsh.U64,
-    "ltv_bps" / borsh.U16,  # stored, not used by V1 health math
-    "liquidation_threshold_bps" / borsh.U16,  # stored, not used by V1 health math
+    "ltv_bps" / borsh.U16,  # borrow-line weight min(ltv x 1.1, 100%) since the 2026-11 upgrade
+    "liquidation_threshold_bps" / borsh.U16,  # liquidation-line weight min(threshold x 1.1, 100%)
     "liquidation_bonus_bps" / borsh.U16,  # stored; liquidation now hands over the whole account
     "asset_index" / borsh.U16,
     "decimals" / borsh.U8,

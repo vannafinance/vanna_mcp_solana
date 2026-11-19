@@ -32,7 +32,9 @@ def _contract(*, usdc_raw=100_000_000, collateral_usd=1000.0, debt_usd=0.0, trad
         total_collateral_value=int(collateral_usd * NANO), total_debt_value=int(debt_usd * NANO),
         health_factor_str=None if debt_usd == 0 else f"{collateral_usd / debt_usd:.4f}",
     )
-    snap = SimpleNamespace(health=health, collateral_rows=[{"symbol": "USDC", "raw_balance": usdc_raw, "ui_balance": str(usdc_raw / 1e6)}])
+    # Both health lines at full weight here (the weighted maths has its own tests: test_weighted_health.py).
+    snap = SimpleNamespace(health=health, borrow_health=health, collateral_value=int(collateral_usd * NANO), registry=None,
+                           collateral_rows=[{"symbol": "USDC", "raw_balance": usdc_raw, "ui_balance": str(usdc_raw / 1e6)}])
     venue = SimpleNamespace(
         markets=markets or [_market()], trader=trader, value_nano=int(venue_value * NANO), positions=list(positions),
         collateral_usd=0.0, withdrawable_now=0,

@@ -30,6 +30,7 @@ from vanna_core import math_utils
 from vanna_core.anchor_codec import instruction_discriminator
 from vanna_core.assets import AssetRegistry, DiscoveredAsset, assert_lend_borrow_offered
 from vanna_core.client import SolanaClient
+from vanna_core.constants import ALL_TOKENS
 from vanna_core.envelope import WriteEnvelope
 from vanna_core.margin_state import allowed_tokens_of, load_margin_state, load_protocol_config
 from vanna_core.pdas import (
@@ -220,7 +221,8 @@ class MarginTradeContract:
             AccountMeta(token_program, is_signer=False, is_writable=False),
             *remaining,
         ]
-        args = _u64(raw) + _u128(min_health_factor_wad)
+        # `tokens` = ALL_TOKENS: the health segment above lists every allowed token (program upgrade of 2026-11)
+        args = _u64(raw) + _u128(min_health_factor_wad) + bytes([ALL_TOKENS])
         ix = self._client.build_instruction(DISC_WITHDRAW_COLLATERAL, args, accounts)
         # The Vanna program only ever auto-creates its own PDAs' token
         # accounts, never the caller's wallet-side ATA (vanna_core/wsol.py) —
@@ -332,7 +334,7 @@ class MarginTradeContract:
             AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
             *remaining,
         ]
-        args = _u64(raw) + _u128(max_debt_shares)
+        args = _u64(raw) + _u128(max_debt_shares) + bytes([ALL_TOKENS])
         instructions.append(self._client.build_instruction(DISC_BORROW, args, accounts))
         return instructions
 

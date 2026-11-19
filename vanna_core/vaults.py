@@ -7,10 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vanna_core.constants import PERENA_TRANCHE_STATE, PERENA_USDSTAR_VAULT, TSLAX_MINT, WSOL_MINT
+from vanna_core.constants import PERENA_PROGRAM, PERENA_TRANCHE_STATE, PERENA_USDSTAR_VAULT, TSLAX_MINT, WSOL_MINT
 
 BASIS_PROGRAM = "GtuQoYxzytGKtLqQGkYrVbsaPHTZN5jboP25DrSmKvGr"
-PERENA_PROGRAM = "save8RQVPMWNTzU18t3GBvBkN9hT7jsGjiCQ28FpD9H"
 SHARE_DECIMALS = 6
 
 

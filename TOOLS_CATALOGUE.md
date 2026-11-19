@@ -238,10 +238,20 @@ Validation on every read (both modes): owner = receiver, discriminator/layout, v
 
 **The rule**
 
-- `HF = collateral / debt`. Threshold `BALANCE_TO_BORROW_THRESHOLD_WAD = 1_100_000_000_000_000_000` (WAD = 10¹⁸), one global constant.
-- Healthy: `debt = 0` **or** `HF > 1.10`. Liquidatable: `debt > 0` **and** `HF ≤ 1.10`; **equality is liquidatable**.
+- Two weighted lines since the November 2026 audit upgrade (`vanna-credit-layer` `risk_engine.rs`), each collateral at
+  `line_weight(bps) = min(bps × 11 / 10, 10000)` of its value (integer bps, rounded down), debt at full value:
+  - **borrow line** `Σ collateral × line_weight(ltv_bps) / debt` (0 for an asset not `collateral_enabled`): every
+    borrow, withdrawal and `margin_execute` must leave it `> 1.10`. Previews (`can_borrow` / `can_withdraw` /
+    `can_swap`), `max_borrow` / `max_withdraw`, `is_healthy` and the product's 1.15 floor use it;
+  - **liquidation line** `Σ collateral × line_weight(liquidation_threshold_bps) / debt`: the health factor reported
+    (`health_factor`), liquidatable at `≤ 1.10`.
+  Venues (Phoenix) are weighed by their own AssetConfig. Threshold `BALANCE_TO_BORROW_THRESHOLD_WAD = 1_100_000_000_000_000_000` (WAD = 10¹⁸).
+- `vanna_account health` returns both: `health_factor` / `liquidation_collateral_usd` (liquidation line),
+  `borrow_health_factor` / `borrow_collateral_usd` (borrow line), unweighted `total_collateral_usd` and row `usd_value`,
+  each row's `borrow_weight` / `liquidation_weight`, and `line_weights` for every registered asset. Previews report
+  `current_/projected_health_factor` on the borrow line and `current_/projected_liquidation_health_factor` beside them.
+- Healthy: `debt = 0` **or** borrow line `> 1.10`. Liquidatable: `debt > 0` **and** liquidation line `≤ 1.10`; **equality is liquidatable**.
 - Zero debt is the on-chain u128-max sentinel. Tools report `noDebt: true` and `healthFactor: null`, never a floating-point infinity.
-- `ltv_bps` and `liquidation_threshold_bps` do not change the formula.
 - The constant is fixed in this program version but not promised forever; the MCP reads it from its pinned program version, never from a frontend constant.
 
 **Policy floor (not a protocol rule)**

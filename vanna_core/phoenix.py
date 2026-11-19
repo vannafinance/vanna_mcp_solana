@@ -562,7 +562,7 @@ async def load_phoenix_venue(client: SolanaClient, margin: Pubkey, now: int) -> 
 
 # Titan's router program (swap provider beside Jupiter) and its "atlas" PDA; listed here so the protocol lookup table
 # can carry them with the Phoenix accounts (`vanna_core/protocol_alt.py`).
-TITAN_PROGRAM_ID = Pubkey.from_string("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT")
+TITAN_PROGRAM_ID = Pubkey.from_string(constants.TITAN_PROGRAM)
 TITAN_ATLAS = Pubkey.find_program_address([b"atlas"], TITAN_PROGRAM_ID)[0]
 
 

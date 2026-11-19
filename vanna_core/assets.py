@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 from solders.pubkey import Pubkey
 
-from vanna_core import constants
+from vanna_core import constants, math_utils
 from vanna_core.constants import EMPTY_ASSET_INDEX  # noqa: F401 - re-exported
 from vanna_core.pricing import OracleSpec
 
@@ -175,6 +175,10 @@ EXTRA_ASSET_SYMBOLS: dict[str, str] = {
     constants.TSLAX_MINT: "TSLAx",
     "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN": "GOOGLx",
     "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": "AAPLx",
+    # SKR (Seeker): registered on the fork 2026-11-16 (collateral + borrowable, Earn pool), but chain-only in the app
+    # (vanna-credit-backend `CHAIN_ONLY_TOKENS`): named so the known-mints discovery finds it and every health list
+    # includes it (an allowed token the registry can't name fails every margin build), never offered for actions.
+    constants.SKR_MINT: "SKR",
 }
 # Basis and Perena vault share tokens (allowed collateral since 2026-10-09): named so positions and health lists read
 # well. They are entered and left through their vaults, never deposited, withdrawn or swapped as plain tokens here.
@@ -185,10 +189,10 @@ EXTRA_ASSET_DECIMALS_VAULTS = {v.symbol: 6 for v in _VAULTS}
 VENUE_SYMBOLS = frozenset({"GMTrade", "Phoenix"})
 # Named so positions read well, but not product assets: the app registers phUSD outside its token list (it only passes
 # through the margin on the way into or out of Phoenix), so it is never offered for actions; the vault shares likewise.
-NAMED_NOT_OFFERED = frozenset({"phUSD", *(v.symbol for v in _VAULTS)})
+NAMED_NOT_OFFERED = frozenset({"phUSD", "SKR", *(v.symbol for v in _VAULTS)})
 # Decimals of the named on-chain assets, for the planning maths that runs before the registry is read (the registry's
 # AssetConfig stays the authority for every build). Same values as the app's registry.
-EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8, **EXTRA_ASSET_DECIMALS_VAULTS}
+EXTRA_ASSET_DECIMALS: dict[str, int] = {"JupUSD": 6, "SKR": 6, "NVDAx": 8, "TSLAx": 8, "GOOGLx": 8, "AAPLx": 8, **EXTRA_ASSET_DECIMALS_VAULTS}
 
 _BY_SYMBOL: dict[str, AssetInfo] = {a.symbol.upper(): a for a in ASSETS}
 _RECEIPT_BY_SYMBOL: dict[str, KaminoReceiptInfo] = {r.symbol.upper(): r for r in KAMINO_RECEIPTS}
@@ -269,10 +273,25 @@ class DiscoveredAsset:
     oracle_program: str = ""  # the oracle agent program that values this asset
     settle_mint: str = ""  # GMTrade-era accounts only; the current build has no settle mint
     in_price_book: bool = True  # False for a token the oracle has no source for (it cannot be priced)
+    # The AssetConfig's risk settings (bps). Since the 2026-11 upgrade they weigh collateral in both health lines;
+    # 10000 (full value) only for an asset built without its config (tests).
+    ltv_bps: int = 10_000
+    liquidation_threshold_bps: int = 10_000
 
     @property
     def is_venue(self) -> bool:
         return self.kind == 1
+
+    @property
+    def borrow_weight_bps(self) -> int:
+        """Weight on the borrow line (borrow / withdraw / margin_execute checks): min(LTV x 1.1, 100%), 0 when the
+        asset is not collateral-enabled (the program counts it nowhere on that line). Venues weigh the same way."""
+        return math_utils.line_weight(self.ltv_bps) if self.collateral_enabled else 0
+
+    @property
+    def liquidation_weight_bps(self) -> int:
+        """Weight on the liquidation line (the health factor shown, liquidatable at <= 1.10)."""
+        return math_utils.line_weight(self.liquidation_threshold_bps)
 
     @property
     def is_receipt(self) -> bool:
@@ -528,6 +547,8 @@ def _decode_asset_config(config_address: Pubkey, decoded: object, sources: dict[
         oracle=book_entry if book_entry is not None else _EMPTY_ORACLE,
         max_collateral_per_margin=decoded.max_collateral_per_margin,
         liquidation_bonus_bps=decoded.liquidation_bonus_bps,
+        ltv_bps=int(decoded.ltv_bps),
+        liquidation_threshold_bps=int(decoded.liquidation_threshold_bps),
         kind=int(decoded.kind),
         oracle_program=pubkey_bytes_to_base58(decoded.oracle),
         settle_mint=key(decoded.settle_mint) if "settle_mint" in decoded else "",

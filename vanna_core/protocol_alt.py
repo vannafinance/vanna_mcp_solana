@@ -74,6 +74,10 @@ async def protocol_lookup_addresses(
     oracle_program = Pubkey.from_string(settings.vanna_oracle_program_id)
     validator_program = Pubkey.from_string(settings.vanna_validator_program_id)
     keys += [oracle_program, price_book_pda(oracle_program)[0], validator_program]
+    # The validator's rule books (Kamino Lend, Titan, Perena; upgrade of 2026-11): named by every margin_execute into them.
+    from vanna_core.margin_execute import RULE_BOOK_PROGRAM_KEYS, rule_book_pda
+
+    keys += [rule_book_pda(validator_program, target) for target in sorted(RULE_BOOK_PROGRAM_KEYS, key=str)]
     for asset in registry.all(include_unoffered=True):
         keys.append(Pubkey.from_string(asset.config_address))
         if asset.oracle_program:

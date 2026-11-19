@@ -364,6 +364,92 @@
       ]
     },
     {
+      "name": "admin_recapitalize_reserve",
+      "discriminator": [
+        115,
+        186,
+        161,
+        82,
+        122,
+        137,
+        27,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "underlying_mint"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "underlying_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidity_vault",
+          "writable": true
+        },
+        {
+          "name": "admin_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "assets",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "admin_register_asset",
       "discriminator": [
         102,
@@ -865,6 +951,55 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "admin_set_liquidation_fee",
+      "discriminator": [
+        63,
+        173,
+        89,
+        222,
+        180,
+        137,
+        179,
+        158
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "liquidation_fee_bps",
+          "type": "u16"
+        }
+      ]
     },
     {
       "name": "admin_set_margin_limits",
@@ -1983,6 +2118,10 @@
         {
           "name": "call_account_count",
           "type": "u16"
+        },
+        {
+          "name": "tokens",
+          "type": "u8"
         }
       ]
     },
@@ -2396,6 +2535,10 @@
         {
           "name": "max_debt_shares",
           "type": "u128"
+        },
+        {
+          "name": "tokens",
+          "type": "u8"
         }
       ]
     },
@@ -3023,6 +3166,10 @@
         {
           "name": "min_health_factor_wad",
           "type": "u128"
+        },
+        {
+          "name": "tokens",
+          "type": "u8"
         }
       ]
     }
@@ -3304,6 +3451,32 @@
       ]
     },
     {
+      "name": "LiquidationFeePaid",
+      "discriminator": [
+        55,
+        87,
+        85,
+        222,
+        188,
+        185,
+        151,
+        96
+      ]
+    },
+    {
+      "name": "LiquidationFeeSet",
+      "discriminator": [
+        77,
+        226,
+        75,
+        130,
+        32,
+        224,
+        168,
+        28
+      ]
+    },
+    {
       "name": "LiquidityRedeemed",
       "discriminator": [
         78,
@@ -3470,6 +3643,19 @@
         120,
         20,
         49
+      ]
+    },
+    {
+      "name": "ReserveRecapitalized",
+      "discriminator": [
+        147,
+        79,
+        206,
+        64,
+        253,
+        216,
+        89,
+        170
       ]
     },
     {
@@ -3794,6 +3980,26 @@
       "code": 6058,
       "name": "IssuerControlsNotAccepted",
       "msg": "The mint's issuer can freeze, seize, pause, close or reprice it; register it with accept_issuer_controls"
+    },
+    {
+      "code": 6059,
+      "name": "LiquidationCreatesBadDebt",
+      "msg": "These venue calls would leave a solvent margin unable to repay its debt"
+    },
+    {
+      "code": 6060,
+      "name": "DelistedCollateralHeld",
+      "msg": "The margin still holds a token that was taken off the allow-list; relist it so it can be seized first"
+    },
+    {
+      "code": 6061,
+      "name": "InvalidLiquidationFee",
+      "msg": "The liquidation fee is at most 5,000 bps (50%) of a liquidation's profit"
+    },
+    {
+      "code": 6062,
+      "name": "InvalidTreasuryAccount",
+      "msg": "Pass the treasury's associated token account for the seized collateral"
     }
   ],
   "types": [
@@ -4102,6 +4308,9 @@
     },
     {
       "name": "CollateralSeized",
+      "docs": [
+        "`amount` is what was sent to the liquidator's `destination`, after the treasury's share."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -4384,6 +4593,9 @@
     },
     {
       "name": "Liquidated",
+      "docs": [
+        "`seized` is everything that left the margin: the liquidator's part plus the treasury's share."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -4430,6 +4642,73 @@
           {
             "name": "event_sequence",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LiquidationFeePaid",
+      "docs": [
+        "The treasury's share of a liquidation's profit, emitted with every seizure. `fee` is the share owed, in units",
+        "of the seized collateral; `received` is what reached the treasury's account after any token transfer fee. Both",
+        "are 0 when there was no profit. `received` is 0 while `fee` is not when the treasury has no account for the",
+        "mint or it is frozen: the fee is then left to the liquidator, so the treasury's account never blocks a",
+        "liquidation."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "margin_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          },
+          {
+            "name": "received",
+            "type": "u64"
+          },
+          {
+            "name": "event_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LiquidationFeeSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "liquidation_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
           },
           {
             "name": "timestamp",
@@ -4756,11 +5035,28 @@
             "type": "u8"
           },
           {
+            "name": "delisted_tokens",
+            "type": {
+              "array": [
+                "u64",
+                4
+              ]
+            }
+          },
+          {
+            "name": "liquidation_fee_bps",
+            "docs": [
+              "The treasury's share of a liquidation's profit, in bps. Taken from `reserved`, so the account keeps its",
+              "size and configs created before it read 0 until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "reserved",
             "type": {
               "array": [
                 "u8",
-                78
+                44
               ]
             }
           }
@@ -5067,6 +5363,34 @@
           },
           {
             "name": "borrow_cap",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReserveRecapitalized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reserve",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "assets",
+            "type": "u64"
+          },
+          {
+            "name": "accounted_liquidity_assets",
             "type": "u64"
           },
           {

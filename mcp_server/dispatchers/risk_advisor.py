@@ -54,7 +54,7 @@ def _policy() -> dict[str, Any]:
         "safety_layer_active": bool(s.safety_layer or s.public_mode),
         "refused": REFUSALS,
         "rules": [
-            "Health factor = margin collateral USD / debt USD. At or below 1.10 the account can be liquidated; with no debt there is no health factor.",
+            "Health factor = weighted margin collateral USD / debt USD (each collateral at min(liquidation threshold x 1.1, 100%)). At or below 1.10 the account can be liquidated; with no debt there is no health factor. Borrows, withdrawals and swaps are checked on the borrow line (each collateral at min(LTV x 1.1, 100%)), and this product keeps it at the floor or above.",
             "Actions that can lower health (borrow, withdraw, margin swap) are refused below the 1.15 floor and flagged when close to it.",
             "Borrowed funds stay in the margin account and count as collateral.",
             "A typed amount is an exact decimal string; one with more decimals than the token has is refused, never rounded.",
@@ -119,7 +119,9 @@ async def vanna_risk(
     if h.kind != "ok" or h.health is None:
         return {"error": "contract_error", "message": "The account could not be read, so no figure is given."}
     health = h.health
-    c, d = health.collateral_usd, health.debt_usd
+    # Sizing and what-ifs on the borrow line (2026-11 upgrade): what every borrow / withdraw / swap must keep above the
+    # floor. The shown health factor (health.hf) is the liquidation line.
+    c, d = health.borrow_line_usd, health.debt_usd
 
     if action == "liquidation_distance":
         try:
@@ -129,7 +131,7 @@ async def vanna_risk(
         hf = health.hf
         out: dict[str, Any] = {"health_factor": hf, "liquidation_at": risk.LIQUIDATION_HF, "floor": floor,
                                "is_liquidatable": snap.get("health_at_or_below_threshold") is True,
-                               "total_collateral_usd": c, "total_debt_usd": d,
+                               "total_collateral_usd": health.collateral_usd, "total_debt_usd": d,
                                "note": "Read-only: this assistant never executes a liquidation."}
         out["collateral_drop_to_liquidation_pct"] = None if hf is None else max(0.0, round((1 - risk.LIQUIDATION_HF / hf) * 100, 2))
         out["headline"] = ("No debt, so the account cannot be liquidated." if hf is None else
@@ -193,9 +195,9 @@ async def vanna_risk(
                 units = risk.floor_decimals(need / price.usd + 10 ** -dp, dp)
                 return {"headline": f"To bring the health factor above {target_hf:g}, repay about {units} {asset} (${need:,.2f}).",
                         "repay_amount": units, "repay_usd": round(need, 2), "health_factor_now": now_hf,
-                        "note": "Calculated from current collateral and debt value (collateral / debt). It is not a transaction."}
+                        "note": "Calculated from current collateral (each at its borrow-line weight) and debt value. It is not a transaction."}
             if op == "borrow":
-                max_usd = risk.max_borrow_usd(c, d, target_hf, True)
+                max_usd = risk.max_borrow_usd(c, d, target_hf, health.borrow_weight(asset))
                 if not max_usd > 0:
                     return {"headline": f"No {asset} can be borrowed while staying at a {target_hf:g} health factor or above.", "health_factor_now": now_hf}
                 units = risk.floor_decimals(max_usd / price.usd, dp)
@@ -260,14 +262,19 @@ async def vanna_risk(
         if not lever_units > 0:
             return {"error": "invalid_input", "message": f"There is no {a} in the margin account. Pass an 'amount' to deposit from the wallet."}
 
+        # Weights: the deposit and a lever's swapped-into asset are `a`; a deposit + borrow keeps the borrowed stable
+        # (USDC's weight; USDT's is the same).
+        w_a, w_stable = health.borrow_weight(a), health.borrow_weight("USDC")
+
         def sized(units: float, deposit: float, slippage: int, lev: float) -> risk.LeverSize:
             return risk.size_lever(collateral_usd=c, debt_usd=d, equity_usd=units * p.usd, deposit_usd=deposit * p.usd,
-                                   leverage=lev, floor=floor, slippage_bps=slippage)
+                                   leverage=lev, floor=floor, slippage_bps=slippage, deposit_weight=w_a,
+                                   received_weight=w_a if slippage else w_stable)
 
         top_lever = risk.max_leverage(collateral_usd=c, debt_usd=d, equity_usd=lever_units * p.usd, deposit_usd=lever_deposit * p.usd,
-                                      floor=floor, slippage_bps=risk.DEFAULT_SLIPPAGE_BPS)
+                                      floor=floor, slippage_bps=risk.DEFAULT_SLIPPAGE_BPS, deposit_weight=w_a, received_weight=w_a)
         top_borrow = risk.max_leverage(collateral_usd=c, debt_usd=d, equity_usd=borrow_units * p.usd, deposit_usd=borrow_deposit * p.usd,
-                                       floor=floor, slippage_bps=0)
+                                       floor=floor, slippage_bps=0, deposit_weight=w_a, received_weight=w_stable)
         table = []
         for lev in (1.5, 2, 3, 4, 5, 6, 8, 10):
             lv, bw = sized(lever_units, lever_deposit, risk.DEFAULT_SLIPPAGE_BPS, lev), sized(borrow_units, borrow_deposit, 0, lev)

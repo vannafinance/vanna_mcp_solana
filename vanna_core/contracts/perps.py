@@ -128,8 +128,11 @@ class PerpsContract:
         snap, venue = await self._account(authority)
         if snap is None:
             return {"has_margin_account": False, "has_phoenix_account": False, "markets": [_market_info(m) for m in venue.markets], "positions": []}
+        # Liquidation is on the liquidation line (2026-11 upgrade): holdings at their liquidation weights, and a price
+        # move changes the venue's value at the venue's own weight.
         holdings = snap.health.total_collateral_value / _NANO
         debt = snap.health.total_debt_value / _NANO
+        _, venue_liq_w = _venue_weights(snap)
         venue_value = venue.value_nano / _NANO
         exposure = sum(p.size_usd for p in venue.positions)
         liq_hf = LIQUIDATION_HF
@@ -139,7 +142,7 @@ class PerpsContract:
             zero_equity = (p.index_price - venue_value / p.size_tokens if p.is_long else p.index_price + venue_value / p.size_tokens) if p.size_tokens > 0 else 0.0
             liq = None
             if debt > 0 and p.size_tokens > 0:
-                room = (holdings - liq_hf * debt) / p.size_tokens
+                room = (holdings - liq_hf * debt) / (p.size_tokens * venue_liq_w)
                 candidate = p.index_price - room if p.is_long else p.index_price + room
                 reachable = candidate > zero_equity if p.is_long else candidate < zero_equity
                 liq = candidate if reachable and candidate > 0 else None
@@ -169,9 +172,10 @@ class PerpsContract:
             "phoenix_collateral_usdc": _num(venue.collateral_usd, 2),
             "withdrawable_now_usdc": _num(venue.withdrawable_now / 1e6, 6),
             "leverage": _num(exposure / venue_value if venue_value > 0 else 0.0, 2),
-            "total_collateral_usd": math_utils.usd_value_ui(snap.health.total_collateral_value),
+            "total_collateral_usd": math_utils.usd_value_ui(snap.collateral_value),
             "total_debt_usd": math_utils.usd_value_ui(snap.health.total_debt_value),
             "health_factor": snap.health.health_factor_str,
+            "borrow_health_factor": snap.borrow_health.health_factor_str,
             "positions": rows,
         }
 
@@ -275,7 +279,10 @@ class PerpsContract:
         order_usd = size_tokens * ref
         fee_usd = order_usd * (m.orderbook.taker_fee_micro if m.orderbook else 0) / 1e6
         # The USDC moved into Phoenix stays collateral (as the venue's value); only the open fee leaves the account.
-        holdings_after = snap.health.total_collateral_value / _NANO - fee_usd
+        # margin_execute checks the borrow line; the open fee leaves the venue at the venue's weight on each line.
+        venue_borrow_w, venue_liq_w = _venue_weights(snap)
+        holdings_after = snap.borrow_health.total_collateral_value / _NANO - fee_usd * venue_borrow_w
+        liq_holdings_after = snap.health.total_collateral_value / _NANO - fee_usd * venue_liq_w
         debt = snap.health.total_debt_value / _NANO
         hf_after = holdings_after / debt if debt > 0 else None
         # The position after the order, for its liquidation price (same formula as `positions`).
@@ -287,7 +294,7 @@ class PerpsContract:
         liq = None
         if debt > 0 and net_tokens > 0:
             zero_equity = index - venue_after / net_tokens if net_long else index + venue_after / net_tokens
-            room = (holdings_after - LIQUIDATION_HF * debt) / net_tokens
+            room = (liq_holdings_after - LIQUIDATION_HF * debt) / (net_tokens * venue_liq_w)
             candidate = index - room if net_long else index + room
             reachable = candidate > zero_equity if net_long else candidate < zero_equity
             liq = candidate if reachable and candidate > 0 else None
@@ -307,8 +314,10 @@ class PerpsContract:
             "slippage_bps": slip_bps,
             "reduced_to_fit_cap": lots < int(size_usd / limit * 10**m.market.lot_decimals),
             "open_fee_usd": _num(fee_usd, 4),
-            "current_health_factor": snap.health.health_factor_str,
+            "current_health_factor": snap.borrow_health.health_factor_str,
             "projected_health_factor": _num(hf_after, 4),
+            "current_liquidation_health_factor": snap.health.health_factor_str,
+            "projected_liquidation_health_factor": _num(liq_holdings_after / debt if debt > 0 else None, 4),
             "liquidation_price_after": _num(liq, 6),
             "needs_trader_registration": trader is None,
             "needs_phoenix_access": trader is not None and needs_registration,
@@ -593,3 +602,16 @@ class PerpsContract:
         return await self._envelope(authority, ixs, "margin_execute:phoenix_withdraw", {
             "action": "perps_withdraw", "amount_usdc": f"{amount / 1e6:g}", "venue_emptied": empties,
         })
+
+
+def _venue_weights(snap) -> tuple[float, float]:
+    """The Phoenix venue's (borrow, liquidation) line weights as fractions: from its row when the account holds it,
+    else from the registry's venue asset, else full value (the program weighs a venue by its own AssetConfig)."""
+    row = next((r for r in snap.collateral_rows if r.get("is_venue")), None)
+    if row is not None:
+        return row["borrow_weight_bps"] / 10_000, row["liquidation_weight_bps"] / 10_000
+    registry = getattr(snap, "registry", None)
+    venue = next((a for a in registry.all(include_unoffered=True) if a.is_venue and a.symbol == "Phoenix"), None) if registry else None
+    if venue is not None:
+        return venue.borrow_weight_bps / 10_000, venue.liquidation_weight_bps / 10_000
+    return 1.0, 1.0

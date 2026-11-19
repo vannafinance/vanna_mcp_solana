@@ -174,11 +174,11 @@ class VannaSettings(BaseSettings):
     enable_fork_tools: bool = False
     enable_liquidation_builder: bool = False
 
-    # SHA-256 (LF-normalised) of idl/vanna_lending.json, regenerated from the
-    # vanna-credit-layer source (`cargo test --features idl-build`, layer commit ecdb9b6)
-    # after the oracle / whole-account-liquidation program update. The MCP refuses
-    # to start if the loaded IDL differs (a pinned-contract safety rule).
-    pinned_idl_sha256: str = "1d019a86781c7e60651a1e49f38d0ad54b6f095d50c07041d47d955fdc3e8445"
+    # SHA-256 (LF-normalised) of idl/vanna_credit_layer.json: the program the fork runs since the 2026-11 audit upgrade
+    # (vanna-credit-layer `feature/options-standalone`, which contains `mainnet` e2a9653; the same IDL the app builds with,
+    # Vanna_Finance_Backend apps/solana/idl). The MCP refuses to start if the loaded IDL differs (a pinned-contract
+    # safety rule): verify the deployed program before changing it.
+    pinned_idl_sha256: str = "32506d3af9d9a77d7460f1585f3267c6ec3b7214e8c00b98c75a319609aa60ae"
 
     # Read cache TTL for hot views (pool stats, oracle price). 0 = disabled.
     read_cache_ttl_seconds: int = 30

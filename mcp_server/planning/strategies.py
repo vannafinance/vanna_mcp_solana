@@ -154,10 +154,13 @@ async def plan_lever(wallet: str, asset: str, leverage: float, borrow_asset: str
                        f"{risk.floor_decimals(deposit_units, 9)} {asset} this plan would deposit.")
 
     equity_usd, deposit_usd = equity_units * p_asset.usd, deposit_units * p_asset.usd
-    collateral_usd = health.collateral_usd if health else 0.0
+    # The borrow line (2026-11 upgrade): the deposit and the swapped-into asset count at the asset's borrow weight.
+    collateral_usd = health.borrow_line_usd if health else 0.0
     debt_usd = health.debt_usd if health else 0.0
+    w_asset = health.borrow_weight(asset) if health else 1.0
     size = risk.size_lever(collateral_usd=collateral_usd, debt_usd=debt_usd, equity_usd=equity_usd,
-                           deposit_usd=deposit_usd, leverage=leverage, floor=floor)
+                           deposit_usd=deposit_usd, leverage=leverage, floor=floor,
+                           deposit_weight=w_asset, received_weight=w_asset)
     if not size.ok:
         options = [{"label": f"Use {size.max_leverage:.1f}x instead", "leverage": size.max_leverage}] if size.max_leverage else []
         tail = f" The most that can be done is about {size.max_leverage:.1f}x." if size.max_leverage else " There is no safe leverage available on this balance."

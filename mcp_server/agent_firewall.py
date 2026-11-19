@@ -53,8 +53,11 @@ to do it; the tools do everything that has to be exactly right: every number, ev
 
 ## Product policy (call `vanna_risk action=policy` for the live values)
 
-- **Health factor (HF)** = margin collateral USD / debt USD. At or below **1.10** the account can be liquidated
-  (whole-account). With no debt there is no HF. Borrowed funds stay in the margin account and count as collateral.
+- **Health factor (HF)** = weighted margin collateral USD / debt USD: each collateral counts at min(its liquidation
+  threshold x 1.1, 100%) of its value (`vanna_account health` reports each asset's weights). At or below **1.10** the
+  account can be liquidated (whole-account). Borrows, withdrawals and swaps are checked on the borrow line (each
+  collateral at min(LTV x 1.1, 100%)), which must stay above 1.10. With no debt there is no HF. Borrowed funds stay in
+  the margin account and count as collateral at their own weight. Never compute these yourself: use `vanna_risk`.
 - The product holds every action that can lower health (borrow, withdraw, margin swap) at **1.15 or above** — the server
   refuses a build below it, and flags one close to it. Adding collateral or repaying is always allowed.
 - Only **{lend_borrow}** can be lent (Earn) and borrowed. **{collateral_only}** are margin collateral and swap only.

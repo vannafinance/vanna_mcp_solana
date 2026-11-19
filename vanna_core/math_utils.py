@@ -297,11 +297,31 @@ class HealthSnapshot:
 
 
 def calculate_health(collateral_values: list[int], debt_values: list[int]) -> HealthSnapshot:
-    """health_factor = sum(collateral_usd) / sum(debt_usd). Borrowed funds stay
+    """health_factor = sum(collateral_usd) / sum(debt_usd), every collateral at full value. Borrowed funds stay
     in the margin account and count as collateral — the caller must pass
     every active position's already-valued USD amount, not just the one
-    being touched by the current action."""
+    being touched by the current action. The program weighs collateral since the 2026-11 upgrade: use
+    `calculate_weighted_health` for anything compared with its 1.10 line."""
     return HealthSnapshot(sum(collateral_values), sum(debt_values))
+
+
+def line_weight(bps: int) -> int:
+    """A health line's collateral weight in basis points: min(bps x 1.1, 100%), integer division as the program
+    (`risk_engine.rs` `line_weight`). Borrow line: from the asset's LTV; liquidation line: from its threshold."""
+    return min(bps * 11 // 10, BASIS_POINTS)
+
+
+def weigh(value: int, weight_bps: int) -> int:
+    """`value` at `weight_bps`, rounded down (`risk_engine.rs` `weigh`)."""
+    return value if weight_bps == BASIS_POINTS else value * weight_bps // BASIS_POINTS
+
+
+def calculate_weighted_health(collateral: list[tuple[int, int]], debt_values: list[int]) -> HealthSnapshot:
+    """One health line of the program (2026-11 upgrade): Σ weigh(collateral value, weight) / Σ debt, debt at full
+    value. `collateral` is (nano-USD value, line weight in bps) per holding. The borrow line (LTV weights, 0 for an
+    asset that is not collateral-enabled) gates borrow / withdraw / margin_execute at > 1.10; the liquidation line
+    (threshold weights) is the health factor shown, liquidatable at <= 1.10."""
+    return HealthSnapshot(sum(weigh(v, w) for v, w in collateral), sum(debt_values))
 
 
 # ---------------------------------------------------------------------------

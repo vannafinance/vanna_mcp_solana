@@ -127,7 +127,7 @@ address you gave Claude is the account selected in the extension, or the page wi
 **Troubleshooting**
 - *"No Solana wallet was found"*: the page needs the wallet extension in that browser profile; reload after installing.
 - *`price_unavailable` / `has no registered AssetConfig`*: the fork's program doesn't match this server's pinned build
-  (`PINNED_IDL_SHA256`, layer `ecdb9b6`). The server and the fork must run the same program version.
+  (`PINNED_IDL_SHA256`, the November 2026 audit build). The server and the fork must run the same program version.
 - *A step is "paused"*: the live health factor would have fallen below the floor since the plan was drawn; ask Claude for
   the status and redraw.
 - Logs are on the server's console.

@@ -102,10 +102,13 @@ def humanize(exc_or_text: Any) -> str:
 def _simulation(health: HealthRead | None, hf_after_value: Any, collateral_after: float, debt_after: float,
                 amount_usd: float, asset: str | None, margin_applicable: bool) -> dict[str, Any]:
     projected = None if hf_after_value is risk.UNKNOWN else hf_after_value
+    # Before and after on the same line: the borrow line (2026-11 upgrade), what the program and the floor check. The
+    # health factor the app shows (the liquidation line) is reported beside it.
     return {
-        "hf_before": health.hf if health else None,
+        "hf_before": risk.hf_after(health.borrow_line_usd, health.debt_usd) if health else None,
         "hf_after": projected,
-        "collateral_before": health.collateral_usd if health else 0.0,
+        "liquidation_hf_before": health.hf if health else None,
+        "collateral_before": health.borrow_line_usd if health else 0.0,
         "collateral_after": max(0.0, collateral_after),
         "debt_before": health.debt_usd if health else 0.0,
         "debt_after": max(0.0, debt_after),
@@ -228,9 +231,11 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
     health = hr.health if hr is not None else None
 
     usd = 0.0
-    hf_after_value: Any = health.hf if health else risk.UNKNOWN
-    collateral_after = health.collateral_usd if health else 0.0
+    collateral_now = health.borrow_line_usd if health else 0.0  # the borrow line: each holding at its borrow weight
+    hf_after_value: Any = risk.hf_after(collateral_now, health.debt_usd) if health else risk.UNKNOWN
+    collateral_after = collateral_now
     debt_after = health.debt_usd if health else 0.0
+    weight = health.borrow_weight(asset) if health and asset else 1.0
     tool, args = "", {}
 
     if op == "earn_supply":
@@ -274,7 +279,7 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
                 return _fail("invalid", f"The wallet has no spendable {asset}.")
             amount = risk.floor_decimals(spend, risk.token_decimals(asset))
         usd = float(amount) * price.usd
-        collateral_after = (health.collateral_usd if health else 0.0) + usd
+        collateral_after = collateral_now + usd * weight
         hf_after_value = risk.hf_after(collateral_after, debt_after)
         tool, args = "vanna_margin_trade", {"action": "deposit", "authority": wallet, "asset": asset, "amount": amount}
 
@@ -294,7 +299,7 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
         if not can.allowed:
             return _fail("risk", humanize(can.reason))
         hf_after_value = can.projected_hf
-        collateral_after = (health.collateral_usd if health else 0.0) - usd
+        collateral_after = collateral_now - usd * weight
         tool, args = "vanna_margin_trade", {"action": "withdraw", "authority": wallet, "asset": asset, "amount": amount}
 
     elif op == "borrow":
@@ -313,7 +318,7 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
         if not can.allowed:
             return _fail("risk", humanize(can.reason))
         hf_after_value = can.projected_hf
-        collateral_after = (health.collateral_usd if health else 0.0) + usd  # borrowed funds stay in the margin vault
+        collateral_after = collateral_now + usd * weight  # borrowed funds stay in the margin vault
         debt_after = (health.debt_usd if health else 0.0) + usd
         tool, args = "vanna_margin_trade", {"action": "borrow", "authority": wallet, "asset": asset, "amount": amount}
 
@@ -326,7 +331,7 @@ async def preflight_step(wallet: str, step: dict[str, Any]) -> Preflight:
         from_margin = slots.get("source") == "margin"
         debt_after = max(0.0, (health.debt_usd if health else 0.0) - usd)
         if from_margin:
-            collateral_after = max(0.0, (health.collateral_usd if health else 0.0) - usd)
+            collateral_after = max(0.0, collateral_now - usd * weight)
         hf_after_value = risk.hf_after(collateral_after, debt_after)
         if repay_all:
             amount = row.units_text

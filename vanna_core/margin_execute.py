@@ -6,15 +6,18 @@ and health-checked by the oracle agent's prices afterwards. A port of the app's 
 Named accounts (program upgrade of 2026-10-09, the app's `marginExecuteIx` at backend `2462473`): authority,
 protocol_config, margin_account, integration ["integration", target], target_program, validator, venue_asset (null
 unless the call is AT a venue), event_authority ["__event_authority"], program (the core: events are emitted by CPI).
-Args: `data` (the outside instruction's data), `call_account_count`. There is no `new_assets` any more: token collateral
-is the protocol's allowed list, so a received token is already scanned, and one outside the list is refused.
+Args: `data` (the outside instruction's data), `call_account_count`, `tokens` (program upgrade of 2026-11: always
+`ALL_TOKENS`, the health groups list every allowed token). There is no `new_assets` any more: token collateral is the
+protocol's allowed list, so a received token is already scanned, and one outside the list is refused.
 
 remaining_accounts, in order:
   1. the outside instruction's accounts (none a signer: Vanna signs as the margin PDA);
   2. the health groups (`remaining_accounts.py`): a group per allowed token, per venue, per debt (nothing is excluded:
      the program values the post-call vault balances itself);
   3. the oracle segment `[vanna_oracle, price_book, ...price accounts]` of every holding and the spent/received tokens;
-  4. the validator segment, only when the validator needs accounts (Phoenix: `[validator, market_book, exchange]`).
+  4. the validator segment, only when the validator needs accounts: Phoenix `[validator, market_book, exchange]`;
+     Kamino Lend, Titan and Perena `[validator, rule book]`, since the 2026-11 upgrade reviews those programs from an
+     on-chain rule book (PDA ["rules", target program] of vanna_validator) instead of code (`validator_segment`).
 
 The receiving margin vault must exist before the call: an idempotent ATA create precedes the instruction (Vanna no
 longer creates it). There is no `min_received`: slippage protection is the outside program's own (Jupiter's
@@ -29,7 +32,7 @@ from spl.token.instructions import create_idempotent_associated_token_account
 
 from vanna_core.assets import AssetRegistry, DiscoveredAsset
 from vanna_core.client import SolanaClient
-from vanna_core.constants import EXEC_COMPUTE_UNITS  # noqa: F401 - re-exported
+from vanna_core.constants import ALL_TOKENS, EXEC_COMPUTE_UNITS, RULE_BOOK_PROGRAMS  # noqa: F401 - EXEC_COMPUTE_UNITS re-exported
 from vanna_core.layouts import EMPTY_ASSET_INDEX
 from vanna_core.margin_state import load_margin_state
 from vanna_core.pdas import integration_pda, protocol_config_pda
@@ -70,7 +73,23 @@ def _named_accounts(client: SolanaClient, authority: Pubkey, margin: Pubkey, tar
 
 
 def _ix_data(data: bytes, call_account_count: int) -> bytes:
-    return MARGIN_EXECUTE_DISC + _borsh_vec_bytes(data) + call_account_count.to_bytes(2, "little")
+    return MARGIN_EXECUTE_DISC + _borsh_vec_bytes(data) + call_account_count.to_bytes(2, "little") + bytes([ALL_TOKENS])
+
+
+RULE_BOOK_PROGRAM_KEYS = frozenset(Pubkey.from_string(p) for p in RULE_BOOK_PROGRAMS)
+
+
+def rule_book_pda(validator: Pubkey, target_program: Pubkey) -> Pubkey:
+    """The validator's rule book for `target_program` (`vanna_validator` rules.rs `RULES_SEED`)."""
+    return Pubkey.find_program_address([b"rules", bytes(target_program)], validator)[0]
+
+
+def validator_segment(client: SolanaClient, target_program: Pubkey, validator_accounts: list[Pubkey] | None = None) -> list[AccountMeta]:
+    """`[vanna_validator, ...]` after the oracle segment, or nothing: the caller's accounts when it has them (Phoenix),
+    else the rule book for a program the validator reviews from one (the app's `validatorExtras`, lib/solana/exec.ts)."""
+    validator = Pubkey.from_string(client.settings.vanna_validator_program_id)
+    extras = validator_accounts or ([rule_book_pda(validator, target_program)] if target_program in RULE_BOOK_PROGRAM_KEYS else [])
+    return [_ro(validator), *(_ro(k) for k in extras)] if extras else []
 
 
 def _require_received_allowed(margin_view, received: DiscoveredAsset) -> None:
@@ -123,7 +142,10 @@ async def build_margin_execute_instructions(
     margin_execute = Instruction(
         program_id=client.program_id,
         data=_ix_data(data, len(cpi_accounts)),
-        accounts=[*_named_accounts(client, authority, margin, target_program, None), *cpi_accounts, *groups, *segment],
+        accounts=[
+            *_named_accounts(client, authority, margin, target_program, None), *cpi_accounts, *groups, *segment,
+            *validator_segment(client, target_program),
+        ],
     )
     return [create_received_vault, margin_execute]
 
@@ -243,12 +265,10 @@ async def build_chained_margin_execute(
                 raise ValueError("This margin account holds Phoenix perps, but Vanna's Phoenix market book was not found")
         venue_keys = venue_oracle_keys(margin, venue, list(target_asset_ids) if venue_asset is not None else [])
     segment = oracle_segment(client, involved, venue_keys, await vault_oracle_keys(client, involved))
-    validator = Pubkey.from_string(client.settings.vanna_validator_program_id)
-    validator_segment = [_ro(validator), *(_ro(k) for k in validator_accounts)] if validator_accounts else []
-
     named = _named_accounts(client, authority, margin, target_program, venue_asset)
     cpi = [AccountMeta(a.pubkey, is_signer=False, is_writable=a.is_writable) for a in cpi_accounts]
-    out.append(Instruction(client.program_id, _ix_data(data, len(cpi)), [*named, *cpi, *groups, *segment, *validator_segment]))
+    extras = validator_segment(client, target_program, validator_accounts)
+    out.append(Instruction(client.program_id, _ix_data(data, len(cpi)), [*named, *cpi, *groups, *segment, *extras]))
 
     model.execute(
         spent.asset_index if spent is not None else None, expected_spent,

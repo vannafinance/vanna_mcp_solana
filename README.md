@@ -264,7 +264,10 @@ DEX pools drift from mainnet.
 
 ## Keeping the IDL in sync
 
-`idl/vanna_credit_layer.json` is the IDL of the `vanna_credit_layer` program (layer `465f21a`), copied from
-`vanna-credit-backend/idl/` (the previous `vanna_lending` IDL is kept in `handoff/old/`). The server refuses to start unless the
+`idl/vanna_credit_layer.json` is the IDL of the `vanna_credit_layer` program the fork runs since the November 2026 audit
+upgrade (`vanna-credit-layer` `feature/options-standalone`, which contains `mainnet` `e2a9653`), copied from the app
+(`Vanna_Finance_Backend/apps/solana/idl/`; the previous `vanna_lending` IDL is kept in `handoff/old/`). That upgrade added
+the `tokens` argument (255 = every allowed token) to `user_borrow`, `user_withdraw_collateral` and `margin_execute`,
+the validator's on-chain rule books for Kamino Lend, Titan and Perena, weighted health (TOOLS_CATALOGUE.md §2) and SKR. The server refuses to start unless the
 file hashes to `PINNED_IDL_SHA256` (`vanna_core/config.py`). When the program
 changes: regenerate, verify against the deployed program, then update the pin.

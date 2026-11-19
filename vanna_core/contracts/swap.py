@@ -297,7 +297,7 @@ class SwapContract:
         if not to_asset.collateral_enabled:
             return {"allowed": False, "reason": f"{to_asset.symbol} is not collateral_enabled"}
 
-        address, margin, collateral_rows, debt_rows, current = await margin_contract.snapshot(authority)
+        address, margin, collateral_rows, debt_rows, _liquidation_line = await margin_contract.snapshot(authority)
         if not margin.is_allowed(to_asset.asset_index):
             return {"allowed": False, "reason": f"{to_asset.symbol} is not on the protocol's allowed collateral list"}
         from_row = next((r for r in collateral_rows if r["symbol"] == from_asset.symbol), None)
@@ -338,24 +338,21 @@ class SwapContract:
             except PriceUnavailableError as exc:
                 return {'allowed': False, 'reason': str(exc)}
 
-        new_collateral_values = [
-            (r["usd_value_nano"] - spent_usd_removed) if r["symbol"] == from_asset.symbol else r["usd_value_nano"]
+        # The swap's verdict on the program's weighted lines (2026-11 upgrade): margin_execute checks the borrow line.
+        from vanna_core.contracts.margin import preview_verdict, weighted_row
+
+        rows = [
+            {**r, "usd_value_nano": r["usd_value_nano"] - spent_usd_removed} if r["symbol"] == from_asset.symbol else r
             for r in collateral_rows
         ]
         if to_asset.symbol not in {r["symbol"] for r in collateral_rows}:
-            new_collateral_values.append(received_usd)
+            rows.append(weighted_row(to_asset, received_usd))
         else:
-            new_collateral_values = [
-                v + received_usd if r["symbol"] == to_asset.symbol else v
-                for r, v in zip(collateral_rows, new_collateral_values, strict=True)
-            ]
-        projected = mu.calculate_health(new_collateral_values, [r["usd_value_nano"] for r in debt_rows])
+            rows = [{**r, "usd_value_nano": r["usd_value_nano"] + received_usd} if r["symbol"] == to_asset.symbol else r for r in rows]
+        verdict = preview_verdict(collateral_rows, rows, [r["usd_value_nano"] for r in debt_rows])
 
         return {
-            "allowed": projected.is_borrow_healthy,
-            "reason": None if projected.is_borrow_healthy else "would breach the 1.10 health-factor threshold",
-            "current_health_factor": current.health_factor_str,
-            "projected_health_factor": projected.health_factor_str,
+            **verdict,
             "quoted_min_out": math_utils.ui_amount(min_out_raw, to_asset.decimals),
             "provider": chosen,
         }

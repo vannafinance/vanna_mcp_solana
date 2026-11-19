@@ -44,6 +44,18 @@ class HealthRead:
     debt: list[PositionRow] = field(default_factory=list)
     is_liquidatable: bool = False
     prices_ok: bool = True
+    # The borrow line (2026-11 upgrade): Σ holdings x min(LTV x 1.1, 100%), what borrow / withdraw / swap must keep
+    # above the floor, and every registered asset's (borrow, liquidation) weights. Unweighted when the read lacks them.
+    borrow_collateral_usd: float | None = None
+    weights: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    @property
+    def borrow_line_usd(self) -> float:
+        return self.collateral_usd if self.borrow_collateral_usd is None else self.borrow_collateral_usd
+
+    def borrow_weight(self, symbol: str) -> float:
+        """`symbol`'s borrow-line weight (1 when the read did not report it: the program's check still decides)."""
+        return self.weights.get(symbol, (1.0, 1.0))[0]
 
     def collateral_row(self, symbol: str) -> PositionRow | None:
         return next((r for r in self.collateral if r.symbol == symbol), None)
@@ -88,11 +100,19 @@ def read_health(raw: dict[str, Any]) -> HealthRead | None:
             return None
     if hf is None and debt_usd > 0:
         return None
+    weights: dict[str, tuple[float, float]] = {}
+    for symbol, w in (raw.get("line_weights") or {}).items():
+        if isinstance(w, dict):
+            b, liq = risk.num(w.get("borrow")), risk.num(w.get("liquidation"))
+            if b is not None and liq is not None:
+                weights[symbol] = (b, liq)
     return HealthRead(
         margin_account=raw.get("margin_account") if isinstance(raw.get("margin_account"), str) else None,
         hf=hf, collateral_usd=collateral_usd, debt_usd=debt_usd, collateral=collateral, debt=debt,
         is_liquidatable=raw.get("is_liquidatable") is True,
         prices_ok=raw.get("price_checks_pass") is not False,
+        borrow_collateral_usd=risk.num(raw.get("borrow_collateral_usd")),
+        weights=weights,
     )
 
 
@@ -242,8 +262,8 @@ async def size_safe_borrow(wallet: str, asset: str, hint: HealthResult | None = 
     price = await fresh_price(asset)
     if price is None:
         return Sized(False, reason=f"The {asset} price is unavailable right now.")
-    c, d = h.health.collateral_usd, h.health.debt_usd
-    units = float(risk.usd_to_units(risk.max_borrow_usd(c, d, floor, True) * 0.995, price.usd, asset))
+    c, d = h.health.borrow_line_usd, h.health.debt_usd
+    units = float(risk.usd_to_units(risk.max_borrow_usd(c, d, floor, h.health.borrow_weight(asset)) * 0.995, price.usd, asset))
     limited_by = "health"
     available = await pool_available(asset)
     if available is not None:
@@ -297,8 +317,8 @@ async def size_safe_withdraw(wallet: str, asset: str, hint: HealthResult | None 
     price = row.price_usd or (lambda p: p.usd if p else None)(await load_price(asset))
     if not price:
         return Sized(False, reason=f"The {asset} price is unavailable right now.")
-    c, d = h.health.collateral_usd, h.health.debt_usd
-    limit_usd = risk.max_withdraw_usd(c, d, floor)
+    c, d = h.health.borrow_line_usd, h.health.debt_usd
+    limit_usd = risk.max_withdraw_usd(c, d, floor, h.health.borrow_weight(asset))
     units = row.units if d <= 0 else min(row.units, (limit_usd * 0.995) / price)
     for _ in range(8):
         if not units > 0:

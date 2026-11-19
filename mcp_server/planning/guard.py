@@ -178,8 +178,10 @@ async def _guard_deposit_and_borrow(wallet: str, args: dict[str, Any]) -> Prefli
     health = h.health if h.kind == "ok" else None
     dep_usd = float(args["deposit_amount"]) * p_dep.usd
     bor_usd = float(args["borrow_amount"]) * p_bor.usd
-    c, d = (health.collateral_usd if health else 0.0), (health.debt_usd if health else 0.0)
-    hf_after_value = risk.hf_after(c + dep_usd + bor_usd, d + bor_usd)
+    # The borrow line (2026-11 upgrade): the deposit and the kept borrow at their own borrow weights, debt in full.
+    c, d = (health.borrow_line_usd if health else 0.0), (health.debt_usd if health else 0.0)
+    w_dep, w_bor = (health.borrow_weight(dep_asset), health.borrow_weight(bor_asset)) if health else (1.0, 1.0)
+    hf_after_value = risk.hf_after(c + dep_usd * w_dep + bor_usd * w_bor, d + bor_usd)
     spend = await get_safety().check_spend(wallet, max(dep_usd, bor_usd))
     if not spend.ok:
         return Preflight(False, code="limit", message=spend.message)

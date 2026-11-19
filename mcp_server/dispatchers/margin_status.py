@@ -31,7 +31,7 @@ async def vanna_margin_status(
     max_* actions here are the program's looser limits, for reference only.
 
     Actions:
-      collateral / debt — every position, USD-priced.
+      collateral / debt — every position, USD-priced (unweighted; each collateral row carries its line weights).
       can_borrow / can_withdraw — would `amount` of `asset` pass the program's checks.
       max_borrow / max_withdraw — the program's limit for `asset` (1.10, not the safe floor).
       liquidation_snapshot — is the account liquidatable now (read only; liquidating is refused).
