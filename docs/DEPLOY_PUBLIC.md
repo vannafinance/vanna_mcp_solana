@@ -69,13 +69,14 @@ public connector signs on its **own** pages again, as the Stellar MCP does on `m
 can stay as they are (unused). How it was set up, should it be wanted again: `APPROVE_PAGE_URL` set, and the website's
 `MCP_PLAN_API_URL` = this service's origin. Both services mount `PLAN_PROXY_SECRET` from a Secret Manager secret
 `plan-proxy-secret` (one value, a copy in each project: `solana-mcp` read by `vanna-mcp-public@`,
-`vanna-credit-solana-test` read by `vanna-credit-runtime@`), so the plan rate limit counts each website user, not the
+the website's project read by its runtime account; the retired standalone site was `vanna-credit-solana-test` /
+`vanna-credit-runtime@`), so the plan rate limit counts each website user, not the
 website. A mismatch is harmless (the limit falls back to the website's address). To set it up again:
 
 ```
 # website first (the page answers 503 without it), then this service
-gcloud run services update vanna-credit-solana-test --project=vanna-credit-solana-test --region=us-central1 --update-env-vars=MCP_PLAN_API_URL=https://vanna-mcp-solana-public-398807408840.us-central1.run.app
-gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=APPROVE_PAGE_URL=https://test.solana.vanna.finance/approve
+# (the website is the monorepo deployment in vanna-unified-core: set MCP_PLAN_API_URL in its runtime env)
+gcloud run services update vanna-mcp-solana-public --project=solana-mcp --region=us-central1 --update-env-vars=APPROVE_PAGE_URL=https://test.vanna.finance/approve
 # same random value into plan-proxy-secret in both projects (gcloud secrets create ... --data-file), grant
 # roles/secretmanager.secretAccessor to each runtime account, then on both services:
 #   --update-secrets=PLAN_PROXY_SECRET=plan-proxy-secret:latest

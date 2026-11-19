@@ -600,7 +600,9 @@ Mirrors `lib/solana/vault-actions.ts`, `vault-state.ts`, `perena.ts` and `@vanna
   app's vault actions do), and retries a rate-limited (429) answer once.
 - **App access gate.** The app answers every `/api/*` call without its `vanna_access` cookie with 401 (backend
   `aaed5cc`, `proxy.ts`). Every app call the MCP makes (price keeper, Phoenix helpers, Jupiter proxy, vault rows,
-  faucet, Predict) enters `APP_ACCESS_CODE` once at `POST /api/access`, keeps the 30-day cookie per app origin, and
+  faucet, Predict) enters `APP_ACCESS_CODE` once at `POST /api/solana/access` (the monorepo website at
+  `PRICE_KEEPER_URL=https://test.vanna.finance`; a standalone app's `/api/access` is tried next), keeps the 30-day
+  cookie per app origin, and
   logs in again once on a gate 401 (`vanna_core/app_gate.py`). Without the code a gated app's 401 comes back as is.
 
 A Basis share is priced by simulating the oracle; when that read fails (a transient RPC error), the last good price from

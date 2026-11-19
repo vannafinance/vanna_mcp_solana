@@ -109,12 +109,12 @@ class VannaSettings(BaseSettings):
     # Fork price preparation (the app's price keeper; no Hermes this release).
     oracle_mode: OracleMode = OracleMode.DEV_FORK
     price_refresh_source: PriceRefreshSource = PriceRefreshSource.KEEPER
-    # The vanna-credit-backend app's HTTP host (NOT the RPC host): POST
-    # /api/prices/refresh (price keeper) and POST /api/faucet (vanna_fork).
-    # devnet.solana.vanna.finance serves the old stack's API, not this app.
-    # Unauthenticated on the app side today; the secret is sent as a Bearer
-    # token once the app hardens it.
-    price_keeper_url: str = "https://test.solana.vanna.finance"
+    # The Vanna website's HTTP host (NOT the RPC host): the monorepo Vanna_Finance_Backend deployment, auto-deployed from
+    # its main (2026-11-19: replaces the old standalone vanna-credit-backend site test.solana.vanna.finance, whose
+    # Phoenix book re-copy predates the fork-timeline fix and left stale Phoenix data on the shared fork). It serves the
+    # price keeper, faucet, Phoenix helpers, Jupiter proxy, vault rows and Predict under /api/solana/*; every call here
+    # tries /api/* first and falls back to /api/solana/*. devnet.solana.vanna.finance is the old stack, not this app.
+    price_keeper_url: str = "https://test.vanna.finance"
     # Fork only: the app that serves the Phoenix helpers a perps trade needs on a fork (POST /api/perps/phoenix-book to
     # re-copy a market's book from mainnet and get its live mark; POST /api/perps/phoenix-access to stand in for Phoenix's
     # onboarding after a trader is registered). Empty = price_keeper_url. Never called off a fork.
@@ -123,8 +123,9 @@ class VannaSettings(BaseSettings):
     perps_max_action_usd: float = 0.0
     price_keeper_secret: str = ""
     # The app's site-wide access code (backend proxy.ts / docs/ACCESS_GATE.md): every app `/api/*` call
-    # (keeper, Phoenix helpers, Jupiter proxy, vault rows, faucet, Predict) first enters it at POST /api/access
-    # for the `vanna_access` cookie (vanna_core/app_gate.py). Empty = no login; a gated app then answers 401.
+    # (keeper, Phoenix helpers, Jupiter proxy, vault rows, faucet, Predict) first enters it at POST /api/access, or the
+    # monorepo's POST /api/solana/access, for the `vanna_access` cookie (vanna_core/app_gate.py). Empty = no login; a
+    # gated app then answers 401.
     app_access_code: str = ""
     # The app's Predict API (World.xyz prediction markets; backend app/api/predict/*). Empty =
     # `{perps_helper_url or price_keeper_url}/api/predict`.
@@ -273,7 +274,7 @@ class VannaSettings(BaseSettings):
     # Origin of the pages above as the user's browser reaches it (e.g. http://127.0.0.1:8000 locally). Defaults to
     # EXTERNAL_BASE_URL, else the local bind address.
     sign_base_url: str = ""
-    # Where plan links send the user: the Vanna website's approve page (e.g. https://test.solana.vanna.finance/approve),
+    # Where plan links send the user: the Vanna website's approve page (e.g. https://test.vanna.finance/approve),
     # which proxies this server's /api/plan/* and signs with the site's own wallet connection. A link is
     # `{APPROVE_PAGE_URL}/{plan_id}`. Empty = this server's own /plan/{id} page (kept as the fallback either way).
     approve_page_url: str = ""

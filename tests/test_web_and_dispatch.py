@@ -549,11 +549,11 @@ def test_plan_links_point_at_the_website_approve_page_when_configured(monkeypatc
     monkeypatch.setattr(s, "approve_page_url", "")
     monkeypatch.setattr(s, "sign_base_url", "http://127.0.0.1:8000")
     assert plan_link_base(s) == "http://127.0.0.1:8000/plan"
-    monkeypatch.setattr(s, "approve_page_url", "https://test.solana.vanna.finance/approve/")
-    assert plan_link_base(s) == "https://test.solana.vanna.finance/approve"
+    monkeypatch.setattr(s, "approve_page_url", "https://test.vanna.finance/approve/")
+    assert plan_link_base(s) == "https://test.vanna.finance/approve"
     monkeypatch.setattr(s, "approve_page_url", "http://localhost:3000/approve")
     assert plan_link_base(s) == "http://localhost:3000/approve"
-    for bad in ("http://evil.example/approve", "https://test.solana.vanna.finance/approve?x=1", "javascript:alert(1)"):
+    for bad in ("http://evil.example/approve", "https://test.vanna.finance/approve?x=1", "javascript:alert(1)"):
         monkeypatch.setattr(s, "approve_page_url", bad)
         with pytest.raises(RuntimeError):
             plan_link_base(s)
@@ -563,9 +563,9 @@ async def test_a_website_link_names_the_website_in_the_approval(monkeypatch) -> 
     chain(monkeypatch, collateral={"SOL": 10}, debt={"USDC": 100.0}, wallet_tokens={"USDC": 300.0}, sol_balance=5.0)
     net = Net()
     eng = PlanEngine(MemoryRecordStore(), safety.get_safety(), net.send, net.statuses, lambda: BASE,
-                     link_base=lambda: "https://test.solana.vanna.finance/approve")
+                     link_base=lambda: "https://test.vanna.finance/approve")
     set_engine(eng)
     drawn = await vanna_plan(action="custom", authority=WALLET, steps=[{"op": "deposit", "asset": "USDC", "amount": "50"}])
-    assert drawn["plan_url"] == f"https://test.solana.vanna.finance/approve/{drawn['plan_id']}"
+    assert drawn["plan_url"] == f"https://test.vanna.finance/approve/{drawn['plan_id']}"
     view = await eng.get(drawn["plan_id"])
-    assert "\nSite: test.solana.vanna.finance\n" in view["approval_message"] and view["site"] == "test.solana.vanna.finance"
+    assert "\nSite: test.vanna.finance\n" in view["approval_message"] and view["site"] == "test.vanna.finance"

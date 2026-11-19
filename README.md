@@ -14,16 +14,17 @@ the app broadcasts; there is no Sign Service.
 
 - `TOOLS_CATALOGUE.md` — the frozen v1 tool surface, envelope schema, health
   and interest rules.
-- `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` — how the Copilot inside `vanna-credit-backend`
-  uses this server.
+- `Vanna_Finance_Backend/apps/solana/docs/copilot/COPILOT_ARCHITECTURE.md` — how the Copilot inside the Vanna
+  website (the `Vanna_Finance_Backend` monorepo, `apps/solana`) uses this server.
 - `docs/DEPLOY_PUBLIC.md` — deploying the public connector (`vanna-mcp-solana-public`): setup, deploy command, smoke test.
 - `docs/CONNECTING_CLIENTS.md` — using this server from Claude, Cursor, Windsurf or any MCP client: the
   hosted connector (log in with your wallet) and local stdio, plus operator settings.
 - `MCP_CONNECTOR_PLAN.md` — the plan and security model for the public connector (wallet-as-login OAuth).
 
-References are `vanna-credit-layer` (program source, the authority) and
-`vanna-credit-backend` (the Solana app). `Backend-Solana` is the old stack and
-is not a reference.
+References are `vanna-credit-layer` (program source, the authority) and the
+`Vanna_Finance_Backend` monorepo (`apps/solana`, the Solana website, deployed at `test.vanna.finance`; it replaced the
+standalone `vanna-credit-backend` site `test.solana.vanna.finance`, which source notes below still cite by commit).
+`Backend-Solana` is the old stack and is not a reference.
 
 ## Structure
 
@@ -188,8 +189,8 @@ after the last one lands.
   rerun the live suite plus the container test below.
 - **Cloud Run:** MCP hosts in GCP project `solana-mcp`, region `us-central1`, Artifact Registry
   `vanna-credit`, service name `vanna-mcp-solana`. Ingress is `all`, but **Cloud Run IAM is required**:
-  only the Copilot app's runtime service account (`vanna-credit-solana-test` project) holds
-  `roles/run.invoker`, and the MCP also verifies the WorkOS token. The app sends the Google ID token in
+  only the website's runtime service account (`vanna-finance-run@vanna-unified-core`, the monorepo site) holds
+  `roles/run.invoker` (the retired standalone site's `vanna-credit-runtime@vanna-credit-solana-test` is still listed), and the MCP also verifies the WorkOS token. The app sends the Google ID token in
   `X-Serverless-Authorization` and the WorkOS bearer in `Authorization`. (`--ingress=internal` was tried
   first and does not work: a caller from another project gets a 404 from Cloud Run.) Do not add an
   `allUsers` invoker. `cloudbuild.mcp.yaml` builds, pushes and deploys. MCP sessions
@@ -202,7 +203,9 @@ after the last one lands.
   `--update-env-vars` or a secret, never in git. With `AUTH_ENABLED=true` the server
   refuses to start unless `OAUTH_ISSUER`, `OAUTH_JWKS_URI` and `OAUTH_AUDIENCE` are set. Set
   `TRUSTED_PROXY_HOPS=1` (Cloud Run's front end appends the client IP; the hosted service sets it).
-  Concrete project values: `vanna-credit-backend/docs/copilot/COPILOT_ARCHITECTURE.md` §11.
+  Both services call the website at `PRICE_KEEPER_URL=https://test.vanna.finance` (the monorepo deployment; its
+  routes are under `/api/solana/*` and its gate login is `/api/solana/access`).
+  Concrete project values: `Vanna_Finance_Backend/apps/solana/docs/copilot/COPILOT_ARCHITECTURE.md` §11.
 - **Product scope:** the tokens the app lists: SOL, USDC, USDT, JitoSOL, JupSOL, JupUSD and the Token-2022 xStocks
   (NVDAx, GOOGLx, AAPLx, TSLAx), plus the Kamino receipts. Only SOL, USDC and USDT are lent and borrowed; the rest are
   margin collateral and swap only. As on the website, USDT is not a margin collateral deposit (`assert_depositable`)

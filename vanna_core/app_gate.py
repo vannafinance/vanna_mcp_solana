@@ -1,10 +1,10 @@
-"""Calls into the Vanna app (vanna-credit-backend) through its site-wide access gate.
+"""Calls into the Vanna website (the monorepo Vanna_Finance_Backend, apps/solana) through its site-wide access gate.
 
 The app answers every `/api/*` request without a valid signed `vanna_access` cookie with
-`401 {"error": "access_required"}` (backend `proxy.ts`, docs/ACCESS_GATE.md). The MCP calls the app
+`401 {"error": "access_required"}` (`apps/solana/proxy.ts`, docs/ACCESS_GATE.md). The MCP calls the app
 server to server (price keeper, Phoenix helpers, Jupiter proxy, vault rows, faucet, Predict), so it
-enters the code the way the gate page does: `POST {origin}/api/access {"code": APP_ACCESS_CODE}`
-returns the cookie, which is kept per origin until shortly before it expires and sent on every app
+enters the code the way the gate page does: `POST {origin}/api/solana/access {"code": APP_ACCESS_CODE}`
+(a standalone app's `/api/access` is tried next) returns the cookie, which is kept per origin until shortly before it expires and sent on every app
 call. A 401 `access_required` (cookie rotated, code changed) logs in again once and retries.
 Without `APP_ACCESS_CODE` the request goes out as before and a gated app's 401 is returned as is.
 """
@@ -23,6 +23,10 @@ from vanna_core.config import VannaSettings
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "vanna_access"
+# Where the gate's login lives: the monorepo website (Vanna_Finance_Backend, the one the MCP calls) serves it at
+# /api/solana/access; a standalone app at /api/access is still accepted (the same prefix rule the Jupiter, price-refresh
+# and Phoenix-helper calls follow).
+_ACCESS_PATHS = ("/api/solana/access", "/api/access")
 # Renew this long before the cookie's own expiry (it lasts 30 days).
 _RENEW_MARGIN_SECS = 3600.0
 
@@ -56,17 +60,20 @@ async def _login(http: httpx.AsyncClient, origin: str, code: str) -> str | None:
         cached = _cached(origin)
         if cached:
             return cached
-        try:
-            resp = await http.post(f"{origin}/api/access", json={"code": code})
-        except httpx.HTTPError as exc:
-            logger.warning("app access gate: login to %s failed: %s", origin, exc)
-            return None
-        token = resp.cookies.get(COOKIE_NAME)
-        if resp.status_code != 200 or not token:
-            logger.warning("app access gate: %s refused the access code (HTTP %s)", origin, resp.status_code)
-            return None
-        _cookies[origin] = (token, _expiry(token))
-        return token
+        status = None
+        for path in _ACCESS_PATHS:
+            try:
+                resp = await http.post(f"{origin}{path}", json={"code": code})
+            except httpx.HTTPError as exc:
+                logger.warning("app access gate: login to %s%s failed: %s", origin, path, exc)
+                continue
+            token = resp.cookies.get(COOKIE_NAME)
+            if resp.status_code == 200 and token:
+                _cookies[origin] = (token, _expiry(token))
+                return token
+            status = resp.status_code
+        logger.warning("app access gate: %s refused the access code (HTTP %s)", origin, status)
+        return None
 
 
 def _gated(resp: httpx.Response) -> bool:
